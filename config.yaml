@@ -1,0 +1,255 @@
+# Behavioural configuration. Committed; no secrets (those live in .env).
+# Overlays under `environments:` are merged on top, selected by APP_ENV.
+
+llm:
+  # Default chat model. Provider + model move the whole system.
+  provider: anthropic            # anthropic | openai | google | azure | local | openrouter
+  model: claude-sonnet-5
+  temperature: 0.2
+  max_tokens: 4096
+  timeout_seconds: 60
+  max_retries: 3
+  # Native structured output (json_schema) — TIED TO THE MODEL / in `overrides`. No probing:
+  # true only for a model whose json_schema output is known to validate; false = the safe universal
+  # path (one plain call + tolerant extract_json), zero wasted calls. VERIFIED: gemini-2.5-flash and
+  # gemini-2.5-flash-lite via OpenRouter DO support it -> true. (Kimi did NOT — set false if you switch
+  # back.) Revisit this line whenever you change the model.
+  structured_output: true
+
+  # Per-task settings merged over the block above; absent keys inherit it.
+  # HOT-PATH SPLIT: light/fast gemini-2.5-flash-lite for the small nodes on the critical path of
+  # every turn (plan, compose) and the small visual builders; the heavier gemini-2.5-flash only for
+  # the content-generating tasks. max_tokens are sane CEILINGS (a cap, not the driver of latency)
+  # sized to each task so nothing truncates.
+  overrides:
+    extract_topics:  { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
+    derive_deps:     { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
+    plan:            { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1000 }
+    explain:         { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
+    summarize:       { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
+    compose:         { provider: openrouter, model: google/gemini-2.5-flash-lite, max_tokens: 2000 }
+    assessment:      { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
+    grade:           { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
+    report:          { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 2000 }
+    slides:          { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 3000 }
+    visual_mindmap:  { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
+    visual_flashcards: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
+    visual_math:     { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
+    visual_pdf:      { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 3000 }
+
+vision:
+  # Scanned/maths transcription and figure captions. fallback_model is used when
+  # the primary response cannot be parsed.
+  provider: openrouter           # openrouter | anthropic | google | dashscope
+  model: qwen/qwen3-vl-235b-a22b-instruct
+  fallback_model: anthropic/claude-sonnet-5
+
+embeddings:
+  # Bilingual index embedder. `hash` is a deterministic test embedder (no model).
+  provider: huggingface          # huggingface | openai | cohere | voyage | hash
+  model: BAAI/bge-m3
+  dimensions: 1024
+  batch_size: 64
+  normalize: true
+
+vector_store:
+  backend: qdrant                # qdrant | pgvector
+  collection: eduai_chunks
+  topics_collection: eduai_topics  # topic-label vectors (resolve_topics ANN); populated on re-ingest
+  distance: cosine
+  # Payload fields indexed for filtering; namespace is filtered on every query.
+  indexed_payload_fields:
+    - namespace
+    - subject_id
+    - grade
+    - language
+    - lecture_id
+    - topic_ids
+    - version
+  hnsw:
+    m: 16
+    ef_construct: 128
+    ef_search: 128
+
+ingestion:
+  chunk:
+    target_tokens: 650
+    min_tokens: 400
+    max_tokens: 800
+    overlap_tokens: 80
+    structure_aware: true
+  topics:
+    min_per_lecture: 3
+    max_per_lecture: 8
+    max_input_tokens: 12000      # above this, extract in batches and union (0 = single call)
+    reuse_threshold: 0.60        # re-ingest reuses a lecture's own topic_id above this cosine similarity
+    assign_threshold: 0.45       # tag a chunk with a topic above this similarity
+    empty_retries: 2             # retries when a non-stub extractor returns 0 topics
+  dependencies:
+    max_out_degree: 5            # max prerequisites kept per topic
+    max_candidates: 40           # cap candidates per topic to the K nearest (0 = no cap)
+    drop_self_edges: true
+    break_cycles: true
+  normalise:                     # NFKC + tatweel strip, before chunking
+    nfkc: true
+    strip_tatweel: true
+    collapse_whitespace: true
+  ocr:
+    enabled: true
+    languages: [eng, ara, fra, deu]
+    min_chars_per_page: 40       # fewer characters than this: treat page as scanned
+    render_dpi: 300
+    engine: vision               # vision | tesseract
+    garbage:                     # legibility gate: glyph-noise digital pages -> vision
+      symbol_ratio: 0.45         # non-alphanumeric share above this: symbol-junk (any length)
+      word_check_min_chars: 80   # run the word check only past this length
+      min_word_hits: 3           # Latin page below this many common-word hits: cipher garbage
+      stopwords:                 # per-language common words; symbol check needs none
+        ar: [في, من, على, التي, كان, إلى, هذا, عن, مع, أن]
+        en: [the, of, and, is, to, in, a, are, for, with, that]
+        fr: [le, la, les, de, et, un, une, des, est, dans, que]
+        de: [der, die, und, ist, den, das, mit, für, ein, eine, im]
+  figures:
+    extract_embedded: true
+    min_width_px: 120
+    min_height_px: 120
+    max_page_area_ratio: 0.6     # larger share of the page than this: not a figure
+    max_identical_sizes_per_page: 8   # more same-sized images: scan tiles, skip
+    dedupe_overlap: 0.7          # same figure embedded twice: drop the lower-res copy
+    vision_fill_math: true       # math pages: add vision-detected figures get_images missed
+                                 # (vector geometry diagrams); deduped against get_images
+    generate_alt_text: true
+    capture_caption: true
+  review_gate:
+    enabled: false
+
+language:
+  supported: [ar, en, fr, de]
+  default: en
+  detect_per_turn: true
+  arabic_ratio: 0.30           # >= this share of Arabic-script letters -> the turn is Arabic
+  quiz_single_language: true
+  keep_technical_terms_in_source_language: true
+
+agent:
+  # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
+  k: 8                       # chunks retrieved per explain/summarize turn
+  min_score: 0.35            # retrieval similarity floor; below this a chunk is off-syllabus -> decline (tunable)
+  topic_filter: soft         # explain/summarize/report: soft = a topic-filtered miss retries unscoped
+                             # (a wrong topic guess must not silently exclude the material); hard = strict
+                             # (assessment stays hard — it wants one topic per question)
+  resolve_topics_qdrant: false  # topic resolution via the Qdrant topics collection; false = Postgres
+                                # brute-force (default until the re-ingest populates the collection)
+  prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
+  explain_figures: false     # emit an auto math figure from explain/summarize (math subjects). Off for now
+  recursion_limit: 25        # LangGraph backstop
+  infer_subject_k: 5         # top-k topics considered when inferring a subject, filtered to enrolled
+  default_subject_id: null   # fallback subject when a request/demo omits it
+  default_tasks: [explain, summarize]
+  pathways:                  # task allowlist per pathway
+    student: { tasks: [explain, summarize, assessment, grade, visual, report] }
+    teacher: { tasks: [explain, summarize, assessment, grade, visual] }   # teacher/parent report scopes are Sprint 3 (classroom/parent)
+    parent:  { tasks: [explain, summarize, visual] }   # progress reports land with report_sg
+  backend:                   # backend read-client (HTTP when BACKEND_API_BASE_URL set)
+    fixtures_path: null       # local agent fixtures manifest for offline runs
+    prefer_fixtures: false    # force fixtures even when a base URL is set (local overlay: true)
+    timeout: 30
+    max_retries: 3
+
+assessment:
+  # Assessment generation (assessment_sg) — quiz, homework, exam, practice; the KIND is
+  # the caller's save-target, the generation is one engine. GENERATED is the default
+  # source; BANK/HYBRID are built but off (bank is ~80% AI-generated, no quality gain).
+  item_source: generated       # generated | bank | hybrid
+  type_mix: { mcq: 3, true_false: 1, short_answer: 1, essay: 0 }  # count = sum
+  difficulty: mixed
+  adaptive: true               # weight weak topics via get_mastery
+  k_per_topic: 4               # chunks retrieved per covered topic
+  max_count:                   # cap on a requested question count, by role (a teacher's
+    student: 20                # final exam can be large; a student self-test stays small
+    teacher: 200
+
+grade:
+  # Grading (grade_sg). AI-final: mastery moves whenever the AI grades
+  # (no teacher-approval gate); a teacher edit later is a correction appended as a new
+  # mastery_event. `source` maps the grading context to the mastery_event_source enum.
+  source: practice             # practice | quiz | homework — default for a chat grade turn
+  pass_threshold: 0.5          # partial_score >= this counts as 'correct' for mastery
+  max_items: 200               # cap on answers graded in one turn
+  # Grounding priority: a key/rubric is used FIRST; RAG grounds ONLY a keyless answer (fallback).
+
+render:
+  # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.
+  # User-agnostic: student, teacher and parent all use the same renderers.
+  chart: { width: 8.0, height: 5.0, dpi: 120 }   # matplotlib figure size (inches) + dpi
+  mindmap: { width: 900, height: 600 }           # SVG canvas (px)
+  pdf: { page: A4 }
+  flashcards: { count: 8 }                        # cards a topic-built (no-quiz) flashcard set targets
+  math: { samples: 200 }                          # points sampled per function when plotting expr+domain
+  slides: { max_slides: 10 }                      # cap on a generated slide outline (consolidate, stay digestible)
+  max_per_turn: 3                                # visual_sg caps how many visuals a turn renders
+  figures_with_explain: false                    # an explanation also surfaces the lecture's figure (off: only explicit visual requests)
+
+image_gen:
+  # Provider-agnostic illustrative image generation. Real provider used when its key is
+  # in .env; otherwise falls back to a deterministic stub with a WARNING (never silent).
+  provider: openai             # openai | stub
+  model: gpt-image-1
+  size: "1024x1024"
+
+mastery:
+  # Difficulty-weighted EMA rollup (agent/mastery.py). alpha = weight of the newest
+  # observation; difficulty scales it so harder items move mastery more. A topic
+  # under min_attempts reads as 'unknown' (confidence < 1), never 'weak'.
+  alpha: 0.4
+  # Asymmetric by outcome: a hard item answered RIGHT is strong evidence of mastery; an
+  # easy item answered WRONG is strong evidence of a gap — easy-right / hard-wrong barely
+  # move the needle. Picked by whether the observation is above/below neutral (0.5).
+  difficulty_weights:
+    correct:   { easy: 0.7, medium: 1.0, hard: 1.3 }
+    incorrect: { easy: 1.3, medium: 1.0, hard: 0.7 }
+  min_attempts: 2
+  strong_threshold: 0.75
+  weak_threshold: 0.45
+
+report:
+  # Student-progress reporting (report_sg). weak_topic_limit caps how many weak topics
+  # a report addresses; prereq_depth is the prerequisite hops root-cause walks (deepest
+  # weak prereq = the cause, not the symptom).
+  weak_topic_limit: 5
+  prereq_depth: 2
+  trend:
+    window: 50        # newest N mastery_events read for the trend
+    min_events: 4     # below this the trend direction is 'insufficient'
+    flat_band: 0.05   # |late-mean - early-mean| within this reads as 'flat'
+
+backend:
+  # Resolver uses the backend API when BACKEND_API_BASE_URL is set, else this
+  # local fixtures manifest (or --fixtures).
+  fixtures_path: null
+
+logging:
+  level: INFO
+  format: json
+  third_party_level: WARNING   # cap HTTP/LLM client loggers so a DEBUG app level
+                               # never logs request/response bodies (prompts, PII)
+
+tracing:
+  enabled: false
+  project: eduai
+
+# Overlays merged over the base, selected by APP_ENV.
+environments:
+  local:
+    logging: { level: DEBUG, format: console }
+    tracing: { enabled: true }
+    vector_store: { collection: eduai_chunks_dev, topics_collection: eduai_topics_dev }   # keep dev index off prod
+    agent: { backend: { fixtures_path: data/samples/agent_fixtures.yaml, prefer_fixtures: true } }
+
+  staging:
+    tracing: { enabled: true }
+
+  production:
+    logging: { level: WARNING }
+    tracing: { enabled: true }
+    llm: { max_retries: 5 }

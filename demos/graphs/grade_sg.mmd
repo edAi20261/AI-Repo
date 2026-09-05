@@ -1,0 +1,20 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	prepare(prepare)
+	fetch_rubric(fetch_rubric)
+	grade(grade)
+	write_mastery(write_mastery)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> prepare;
+	fetch_rubric --> grade;
+	grade --> write_mastery;
+	prepare --> fetch_rubric;
+	write_mastery --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

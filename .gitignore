@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+
+# Syllabus material and generated artifacts
+data/
+!data/samples/.gitkeep
+artifacts/
+.ingestion_artifacts/
+*.log
+
+# Internal working docs (not shipped)
+sprint-log.md
+
+# Demo run output — every run (dev or reviewer) writes a local, date-stamped transcript; never shipped.
+demos/sprint-1/outputs/answers-mahy.md
+demos/*/outputs/*-mahy.md
+demos/sprint2/outputs/*.md
+# Demo backend fixtures (mirror real backend data — local only)
+demos/sprint2/backend_fixtures.yaml
+# Demo-generated visuals — committed so a reviewer can view them (overrides `artifacts/` above)
+!demos/sprint2/outputs/artifacts/
+!demos/sprint2/outputs/artifacts/**
+# The published Sprint-2 demo transcript (the one saved run kept for review; other runs stay ignored)
+!demos/sprint2/outputs/demo-output.md
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

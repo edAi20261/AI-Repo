@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# EduAI — runtime dependencies
+# Pinned loosely on purpose; lock exact versions before production deployment.
+# ---------------------------------------------------------------------------
+
+# --- Graph runtime ----------------------------------------------------------
+langgraph>=0.2.60
+langgraph-checkpoint-postgres>=2.0.0
+langchain-core>=0.3.28
+
+# --- LLM providers (provider-agnostic factory picks one at runtime) ---------
+langchain>=0.3.0
+langchain-anthropic>=0.3.0
+langchain-openai>=0.2.14
+langchain-google-genai>=2.0.7
+
+# --- API --------------------------------------------------------------------
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+httpx>=0.27.0
+
+# --- Data stores ------------------------------------------------------------
+sqlalchemy>=2.0.36
+# Two Postgres drivers, on purpose: asyncpg for the agent's async checkpointer,
+# psycopg (v3) for ingestion's synchronous batch writer (ai.chunks / figures /
+# vector_index / topics). Ingestion normalises DATABASE_URL to +psycopg.
+asyncpg>=0.30.0
+psycopg[binary]>=3.2.0
+alembic>=1.14.0
+redis>=5.2.0
+qdrant-client>=1.12.0
+
+# --- Ingestion: parsing, OCR, figures ---------------------------------------
+pymupdf>=1.25.0
+python-docx>=1.1.2
+pytesseract>=0.3.13
+pillow>=11.0.0
+langdetect>=1.0.9
+
+# --- Embeddings (bilingual AR/EN index) -------------------------------------
+# BAAI/bge-m3 run locally (multilingual, ~2GB with torch). Versions pinned to a
+# known-good set; a mismatched/broken torch install crashes model load.
+torch==2.13.0
+transformers==5.14.1
+sentence-transformers==5.6.1
+
+# --- Object storage ---------------------------------------------------------
+boto3>=1.35.0
+
+# --- Artifact generation ----------------------------------------------------
+matplotlib>=3.9.0
+reportlab>=4.2.5
+
+# --- Observability ----------------------------------------------------------
+langsmith>=0.2.0
+structlog>=24.4.0
+
+# --- Utilities --------------------------------------------------------------
+python-dotenv>=1.0.1
+pyyaml>=6.0.2
+tenacity>=9.0.0

@@ -1,0 +1,26 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	resolve(resolve)
+	query_bank(query_bank)
+	plan_coverage(plan_coverage)
+	retrieve_batch(retrieve_batch)
+	generate(generate)
+	validate(validate)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> resolve;
+	generate --> validate;
+	plan_coverage --> retrieve_batch;
+	query_bank -.-> plan_coverage;
+	query_bank -.-> validate;
+	resolve -.-> plan_coverage;
+	resolve -.-> query_bank;
+	retrieve_batch --> generate;
+	validate --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

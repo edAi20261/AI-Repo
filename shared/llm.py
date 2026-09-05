@@ -1,0 +1,87 @@
+"""Provider-agnostic chat model access, shared by both deployable halves.
+
+Every chat client is constructed here, so moving to a different model is a config
+change (``llm.provider`` + ``llm.model`` in config.yaml), never a code change.
+Per-task settings come from ``config.llm_for(task)``; SDK imports are lazy so
+importing this module never requires a provider that isn't installed.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from .config import Config
+
+logger = logging.getLogger(__name__)
+
+# OpenAI-compatible gateways: one key reaches many models (base URL, env var).
+_OPENAI_COMPAT = {
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "moonshot": ("https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
+    "kimi": ("https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
+}
+
+_NATIVE_KEY = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+}
+
+
+def llm_key_available(config: Config, spec: dict) -> bool:
+    """True when ``spec`` names a provider/model whose API key is present."""
+    provider = (spec.get("provider") or "").lower()
+    if not provider or not spec.get("model"):
+        return False
+    if provider in _OPENAI_COMPAT:
+        return bool(config.secret(_OPENAI_COMPAT[provider][1]))
+    return bool(config.secret(_NATIVE_KEY.get(provider, "")))
+
+
+def get_llm(config: Config, task: str | None = None):
+    """Chat model for ``task``. Native providers go through ``init_chat_model``;
+    OpenAI-compatible gateways through ``ChatOpenAI`` with the gateway base URL."""
+    spec = config.llm_for(task)
+    provider = (spec.get("provider") or "").lower()
+    model = spec.get("model")
+    if not provider or not model:
+        raise ValueError(f"No LLM provider/model configured for task {task!r}.")
+
+    common = dict(
+        temperature=spec.get("temperature", 0.2),
+        max_tokens=spec.get("max_tokens"),
+        timeout=spec.get("timeout_seconds"),
+        max_retries=spec.get("max_retries", 2),
+    )
+
+    if provider in _OPENAI_COMPAT:
+        from langchain_openai import ChatOpenAI  # lazy
+
+        from .metering import MeteringCallback
+
+        base_url, key_env = _OPENAI_COMPAT[provider]
+        # OpenRouter returns per-call cost when asked; the callback records it.
+        extra_body = {"usage": {"include": True}} if provider == "openrouter" else None
+        return ChatOpenAI(
+            model=model,
+            base_url=spec.get("base_url", base_url),
+            api_key=config.secret(key_env),
+            extra_body=extra_body,
+            callbacks=[MeteringCallback()],
+            **common,
+        )
+
+    from langchain.chat_models import init_chat_model  # lazy
+
+    return init_chat_model(model=model, model_provider=provider, **common)
+
+
+def maybe_llm(config: Config, task: str):
+    """The chat model for ``task``, or ``None`` when no key is configured (callers then take
+    the deterministic stub path). The single source for 'LLM if available, else None'."""
+    try:
+        if llm_key_available(config, config.llm_for(task)):
+            return get_llm(config, task)
+    except Exception:
+        logger.warning("LLM unavailable for task %r", task, exc_info=True)
+    return None
