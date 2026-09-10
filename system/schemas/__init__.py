@@ -4,7 +4,7 @@ from .chat import ChatRequest, ChatResponse
 from .common import ErrorEnvelope, GradeReference, Pathway, Visual
 from .grading import GradeRequest, GradeResponse, Submission
 from .health import HealthResponse, ReadinessResponse
-from .ingestion import IngestionJobResponse, IngestionRequest
+from .ingestion import IngestionJobResponse, IngestionRequest, LessonIngestionRequest
 from .reports import ReportResponse
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "HealthResponse",
     "IngestionJobResponse",
     "IngestionRequest",
+    "LessonIngestionRequest",
     "Pathway",
     "ReadinessResponse",
     "ReportResponse",

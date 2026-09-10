@@ -30,7 +30,7 @@ from .errors import ConflictError, NotFoundError
 from .settings import IngestionSettings
 
 if TYPE_CHECKING:
-    from .notifier import CompletionNotifier
+    from .notifier import StatusNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class JobStatus(str, Enum):
 class IngestionJob:
     job_id: str
     lecture_id: str
-    subject_id: str
+    subject_id: Optional[str] = None
     status: JobStatus = JobStatus.QUEUED
     stats: dict[str, Any] = field(default_factory=dict)
     ingestion_status: Optional[str] = None
@@ -68,7 +68,7 @@ class IngestionJobManager:
         config: Config,
         settings: IngestionSettings,
         *,
-        notifier: Optional[CompletionNotifier] = None,
+        notifier: Optional[StatusNotifier] = None,
     ) -> None:
         self._config = config
         self._settings = settings
@@ -78,6 +78,18 @@ class IngestionJobManager:
         self._active: dict[str, str] = {}
         self._tasks: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
+
+    async def submit_lesson(self, lesson_id: str) -> IngestionJob:
+        """Queue by platform lesson id — the shape the platform's trigger sends.
+
+        Resolution (lesson -> source URI + subject) runs inside the job, not the
+        request: it costs three calls back to the platform, and the trigger is
+        fire-and-forget on a short timeout.
+        """
+        job = await self._reserve(lesson_id, None)
+        self._spawn(self._run_resolved(job))
+        logger.info("lesson ingestion queued", extra={"job_id": job.job_id, "lesson_id": lesson_id})
+        return job
 
     async def submit(
         self,
@@ -91,16 +103,7 @@ class IngestionJobManager:
         subject_is_math: bool = False,
     ) -> IngestionJob:
         """Queue one lesson. Raises :class:`ConflictError` if it is already running."""
-        async with self._lock:
-            if lecture_id in self._active:
-                raise ConflictError(
-                    "This lecture is already being ingested.",
-                    details={"job_id": self._active[lecture_id], "lecture_id": lecture_id},
-                )
-            job = IngestionJob(job_id=uuid4().hex, lecture_id=lecture_id, subject_id=subject_id)
-            self._jobs[job.job_id] = job
-            self._active[lecture_id] = job.job_id
-            self._evict_old()
+        job = await self._reserve(lecture_id, subject_id)
 
         from ingestion import new_state  # lazy: keeps PDF/vision deps off the import path
 
@@ -113,16 +116,31 @@ class IngestionJobManager:
             version=version,
             subject_is_math=subject_is_math,
         )
-        task = asyncio.create_task(self._run(job, state))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
+        self._spawn(self._run(job, state))
         logger.info(
             "ingestion queued",
             extra={"job_id": job.job_id, "lecture_id": lecture_id,
                    "source_uri": redact_uri(source_uri)},
         )
         return job
+
+    async def _reserve(self, lecture_id: str, subject_id: Optional[str]) -> IngestionJob:
+        async with self._lock:
+            if lecture_id in self._active:
+                raise ConflictError(
+                    "This lecture is already being ingested.",
+                    details={"job_id": self._active[lecture_id], "lecture_id": lecture_id},
+                )
+            job = IngestionJob(job_id=uuid4().hex, lecture_id=lecture_id, subject_id=subject_id)
+            self._jobs[job.job_id] = job
+            self._active[lecture_id] = job.job_id
+            self._evict_old()
+        return job
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     def get(self, job_id: str) -> IngestionJob:
         job = self._jobs.get(job_id)
@@ -150,9 +168,46 @@ class IngestionJobManager:
         with anyio.move_on_after(timeout):
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
+    async def _run_resolved(self, job: IngestionJob) -> None:
+        """Resolve a platform lesson to a runnable state, then ingest it."""
+        try:
+            state = await anyio.to_thread.run_sync(self._resolve(job.lecture_id))
+        except Exception as exc:
+            job.status = JobStatus.FAILED
+            job.errors = [f"could not resolve lesson: {exc}"]
+            job.finished_at = datetime.now(timezone.utc)
+            logger.exception("lesson resolve failed", extra={"job_id": job.job_id})
+            async with self._lock:
+                self._active.pop(job.lecture_id, None)
+            await self._notify(job)
+            return
+
+        job.subject_id = state.get("subject_id")
+        await self._run(job, state)
+
+    def _resolve(self, lesson_id: str):
+        def run() -> dict[str, Any]:
+            from ingestion import get_backend_client, new_state, resolve_lesson
+
+            source = resolve_lesson(get_backend_client(self._config), lesson_id)
+            return new_state(
+                lecture_id=source.lesson_id,
+                subject_id=source.subject_id,
+                source_uri=source.source_uri,
+                grade=source.grade,
+                subject_name=source.subject_name,
+                lesson_title=source.lesson_title,
+                lesson_order=source.lesson_order,
+                language_hint=source.language,
+                subject_is_math=source.subject_is_math,
+            )
+
+        return run
+
     async def _run(self, job: IngestionJob, state: dict[str, Any]) -> None:
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now(timezone.utc)
+        await self._notify(job)
         try:
             result = await anyio.to_thread.run_sync(self._pipeline(state), limiter=self._limiter)
             job.stats = result.get("stats", {}) or {}

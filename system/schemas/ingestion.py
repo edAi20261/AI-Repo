@@ -28,10 +28,16 @@ class IngestionRequest(Schema):
     )
 
 
+class LessonIngestionRequest(Schema):
+    """The platform's trigger: it knows the lesson, we resolve the rest."""
+
+    lesson_id: str = Field(description="Platform lesson id; resolved to source and subject.")
+
+
 class IngestionJobResponse(Schema):
     job_id: str
     lecture_id: str
-    subject_id: str
+    subject_id: Optional[str] = None
     status: str
     ingestion_status: Optional[str] = None
     stats: dict[str, Any] = Field(default_factory=dict)

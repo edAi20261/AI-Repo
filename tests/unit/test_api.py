@@ -77,6 +77,12 @@ class StubJobs:
         self.submitted.append(kwargs)
         return _job(kwargs["lecture_id"], kwargs["subject_id"])
 
+    async def submit_lesson(self, lesson_id):
+        if self.conflict:
+            raise ConflictError("This lecture is already being ingested.")
+        self.submitted.append({"lesson_id": lesson_id})
+        return _job(lesson_id, None)
+
     def get(self, job_id):
         if job_id == "missing":
             raise NotFoundError("No such ingestion job.")
@@ -346,3 +352,46 @@ def test_a_turn_past_the_timeout_is_abandoned(monkeypatch):
             await runtime.chat({"message": "hi"})
 
     anyio.run(run)
+
+
+# --- the platform's ingestion contract ---------------------------------------
+
+def test_platform_trigger_queues_by_lesson_id(client):
+    """The platform fires POST /ai/ingest/lesson with just {lesson_id}."""
+    response = client.post(
+        "/ai/ingest/lesson", json={"lecture_id": "lec-1"}, headers=auth()
+    )
+    assert response.status_code == 422  # it sends lesson_id, not lecture_id
+
+    response = client.post("/ai/ingest/lesson", json={"lesson_id": "lec-1"}, headers=auth())
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert client.jobs.submitted[0] == {"lesson_id": "lec-1"}
+
+
+def test_platform_trigger_returns_before_resolving(client):
+    """Resolution costs three calls back to the platform; the trigger is
+    fire-and-forget on a short timeout, so it must not wait."""
+    response = client.post("/ai/ingest/lesson", json={"lesson_id": "lec-2"}, headers=auth())
+    assert response.status_code == 202
+    assert response.json()["subject_id"] is None
+
+
+def test_status_maps_to_the_platform_enum():
+    from system.ingestion_jobs import IngestionJob, JobStatus
+    from system.notifier import platform_status
+
+    job = IngestionJob(job_id="j", lecture_id="l", subject_id="s")
+    assert platform_status(job) == "pending"
+
+    job.status = JobStatus.RUNNING
+    assert platform_status(job) == "processing"
+
+    job.status = JobStatus.SUCCEEDED
+    assert platform_status(job) == "ready"
+
+    job.ingestion_status = "needs_review"
+    assert platform_status(job) == "ready", "a partial ingest is still usable"
+
+    job.status = JobStatus.FAILED
+    assert platform_status(job) == "failed"
