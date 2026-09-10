@@ -8,12 +8,14 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from ..dependencies import Authenticated, RequestId, RuntimeDep
-from ..schemas.common import Language, Visual
+from ..schemas.common import ERROR_RESPONSES, Language, Visual
 from ..schemas.reports import ReportResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ai", tags=["reports"], dependencies=[Authenticated])
+router = APIRouter(
+    prefix="/ai", tags=["reports"], dependencies=[Authenticated], responses=ERROR_RESPONSES
+)
 
 
 @router.get(

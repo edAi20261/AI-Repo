@@ -12,12 +12,15 @@ from shared.config import Config
 
 DEV_ENVIRONMENTS = frozenset({"local", "test", "dev", "ci"})
 
+# The platform owns this contract: PATCH a lesson's content.ingestion_status.
+DEFAULT_CALLBACK_PATH = "/lessons/{lesson_id}/ingestion"
+
 
 @dataclass(frozen=True)
 class IngestionSettings:
     max_workers: int = 2
     callback_enabled: bool = False
-    callback_path: str = "/lessons/{lesson_id}/ingestion-status"
+    callback_path: str = DEFAULT_CALLBACK_PATH
     job_retention: int = 500
 
 
@@ -51,8 +54,7 @@ class Settings:
             ingestion=IngestionSettings(
                 max_workers=int(ingestion.get("max_workers", 2)),
                 callback_enabled=bool(ingestion.get("callback_enabled", False)),
-                callback_path=str(
-                    ingestion.get("callback_path", "/lessons/{lesson_id}/ingestion-status")),
+                callback_path=str(ingestion.get("callback_path", DEFAULT_CALLBACK_PATH)),
                 job_retention=int(ingestion.get("job_retention", 500)),
             ),
         )

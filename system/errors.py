@@ -39,11 +39,6 @@ class UnauthorizedError(ServiceError):
     code = "unauthorized"
 
 
-class ForbiddenError(ServiceError):
-    status_code = 403
-    code = "forbidden"
-
-
 class NotFoundError(ServiceError):
     status_code = 404
     code = "not_found"

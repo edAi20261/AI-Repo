@@ -11,11 +11,14 @@ import logging
 from fastapi import APIRouter, Query, status
 
 from ..dependencies import Authenticated, JobsDep
+from ..schemas.common import ERROR_RESPONSES
 from ..schemas.ingestion import IngestionJobResponse, IngestionRequest, LessonIngestionRequest
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ai/ingest", tags=["ingestion"], dependencies=[Authenticated])
+router = APIRouter(
+    prefix="/ai/ingest", tags=["ingestion"], dependencies=[Authenticated], responses=ERROR_RESPONSES
+)
 
 
 @router.post(
