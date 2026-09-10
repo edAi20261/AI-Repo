@@ -228,6 +228,19 @@ backend:
   # local fixtures manifest (or --fixtures).
   fixtures_path: null
 
+api:
+  # HTTP service (system/). Secrets stay in .env; everything tunable is here.
+  max_concurrency: 8           # concurrent graph invocations; each holds a worker thread
+  request_timeout: 120         # seconds a caller should allow for a chat turn
+  docs_enabled: true           # OpenAPI + /docs; off in production
+  cors_origins: []             # the platform backend calls this service, not a browser
+  ingestion:
+    max_workers: 2             # concurrent pipeline runs (each is minutes long and heavy)
+    job_retention: 500         # in-process job records kept for status polling
+    callback_enabled: false    # notify the platform when a lesson finishes
+    callback_path: /lessons/{lesson_id}/ingestion-status   # CONFIRM with the platform team
+
+
 logging:
   level: INFO
   format: json
@@ -250,6 +263,7 @@ environments:
     tracing: { enabled: true }
 
   production:
+    api: { docs_enabled: false }
     logging: { level: WARNING }
     tracing: { enabled: true }
     llm: { max_retries: 5 }

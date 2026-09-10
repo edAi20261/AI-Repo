@@ -6,12 +6,14 @@ tracks what each student has actually mastered at the level of individual skills
 study visuals and progress reports, and gives teachers drafted grades they review before
 anything reaches a student.
 
-The system has two independently deployable halves:
+The system has three independently deployable parts:
 
 - **`ingestion/`** — an offline pipeline that runs once per uploaded lecture. All the
   expensive LLM work (topic extraction, prerequisite derivation, embedding) happens here.
 - **`agent/`** — the runtime graph. It only reads: a vector search and table lookups.
   This is why a chat turn stays fast and predictable.
+- **`system/`** — the HTTP service the platform backend calls. Transport only: it
+  validates, authenticates, and delegates to the two above.
 
 ---
 
@@ -145,7 +147,18 @@ Order is not optional: **lectures → assessments → teaching card.**
 │   │   ├── graph.py        compiles the MainState graph
 │   │   └── subgraphs/      explain_summarize · assessment · grade · report · visual
 │   └── utils.py            language detection · JSON extraction · structured-output helper
-├── system/                 consumes the compiled graph — FastAPI service (Sprint 4)
+├── system/                 HTTP service (FastAPI) over the graph + pipeline
+│   ├── main.py             app factory; compiles the graph once at startup
+│   ├── asgi.py             uvicorn entrypoint (system.asgi:app)
+│   ├── settings.py         api.* config + service secrets
+│   ├── security.py         service-token auth + startup preflight
+│   ├── runtime.py          agent facade; offloads the sync graph to worker threads
+│   ├── ingestion_jobs.py   background pipeline runs, polled by job id
+│   ├── notifier.py         completion callback to the platform
+│   ├── errors.py           error taxonomy -> one JSON envelope
+│   ├── middleware.py       request id + access logging
+│   ├── routers/            chat · grading · reports · ingestion · health
+│   └── schemas/            request/response contracts
 ├── demos/                  per-sprint demo write-ups + runnable demos
 │   └── graphs/             rendered runtime + subgraph diagrams (.png + .mmd source)
 ├── config.yaml             behavioural configuration, committed
@@ -359,7 +372,53 @@ first, syllabus material otherwise, declining when neither supports a grade), tr
 **per-skill mastery** on every graded turn, renders **study visuals**, and produces
 **progress reports** with a trend and root-cause prerequisite. Grading is the only writer to
 mastery, and only a published grade moves it. Persona and classroom scopes, session uploads,
-export, the open-ended Q&A loop, and the FastAPI service (`system/`) land in later sprints.
+export, and the open-ended Q&A loop land in later sprints; the HTTP service is in
+`system/` (below).
+
+
+### HTTP service
+
+The service is the transport layer over the runtime graph and the ingestion
+pipeline. It holds no teaching logic: it validates a request, authenticates the
+caller, and delegates.
+
+```bash
+uvicorn system.asgi:app --host 0.0.0.0 --port 8000
+```
+
+The graph is compiled once at startup, so the first request is not slower than
+the rest. Startup refuses to continue outside a dev environment when the service
+token or the stores are unconfigured, rather than serving a broken service.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/ai/chat` | A message becomes a grounded, cited reply — plus any assessment, grade or visual the planner produced. |
+| `POST` | `/ai/chat/stream` | The same turn as SSE: a `progress` event per graph stage, then one `result`. |
+| `POST` | `/ai/grade` | Grade submitted answers and move mastery. |
+| `GET` | `/ai/reports/{user_id}` | A progress report with its trend chart rendered. |
+| `POST` | `/ai/ingest` | Queue a lesson. Returns `202` with a job id; ingestion never blocks a request. |
+| `GET` | `/ai/ingest/{job_id}` | Poll one job. `/ai/ingest/lectures/{lecture_id}` reads the latest for a lecture. |
+| `GET` | `/health`, `/ready` | Liveness and readiness. Unauthenticated — they expose no data. |
+
+**This service is not public.** The platform backend authenticates the end user
+and calls it with the shared `x-service-token` secret
+(`AI_WEBHOOK_SHARED_SECRET`), the same one the platform accepts in the other
+direction. Login and per-user authorisation stay in the platform.
+
+```
+frontend  ->  platform backend  ->  ai service (system/)  ->  agent / ingestion
+```
+
+Every failure returns one envelope, and every response carries `x-request-id`
+(an upstream id is honoured, so a request is traceable across both services):
+
+```json
+{"error": {"code": "validation_error", "message": "…", "request_id": "…"}}
+```
+
+Behaviour is configured under `api:` in `config.yaml` — concurrency, ingestion
+workers, whether `/docs` is served (off in production), and the completion
+callback. Interactive API docs are at `/docs`.
 
 ### Demos
 
@@ -401,6 +460,11 @@ authority order, decline, and mastery movement (`test_grade.py`); the mastery ro
 visual renderers and subgraph, including deterministic geometry (`test_visual.py`).
 `test_logging.py` and `test_metering.py` cover the logging-safety guards (secret masking,
 URI redaction, third-party clamp) and the cost/token meter.
+
+`test_api.py` covers the HTTP layer against a stubbed runtime — service-token auth, request
+validation and the rejection of unknown fields, the response shapes, error-envelope mapping,
+request-id propagation, and the startup preflight that refuses an unauthenticated or store-less
+production service. No keys, no services, no graph compile.
 
 `rag_search` is additionally exercised end to end against the live stores with
 same-language and cross-lingual queries and a namespace-isolation check, confirming
