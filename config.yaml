@@ -237,8 +237,8 @@ api:
   ingestion:
     max_workers: 2             # concurrent pipeline runs (each is minutes long and heavy)
     job_retention: 500         # in-process job records kept for status polling
-    callback_enabled: false    # notify the platform when a lesson finishes
-    callback_path: /lessons/{lesson_id}/ingestion-status   # CONFIRM with the platform team
+    callback_enabled: true     # PATCH lesson ingestion_status back to the platform
+    callback_path: /lessons/{lesson_id}/ingestion   # platform contract (content.ingestion_status)
 
 
 logging:

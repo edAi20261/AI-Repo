@@ -11,11 +11,14 @@ import logging
 from fastapi import APIRouter, Query, status
 
 from ..dependencies import Authenticated, JobsDep
-from ..schemas.ingestion import IngestionJobResponse, IngestionRequest
+from ..schemas.common import ERROR_RESPONSES
+from ..schemas.ingestion import IngestionJobResponse, IngestionRequest, LessonIngestionRequest
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ai/ingest", tags=["ingestion"], dependencies=[Authenticated])
+router = APIRouter(
+    prefix="/ai/ingest", tags=["ingestion"], dependencies=[Authenticated], responses=ERROR_RESPONSES
+)
 
 
 @router.post(
@@ -26,6 +29,18 @@ router = APIRouter(prefix="/ai/ingest", tags=["ingestion"], dependencies=[Authen
 )
 async def submit(payload: IngestionRequest, jobs: JobsDep) -> IngestionJobResponse:
     job = await jobs.submit(**payload.model_dump())
+    return IngestionJobResponse.from_job(job)
+
+
+@router.post(
+    "/lesson",
+    response_model=IngestionJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Queue a lesson by platform lesson id",
+)
+async def submit_lesson(payload: LessonIngestionRequest, jobs: JobsDep) -> IngestionJobResponse:
+    """The platform's trigger, fired when a lesson is published."""
+    job = await jobs.submit_lesson(payload.lesson_id)
     return IngestionJobResponse.from_job(job)
 
 

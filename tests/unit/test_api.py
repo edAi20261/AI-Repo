@@ -77,6 +77,12 @@ class StubJobs:
         self.submitted.append(kwargs)
         return _job(kwargs["lecture_id"], kwargs["subject_id"])
 
+    async def submit_lesson(self, lesson_id):
+        if self.conflict:
+            raise ConflictError("This lecture is already being ingested.")
+        self.submitted.append({"lesson_id": lesson_id})
+        return _job(lesson_id, None)
+
     def get(self, job_id):
         if job_id == "missing":
             raise NotFoundError("No such ingestion job.")
@@ -346,3 +352,130 @@ def test_a_turn_past_the_timeout_is_abandoned(monkeypatch):
             await runtime.chat({"message": "hi"})
 
     anyio.run(run)
+
+
+# --- the platform's ingestion contract ---------------------------------------
+
+def test_platform_trigger_queues_by_lesson_id(client):
+    """The platform fires POST /ai/ingest/lesson with just {lesson_id}."""
+    response = client.post(
+        "/ai/ingest/lesson", json={"lecture_id": "lec-1"}, headers=auth()
+    )
+    assert response.status_code == 422  # it sends lesson_id, not lecture_id
+
+    response = client.post("/ai/ingest/lesson", json={"lesson_id": "lec-1"}, headers=auth())
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert client.jobs.submitted[0] == {"lesson_id": "lec-1"}
+
+
+def test_platform_trigger_returns_before_resolving(client):
+    """Resolution costs three calls back to the platform; the trigger is
+    fire-and-forget on a short timeout, so it must not wait."""
+    response = client.post("/ai/ingest/lesson", json={"lesson_id": "lec-2"}, headers=auth())
+    assert response.status_code == 202
+    assert response.json()["subject_id"] is None
+
+
+def test_status_maps_to_the_platform_enum():
+    from system.ingestion_jobs import IngestionJob, JobStatus
+    from system.notifier import platform_status
+
+    job = IngestionJob(job_id="j", lecture_id="l", subject_id="s")
+    assert platform_status(job) == "pending"
+
+    job.status = JobStatus.RUNNING
+    assert platform_status(job) == "processing"
+
+    job.status = JobStatus.SUCCEEDED
+    assert platform_status(job) == "ready"
+
+    job.ingestion_status = "needs_review"
+    assert platform_status(job) == "ready", "a partial ingest is still usable"
+
+    job.status = JobStatus.FAILED
+    assert platform_status(job) == "failed"
+
+
+# --- the manager talks to the notifier ---------------------------------------
+
+class RecordingNotifier:
+    """A real notifier stands in for the platform: if the manager calls anything
+    other than `report`, these tests fail rather than a lesson silently sticking
+    at 'pending' in production."""
+
+    def __init__(self) -> None:
+        self.reported: list[str] = []
+
+    async def report(self, job) -> None:
+        from system.notifier import platform_status
+
+        self.reported.append(platform_status(job))
+
+
+def _manager(notifier):
+    from system.ingestion_jobs import IngestionJobManager
+    from system.settings import IngestionSettings
+
+    return IngestionJobManager(
+        get_config(reload=True), IngestionSettings(max_workers=1), notifier=notifier
+    )
+
+
+def test_a_run_reports_processing_then_ready(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    notifier = RecordingNotifier()
+    manager = _manager(notifier)
+    monkeypatch.setattr(manager, "_ingest", lambda state: {"stats": {}, "ingestion_status": "ready"})
+
+    async def run():
+        job = await manager.submit(
+            lecture_id="lec-1", subject_id="sub-1", source_uri="file:///x.pdf"
+        )
+        await manager.drain(timeout=5)
+        return job
+
+    job = anyio.run(run)
+    assert notifier.reported == ["processing", "ready"]
+    assert job.status.value == "succeeded"
+
+
+def test_a_failed_run_reports_failed_and_releases_the_lecture(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    notifier = RecordingNotifier()
+    manager = _manager(notifier)
+
+    def boom(_state):
+        raise RuntimeError("pdf unreadable")
+
+    monkeypatch.setattr(manager, "_ingest", boom)
+
+    async def run():
+        await manager.submit(lecture_id="lec-2", subject_id="s", source_uri="file:///x.pdf")
+        await manager.drain(timeout=5)
+        # The lecture must be free again, or it can never be retried.
+        await manager.submit(lecture_id="lec-2", subject_id="s", source_uri="file:///x.pdf")
+        await manager.drain(timeout=5)
+
+    anyio.run(run)
+    assert notifier.reported == ["processing", "failed", "processing", "failed"]
+
+
+def test_a_failed_resolve_is_reported_not_swallowed(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    notifier = RecordingNotifier()
+    manager = _manager(notifier)
+
+    def boom(_lesson_id):
+        raise RuntimeError("no such lesson")
+
+    monkeypatch.setattr(manager, "_resolve", boom)
+
+    async def run():
+        job = await manager.submit_lesson("lesson-9")
+        await manager.drain(timeout=5)
+        return job
+
+    job = anyio.run(run)
+    assert notifier.reported == ["failed"]
+    assert "no such lesson" in job.errors[0]

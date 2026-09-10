@@ -48,3 +48,11 @@ class ErrorEnvelope(BaseModel):
     """The body of every non-2xx response."""
 
     error: ErrorDetail
+
+
+# Attached to every authenticated router so the error shape appears in /docs.
+ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorEnvelope, "description": "Missing or invalid service token"},
+    422: {"model": ErrorEnvelope, "description": "Request failed validation"},
+    500: {"model": ErrorEnvelope, "description": "Unexpected error"},
+}

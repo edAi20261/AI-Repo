@@ -7,11 +7,14 @@ import logging
 from fastapi import APIRouter
 
 from ..dependencies import Authenticated, RequestId, RuntimeDep
+from ..schemas.common import ERROR_RESPONSES
 from ..schemas.grading import GradeRequest, GradeResponse
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ai", tags=["grading"], dependencies=[Authenticated])
+router = APIRouter(
+    prefix="/ai", tags=["grading"], dependencies=[Authenticated], responses=ERROR_RESPONSES
+)
 
 
 @router.post("/grade", response_model=GradeResponse, summary="Grade submitted answers")

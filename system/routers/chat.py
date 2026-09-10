@@ -13,10 +13,13 @@ from fastapi.responses import StreamingResponse
 from ..dependencies import Authenticated, RequestId, RuntimeDep
 from ..runtime import AgentRuntime
 from ..schemas.chat import ChatRequest, ChatResponse
+from ..schemas.common import ERROR_RESPONSES
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ai", tags=["chat"], dependencies=[Authenticated])
+router = APIRouter(
+    prefix="/ai", tags=["chat"], dependencies=[Authenticated], responses=ERROR_RESPONSES
+)
 
 
 @router.post("/chat", response_model=ChatResponse, summary="Answer a message from the syllabus")
