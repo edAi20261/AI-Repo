@@ -257,7 +257,9 @@ environments:
     logging: { level: DEBUG, format: console }
     tracing: { enabled: true }
     vector_store: { collection: eduai_chunks_dev, topics_collection: eduai_topics_dev }   # keep dev index off prod
-    agent: { backend: { fixtures_path: data/samples/agent_fixtures.yaml, prefer_fixtures: true } }
+    # Local talks to the real backend when BACKEND_API_BASE_URL is set. For offline
+    # work, point fixtures_path at a manifest and flip prefer_fixtures.
+    agent: { backend: { fixtures_path: null, prefer_fixtures: false } }
 
   staging:
     tracing: { enabled: true }

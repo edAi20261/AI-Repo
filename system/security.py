@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import logging
 from secrets import compare_digest
+from typing import Optional
 
-from fastapi import Request
+from fastapi import Depends, Request
+from fastapi.security import APIKeyHeader
 
 from shared.config import Config
 
@@ -21,8 +23,22 @@ logger = logging.getLogger(__name__)
 
 SERVICE_TOKEN_HEADER = "x-service-token"
 
+# Declared as an OpenAPI security scheme, not just read off the request, so the
+# header is documented and /docs offers an Authorize box for it.
+service_token_scheme = APIKeyHeader(
+    name=SERVICE_TOKEN_HEADER,
+    auto_error=False,
+    description=(
+        "Shared secret (AI_WEBHOOK_SHARED_SECRET). The platform backend sends this "
+        "on every call; it is the same secret this service sends back."
+    ),
+)
 
-def verify_service_token(request: Request) -> None:
+
+def verify_service_token(
+    request: Request,
+    presented: Optional[str] = Depends(service_token_scheme),
+) -> None:
     """Reject a request that does not carry the shared secret.
 
     A service with no configured token runs unauthenticated; that is allowed in
@@ -33,7 +49,6 @@ def verify_service_token(request: Request) -> None:
     if not settings.service_token:
         return
 
-    presented = request.headers.get(SERVICE_TOKEN_HEADER, "")
     if not presented or not compare_digest(presented, settings.service_token):
         raise UnauthorizedError("A valid service token is required.")
 
