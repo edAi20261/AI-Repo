@@ -400,6 +400,10 @@ token or the stores are unconfigured, rather than serving a broken service.
 | `GET` | `/ai/ingest/{job_id}` | Poll one job. `/ai/ingest/lectures/{lecture_id}` reads the latest for a lecture. |
 | `GET` | `/health`, `/ready` | Liveness and readiness. Unauthenticated — they expose no data. |
 
+The integration contract for the platform backend is written up in
+[`docs/BACKEND_INTEGRATION.md`](docs/BACKEND_INTEGRATION.md), with the generated spec
+alongside it in [`docs/openapi.json`](docs/openapi.json).
+
 **This service is not public.** The platform backend authenticates the end user
 and calls it with the shared `x-service-token` secret
 (`AI_WEBHOOK_SHARED_SECRET`), the same one the platform accepts in the other

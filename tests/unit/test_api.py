@@ -303,7 +303,7 @@ def test_job_lookup_by_lecture(client):
 
 def test_production_refuses_to_start_without_a_service_token(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.delenv("AI_WEBHOOK_SHARED_SECRET", raising=False)
+    monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", "")
     config = get_config(reload=True)
 
     with pytest.raises(RuntimeError, match="AI_WEBHOOK_SHARED_SECRET"):
@@ -313,8 +313,8 @@ def test_production_refuses_to_start_without_a_service_token(monkeypatch):
 def test_production_refuses_to_start_without_stores(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", TOKEN)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("QDRANT_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("QDRANT_URL", "")
     config = get_config(reload=True)
 
     with pytest.raises(RuntimeError, match="DATABASE_URL"):
@@ -323,9 +323,9 @@ def test_production_refuses_to_start_without_stores(monkeypatch):
 
 def test_development_starts_without_them(monkeypatch):
     monkeypatch.setenv("APP_ENV", "test")
-    monkeypatch.delenv("AI_WEBHOOK_SHARED_SECRET", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("QDRANT_URL", raising=False)
+    monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", "")
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("QDRANT_URL", "")
 
     assert create_app(get_config(reload=True)) is not None
 
