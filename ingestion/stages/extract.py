@@ -10,19 +10,22 @@ the lesson needs_review and is not indexed.
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 
 from ..context import PipelineContext
 from ..state import Element, Figure, IngestionState, PageResult
 from ..utils import is_garbage, normalise_text
 from ..utils import pdf
-from ..utils.s3 import figure_key
+from ..utils.s3 import StorageError, figure_key, figure_prefix
 
 try:
     from langdetect import DetectorFactory, detect
     DetectorFactory.seed = 0  # deterministic language detection
 except ImportError:  # pragma: no cover
     detect = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
 
 
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
@@ -44,7 +47,7 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     # leaves exactly the figures it produces. Keys are content-addressed, so a
     # re-uploaded identical crop overwrites; only crops whose bytes changed would
     # otherwise orphan. (The index stage replaces DB rows/points but not S3.)
-    ctx.uploader.delete_prefix(f"figures/{state['lecture_id']}/")
+    _clear_previous_figures(ctx, state["lecture_id"])
 
     # Pass 1: gather digital text blocks so heading detection has a document-wide
     # body font size to compare against (a single big glyph shouldn't define it).
@@ -208,6 +211,17 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+
+def _clear_previous_figures(ctx: PipelineContext, lecture_id: str) -> None:
+    try:
+        ctx.uploader.delete_prefix(figure_prefix(lecture_id))
+    except StorageError:
+        logger.warning(
+            "previous figure crops could not be cleared; stale objects may remain",
+            extra={"lecture_id": lecture_id},
+            exc_info=True,
+        )
+
 
 def _vision_transcribe(
     state, ctx, page, page_no, lang, route,

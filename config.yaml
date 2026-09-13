@@ -197,6 +197,9 @@ image_gen:
   model: gpt-image-1
   size: "1024x1024"
 
+storage:
+  key_prefix: ai-artifacts
+
 mastery:
   # Difficulty-weighted EMA rollup (agent/mastery.py). alpha = weight of the newest
   # observation; difficulty scales it so harder items move mastery more. A topic

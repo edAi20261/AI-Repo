@@ -102,3 +102,12 @@ def test_powerpoint_points_uses_llm():
     assert out.startswith("Slide 1")
     # No LLM -> echoes the content (never fabricates).
     assert render.powerpoint_points("x", None) == "x"
+
+
+def test_artifact_keys_are_logical(mem):
+    render.gen_chart(
+        {"type": "bar", "labels": ["A"], "series": [{"values": [1]}]}, config=get_config()
+    )
+
+    assert mem.last[1].startswith("artifacts/anon/chart/")
+    assert mem.last[1].endswith(".png")
