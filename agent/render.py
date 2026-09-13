@@ -68,14 +68,17 @@ def _record_artifact(user_id, kind, s3_uri, conversation_id, config) -> Optional
         return None
 
 
+def _artifact_key(user_id: Optional[str], kind: str, ext: str) -> str:
+    return f"artifacts/{user_id or 'anon'}/{kind}/{uuid.uuid4().hex}.{ext}"
+
+
 # The shared tail of every render tool: upload the bytes to object storage, register the
 # ai.artifacts row, and return the artifact_ref {artifact_id, kind, s3_uri} the tool hands back.
 def _persist(
     data: bytes, kind: str, *, user_id, conversation_id, config
 ) -> dict[str, Any]:
     ext, content_type = _MEDIA[kind]
-    key = f"artifacts/{user_id or 'anon'}/{kind}/{uuid.uuid4().hex}.{ext}"
-    s3_uri = get_uploader(config).upload(data, key, content_type)
+    s3_uri = get_uploader(config).upload(data, _artifact_key(user_id, kind, ext), content_type)
     artifact_id = _record_artifact(user_id, kind, s3_uri, conversation_id, config)
     logger.info("render", extra={"kind": kind, "artifact_id": artifact_id})
     return ArtifactRef(artifact_id=artifact_id, kind=kind, s3_uri=s3_uri).model_dump(

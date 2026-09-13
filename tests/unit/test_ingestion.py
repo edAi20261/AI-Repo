@@ -997,3 +997,37 @@ def test_local_uploader_delete_prefix_scopes_to_lecture(tmp_path):
     assert not (tmp_path / "figures" / "lec-1").exists()
     assert (tmp_path / "figures" / "lec-2" / "p001_cc.png").exists()  # untouched
     assert up.delete_prefix("figures/lec-1/") == 0  # nothing left -> no-op
+
+
+def test_figure_keys_live_under_their_lecture_prefix():
+    from ingestion.utils.s3 import figure_key, figure_prefix
+
+    key = figure_key("lec-1", 3, b"crop")
+
+    assert figure_prefix("lec-1") == "figures/lec-1/"
+    assert key.startswith(figure_prefix("lec-1"))
+    assert key == figure_key("lec-1", 3, b"crop")
+
+
+def test_extract_continues_when_old_figures_cannot_be_cleared(tmp_path, caplog):
+    from ingestion.utils.s3 import StorageError
+
+    class _DenyingUploader:
+        def delete_prefix(self, prefix):
+            raise StorageError("AccessDenied")
+
+        def upload(self, data, key, content_type="image/png"):
+            return f"mem://{key}"
+
+    pdf_path = tmp_path / "lesson.pdf"
+    _make_pdf(pdf_path)
+    ctx = PipelineContext.build(Config.load())
+    ctx.vision = StubVisionClient()
+    ctx.uploader = _DenyingUploader()
+    st = new_state(lecture_id="l", subject_id="s", source_uri=pdf_path.resolve().as_uri())
+
+    with caplog.at_level("WARNING", logger="ingestion.stages.extract"):
+        result = run_extract(st, ctx)
+
+    assert result["stats"]["extract"]
+    assert "could not be cleared" in caplog.text
