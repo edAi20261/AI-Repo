@@ -555,6 +555,17 @@ def test_require_llm_in_prod_fails_without_key(monkeypatch):
     gmod._require_llm_in_prod(_Cfg())            # dev env -> allowed (stub path)
 
 
+def test_shipped_config_starts_in_production_with_openrouter_key(monkeypatch):
+    from agent.graph import graph as gmod
+    from shared.config import Config
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+
+    gmod._require_llm_in_prod(Config.load())
+
+
 def test_explain_sg_degrades_on_llm_failure(monkeypatch):
     # A runtime LLM failure -> a friendly message, no stub text, no citations.
     from agent.graph.subgraphs.explain_summarize_sg import build_explain_sg
