@@ -1,0 +1,1628 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "EduAI AI Service",
+        "description": "\nService-to-service API over the EduAI runtime agent and ingestion pipeline.\n\nNot public: the platform backend authenticates the end user, then calls this\nservice with the shared `x-service-token` secret.\n",
+        "version": "1.0.0"
+    },
+    "paths": {
+        "/health": {
+            "get": {
+                "tags": [
+                    "health"
+                ],
+                "summary": "Liveness probe",
+                "operationId": "health_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/ready": {
+            "get": {
+                "tags": [
+                    "health"
+                ],
+                "summary": "Readiness probe",
+                "operationId": "ready_ready_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ReadinessResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/ai/chat": {
+            "post": {
+                "tags": [
+                    "chat"
+                ],
+                "summary": "Answer a message from the syllabus",
+                "operationId": "chat_ai_chat_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChatRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChatResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ]
+            }
+        },
+        "/ai/chat/stream": {
+            "post": {
+                "tags": [
+                    "chat"
+                ],
+                "summary": "Answer a message, streaming stage-by-stage progress",
+                "description": "Server-sent events: a ``progress`` event per graph stage, then one\n``result`` event carrying the same body as ``POST /ai/chat``.",
+                "operationId": "chat_stream_ai_chat_stream_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChatRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response"
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ]
+            }
+        },
+        "/ai/grade": {
+            "post": {
+                "tags": [
+                    "grading"
+                ],
+                "summary": "Grade submitted answers",
+                "operationId": "grade_ai_grade_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/GradeRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GradeResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ]
+            }
+        },
+        "/ai/reports/{user_id}": {
+            "get": {
+                "tags": [
+                    "reports"
+                ],
+                "summary": "Build a student's progress report",
+                "operationId": "student_report_ai_reports__user_id__get",
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "User Id"
+                        }
+                    },
+                    {
+                        "name": "subject_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Scopes the report to one subject.",
+                            "title": "Subject Id"
+                        },
+                        "description": "Scopes the report to one subject."
+                    },
+                    {
+                        "name": "lecture_ids",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Scopes it to specific lessons.",
+                            "title": "Lecture Ids"
+                        },
+                        "description": "Scopes it to specific lessons."
+                    },
+                    {
+                        "name": "language",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "enum": [
+                                        "ar",
+                                        "en",
+                                        "fr",
+                                        "de"
+                                    ],
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Language"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ReportResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/ai/ingest": {
+            "post": {
+                "tags": [
+                    "ingestion"
+                ],
+                "summary": "Queue a lesson for ingestion",
+                "operationId": "submit_ai_ingest_post",
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/IngestionRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IngestionJobResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "get": {
+                "tags": [
+                    "ingestion"
+                ],
+                "summary": "List recent ingestion jobs",
+                "operationId": "list_jobs_ai_ingest_get",
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 200,
+                            "minimum": 1,
+                            "default": 50,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/IngestionJobResponse"
+                                    },
+                                    "title": "Response List Jobs Ai Ingest Get"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/ai/ingest/lesson": {
+            "post": {
+                "tags": [
+                    "ingestion"
+                ],
+                "summary": "Queue a lesson by platform lesson id",
+                "description": "The platform's trigger, fired when a lesson is published.",
+                "operationId": "submit_lesson_ai_ingest_lesson_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/LessonIngestionRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "202": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IngestionJobResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ]
+            }
+        },
+        "/ai/ingest/{job_id}": {
+            "get": {
+                "tags": [
+                    "ingestion"
+                ],
+                "summary": "Read one job",
+                "operationId": "get_job_ai_ingest__job_id__get",
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Job Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IngestionJobResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/ai/ingest/lectures/{lecture_id}": {
+            "get": {
+                "tags": [
+                    "ingestion"
+                ],
+                "summary": "Read the latest job for a lecture",
+                "operationId": "get_lecture_job_ai_ingest_lectures__lecture_id__get",
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "lecture_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Lecture Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IngestionJobResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid service token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Request failed validation",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unexpected error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorEnvelope"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "ChatRequest": {
+                "properties": {
+                    "user_id": {
+                        "type": "string",
+                        "title": "User Id",
+                        "description": "Platform user id; scopes mastery reads and writes."
+                    },
+                    "user_type": {
+                        "type": "string",
+                        "enum": [
+                            "student",
+                            "teacher",
+                            "parent"
+                        ],
+                        "title": "User Type",
+                        "description": "Determines the allowed tasks and the voice."
+                    },
+                    "message": {
+                        "type": "string",
+                        "maxLength": 8000,
+                        "minLength": 1,
+                        "title": "Message"
+                    },
+                    "subject_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Subject Id",
+                        "description": "Scopes retrieval. Inferred from the message when omitted."
+                    },
+                    "lecture_ids": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Lecture Ids",
+                        "description": "Narrows retrieval to specific lessons."
+                    },
+                    "session_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Session Id",
+                        "description": "Conversation id; also the ephemeral upload namespace."
+                    },
+                    "grade": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Grade",
+                        "description": "Academic year level, e.g. 'g8'."
+                    },
+                    "grade_ref": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/GradeReference"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Set when the turn grades a saved assessment."
+                    },
+                    "language": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "enum": [
+                                    "ar",
+                                    "en",
+                                    "fr",
+                                    "de"
+                                ]
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Language",
+                        "description": "Overrides the language detected from the message."
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "user_id",
+                    "user_type",
+                    "message"
+                ],
+                "title": "ChatRequest"
+            },
+            "ChatResponse": {
+                "properties": {
+                    "request_id": {
+                        "type": "string",
+                        "title": "Request Id"
+                    },
+                    "response": {
+                        "type": "string",
+                        "title": "Response",
+                        "description": "The composed reply, with inline citations."
+                    },
+                    "language": {
+                        "type": "string",
+                        "title": "Language"
+                    },
+                    "pathway": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Pathway"
+                    },
+                    "tasks": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Tasks",
+                        "description": "Tasks the planner selected."
+                    },
+                    "visuals": {
+                        "items": {
+                            "$ref": "#/components/schemas/Visual"
+                        },
+                        "type": "array",
+                        "title": "Visuals"
+                    },
+                    "assessment": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Assessment"
+                    },
+                    "grade_result": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Grade Result"
+                    },
+                    "prereq_topics": {
+                        "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        },
+                        "type": "array",
+                        "title": "Prereq Topics"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "request_id",
+                    "response",
+                    "language"
+                ],
+                "title": "ChatResponse"
+            },
+            "ErrorDetail": {
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "title": "Code"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "request_id": {
+                        "type": "string",
+                        "title": "Request Id",
+                        "default": ""
+                    },
+                    "details": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Details"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "code",
+                    "message"
+                ],
+                "title": "ErrorDetail"
+            },
+            "ErrorEnvelope": {
+                "properties": {
+                    "error": {
+                        "$ref": "#/components/schemas/ErrorDetail"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "error"
+                ],
+                "title": "ErrorEnvelope",
+                "description": "The body of every non-2xx response."
+            },
+            "GradeReference": {
+                "properties": {
+                    "assessment_id": {
+                        "type": "string",
+                        "title": "Assessment Id"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "quiz",
+                            "homework"
+                        ],
+                        "title": "Kind"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "assessment_id",
+                    "kind"
+                ],
+                "title": "GradeReference",
+                "description": "Points a grading turn at a saved assessment so its answer key is used."
+            },
+            "GradeRequest": {
+                "properties": {
+                    "user_id": {
+                        "type": "string",
+                        "title": "User Id",
+                        "description": "Whose mastery this grading moves."
+                    },
+                    "submissions": {
+                        "items": {
+                            "$ref": "#/components/schemas/Submission"
+                        },
+                        "type": "array",
+                        "maxItems": 200,
+                        "minItems": 1,
+                        "title": "Submissions"
+                    },
+                    "subject_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Subject Id"
+                    },
+                    "lecture_ids": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Lecture Ids"
+                    },
+                    "kind": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "enum": [
+                                    "quiz",
+                                    "homework"
+                                ]
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Kind"
+                    },
+                    "assessment_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Assessment Id",
+                        "description": "Fetches the stored rubric for this assessment."
+                    },
+                    "source": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "enum": [
+                                    "practice",
+                                    "quiz",
+                                    "homework",
+                                    "uploaded"
+                                ]
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Source"
+                    },
+                    "language": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "enum": [
+                                    "ar",
+                                    "en",
+                                    "fr",
+                                    "de"
+                                ]
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Language"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "user_id",
+                    "submissions"
+                ],
+                "title": "GradeRequest"
+            },
+            "GradeResponse": {
+                "properties": {
+                    "request_id": {
+                        "type": "string",
+                        "title": "Request Id"
+                    },
+                    "graded": {
+                        "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        },
+                        "type": "array",
+                        "title": "Graded"
+                    },
+                    "summary": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Summary"
+                    },
+                    "mastery_events": {
+                        "type": "integer",
+                        "title": "Mastery Events",
+                        "default": 0
+                    },
+                    "topics_updated": {
+                        "type": "integer",
+                        "title": "Topics Updated",
+                        "default": 0
+                    },
+                    "source": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Source"
+                    },
+                    "degraded": {
+                        "type": "boolean",
+                        "title": "Degraded",
+                        "description": "True when the model failed and output is a safe fallback.",
+                        "default": false
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "request_id"
+                ],
+                "title": "GradeResponse"
+            },
+            "HealthResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "title": "Status",
+                        "default": "ok"
+                    },
+                    "environment": {
+                        "type": "string",
+                        "title": "Environment"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "environment"
+                ],
+                "title": "HealthResponse"
+            },
+            "IngestionJobResponse": {
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "title": "Job Id"
+                    },
+                    "lecture_id": {
+                        "type": "string",
+                        "title": "Lecture Id"
+                    },
+                    "subject_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Subject Id"
+                    },
+                    "status": {
+                        "type": "string",
+                        "title": "Status"
+                    },
+                    "ingestion_status": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Ingestion Status"
+                    },
+                    "stats": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Stats"
+                    },
+                    "errors": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Errors"
+                    },
+                    "submitted_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Submitted At"
+                    },
+                    "started_at": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Started At"
+                    },
+                    "finished_at": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "format": "date-time"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Finished At"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "job_id",
+                    "lecture_id",
+                    "status",
+                    "submitted_at"
+                ],
+                "title": "IngestionJobResponse"
+            },
+            "IngestionRequest": {
+                "properties": {
+                    "lecture_id": {
+                        "type": "string",
+                        "title": "Lecture Id",
+                        "description": "Platform lesson id; also the pipeline's lecture id."
+                    },
+                    "subject_id": {
+                        "type": "string",
+                        "title": "Subject Id"
+                    },
+                    "source_uri": {
+                        "type": "string",
+                        "title": "Source Uri",
+                        "description": "file:// or s3:// URI of the lesson PDF."
+                    },
+                    "grade": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Grade"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "title": "Namespace",
+                        "default": "syllabus"
+                    },
+                    "version": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "title": "Version",
+                        "default": 1
+                    },
+                    "subject_is_math": {
+                        "type": "boolean",
+                        "title": "Subject Is Math",
+                        "description": "Routes every page through vision; maths flattens under text extraction.",
+                        "default": false
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "lecture_id",
+                    "subject_id",
+                    "source_uri"
+                ],
+                "title": "IngestionRequest"
+            },
+            "LessonIngestionRequest": {
+                "properties": {
+                    "lesson_id": {
+                        "type": "string",
+                        "title": "Lesson Id",
+                        "description": "Platform lesson id; resolved to source and subject."
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "lesson_id"
+                ],
+                "title": "LessonIngestionRequest",
+                "description": "The platform's trigger: it knows the lesson, we resolve the rest."
+            },
+            "ReadinessResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "title": "Status"
+                    },
+                    "environment": {
+                        "type": "string",
+                        "title": "Environment"
+                    },
+                    "graph_ready": {
+                        "type": "boolean",
+                        "title": "Graph Ready"
+                    },
+                    "in_flight": {
+                        "type": "integer",
+                        "title": "In Flight"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "status",
+                    "environment",
+                    "graph_ready",
+                    "in_flight"
+                ],
+                "title": "ReadinessResponse"
+            },
+            "ReportResponse": {
+                "properties": {
+                    "request_id": {
+                        "type": "string",
+                        "title": "Request Id"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "title": "Scope",
+                        "default": "student_progress"
+                    },
+                    "available": {
+                        "type": "boolean",
+                        "title": "Available",
+                        "description": "False when there is not yet enough graded work."
+                    },
+                    "narrative": {
+                        "type": "string",
+                        "title": "Narrative",
+                        "default": ""
+                    },
+                    "weak_topics": {
+                        "items": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        },
+                        "type": "array",
+                        "title": "Weak Topics"
+                    },
+                    "root_cause": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Root Cause"
+                    },
+                    "trend": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Trend"
+                    },
+                    "visual": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/Visual"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Rendered trend chart, when available."
+                    },
+                    "degraded": {
+                        "type": "boolean",
+                        "title": "Degraded",
+                        "default": false
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "request_id",
+                    "available"
+                ],
+                "title": "ReportResponse"
+            },
+            "Submission": {
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "minLength": 1,
+                        "title": "Question"
+                    },
+                    "student_answer": {
+                        "type": "string",
+                        "title": "Student Answer"
+                    },
+                    "correct_answer": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Correct Answer",
+                        "description": "Reference answer; used ahead of the syllabus when present."
+                    },
+                    "question_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Question Id"
+                    },
+                    "topic_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Topic Id"
+                    },
+                    "lecture_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Lecture Id"
+                    },
+                    "type": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "enum": [
+                                    "mcq",
+                                    "true_false",
+                                    "short_answer",
+                                    "essay"
+                                ]
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Type"
+                    },
+                    "difficulty": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "enum": [
+                                    "easy",
+                                    "medium",
+                                    "hard"
+                                ]
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Difficulty"
+                    },
+                    "bloom": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Bloom"
+                    },
+                    "points": {
+                        "anyOf": [
+                            {
+                                "type": "number",
+                                "minimum": 0.0
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Points"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "question",
+                    "student_answer"
+                ],
+                "title": "Submission"
+            },
+            "Visual": {
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "title": "Kind"
+                    },
+                    "artifact_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Artifact Id"
+                    },
+                    "s3_uri": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "S3 Uri"
+                    },
+                    "cards": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "additionalProperties": true,
+                                    "type": "object"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Cards"
+                    },
+                    "text": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Text"
+                    },
+                    "figure_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Figure Id"
+                    },
+                    "caption": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Caption"
+                    },
+                    "item_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Item Id"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "kind"
+                ],
+                "title": "Visual",
+                "description": "A rendered study visual. Only the fields relevant to ``kind`` are present."
+            }
+        },
+        "securitySchemes": {
+            "APIKeyHeader": {
+                "type": "apiKey",
+                "description": "Shared secret (AI_WEBHOOK_SHARED_SECRET). The platform backend sends this on every call; it is the same secret this service sends back.",
+                "in": "header",
+                "name": "x-service-token"
+            }
+        }
+    }
+}

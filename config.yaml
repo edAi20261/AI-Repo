@@ -3,8 +3,8 @@
 
 llm:
   # Default chat model. Provider + model move the whole system.
-  provider: anthropic            # anthropic | openai | google | azure | local | openrouter
-  model: claude-sonnet-5
+  provider: openrouter           # anthropic | openai | google | azure | local | openrouter
+  model: google/gemini-2.5-flash
   temperature: 0.2
   max_tokens: 4096
   timeout_seconds: 60
@@ -197,6 +197,9 @@ image_gen:
   model: gpt-image-1
   size: "1024x1024"
 
+storage:
+  key_prefix: ai-artifacts
+
 mastery:
   # Difficulty-weighted EMA rollup (agent/mastery.py). alpha = weight of the newest
   # observation; difficulty scales it so harder items move mastery more. A topic
@@ -228,6 +231,19 @@ backend:
   # local fixtures manifest (or --fixtures).
   fixtures_path: null
 
+api:
+  # HTTP service (system/). Secrets stay in .env; everything tunable is here.
+  max_concurrency: 8           # concurrent graph invocations; each holds a worker thread
+  request_timeout: 120         # seconds a caller should allow for a chat turn
+  docs_enabled: true           # OpenAPI + /docs; off in production
+  cors_origins: []             # the platform backend calls this service, not a browser
+  ingestion:
+    max_workers: 2             # concurrent pipeline runs (each is minutes long and heavy)
+    job_retention: 500         # in-process job records kept for status polling
+    callback_enabled: true     # PATCH lesson ingestion_status back to the platform
+    callback_path: /lessons/{lesson_id}/ingestion   # platform contract (content.ingestion_status)
+
+
 logging:
   level: INFO
   format: json
@@ -244,12 +260,15 @@ environments:
     logging: { level: DEBUG, format: console }
     tracing: { enabled: true }
     vector_store: { collection: eduai_chunks_dev, topics_collection: eduai_topics_dev }   # keep dev index off prod
-    agent: { backend: { fixtures_path: data/samples/agent_fixtures.yaml, prefer_fixtures: true } }
+    # Local talks to the real backend when BACKEND_API_BASE_URL is set. For offline
+    # work, point fixtures_path at a manifest and flip prefer_fixtures.
+    agent: { backend: { fixtures_path: null, prefer_fixtures: false } }
 
   staging:
     tracing: { enabled: true }
 
   production:
+    api: { docs_enabled: false }
     logging: { level: WARNING }
     tracing: { enabled: true }
     llm: { max_retries: 5 }
