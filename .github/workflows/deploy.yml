@@ -11,6 +11,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: "postgresql://test:test@localhost:5432/test"
+      QDRANT_URL: ":memory:"
+      AI_WEBHOOK_SHARED_SECRET: "test-secret"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
