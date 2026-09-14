@@ -1009,6 +1009,46 @@ def test_figure_keys_live_under_their_lecture_prefix():
     assert key == figure_key("lec-1", 3, b"crop")
 
 
+def test_extract_downloads_a_signed_url_before_opening_it(tmp_path, monkeypatch):
+    """The platform hands the pipeline a presigned URL, not a local path."""
+    import httpx
+
+    pdf_path = tmp_path / "lesson.pdf"
+    _make_pdf(pdf_path)
+    body = pdf_path.read_bytes()
+
+    class _Response:
+        def __init__(self):
+            self.headers = {"content-length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self, chunk_size):
+            yield body
+
+    monkeypatch.setattr(httpx, "stream", lambda method, url, **kwargs: _Response())
+
+    ctx = PipelineContext.build(Config.load())
+    ctx.vision = StubVisionClient()
+    st = new_state(
+        lecture_id="l",
+        subject_id="s",
+        source_uri="https://bucket.s3.amazonaws.com/uploads/lesson.pdf?X-Amz-Signature=abc",
+    )
+
+    result = run_extract(st, ctx)
+
+    assert result["stats"]["extract"]["pages"] == 1
+    assert result["elements"]
+
+
 def test_extract_continues_when_old_figures_cannot_be_cleared(tmp_path, caplog):
     from ingestion.utils.s3 import StorageError
 

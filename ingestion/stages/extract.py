@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from typing import Any
 
 from ..context import PipelineContext
 from ..state import Element, Figure, IngestionState, PageResult
 from ..utils import is_garbage, normalise_text
 from ..utils import pdf
 from ..utils.s3 import StorageError, figure_key, figure_prefix
+from ..utils.source import materialise
 
 try:
     from langdetect import DetectorFactory, detect
@@ -29,6 +31,16 @@ logger = logging.getLogger(__name__)
 
 
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    """Extract one lesson, fetching its source first when it is not already local."""
+    with materialise(state["source_uri"], ctx.config) as source_path:
+        doc = pdf.open_document(source_path)
+        try:
+            return _extract(state, ctx, doc)
+        finally:
+            doc.close()
+
+
+def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> IngestionState:
     cfg = ctx.config
     ing = cfg.ingestion
     ocr = ing.get("ocr", {})
@@ -39,9 +51,6 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     min_chars = ocr.get("min_chars_per_page", 40)
     render_dpi = ocr.get("render_dpi", 300)
     vision_enabled = ocr.get("engine") == "vision"
-
-    source_path = _local_path(state["source_uri"])
-    doc = pdf.open_document(source_path)
 
     # Re-ingest housekeeping: drop this lecture's prior figure objects so the run
     # leaves exactly the figures it produces. Keys are content-addressed, so a
@@ -183,8 +192,6 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
                 elements=page_elems,
             )
         )
-
-    doc.close()
 
     state["pages"] = pages
     state["elements"] = elements
@@ -499,18 +506,3 @@ def _language(text: str, default: str, supported: tuple[str, ...]) -> str:
     except Exception:
         return default
     return code if code in supported else default
-
-
-def _local_path(source_uri: str) -> str:
-    """Resolve a source URI to a local path. S3 fetch-to-temp is not wired yet;
-    a plain path or file:// URI is used directly."""
-    if source_uri.startswith("file://"):
-        from urllib.parse import urlparse
-        from urllib.request import url2pathname
-
-        return url2pathname(urlparse(source_uri).path)
-    if source_uri.startswith("s3://"):
-        raise NotImplementedError(
-            "S3 fetch-to-temp not wired yet; pass a local path or file:// URI."
-        )
-    return source_uri
