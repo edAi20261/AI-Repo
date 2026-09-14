@@ -71,6 +71,7 @@ def _run_one_resolved(
         lecture_id=src.lesson_id,
         subject_id=src.subject_id,
         source_uri=src.source_uri,
+        source_text=src.text_content,
         grade=src.grade,
         subject_name=src.subject_name,
         lesson_title=src.lesson_title,

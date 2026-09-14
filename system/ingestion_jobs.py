@@ -204,6 +204,7 @@ class IngestionJobManager:
             lecture_id=source.lesson_id,
             subject_id=source.subject_id,
             source_uri=source.source_uri,
+            source_text=source.text_content,
             grade=source.grade,
             subject_name=source.subject_name,
             lesson_title=source.lesson_title,

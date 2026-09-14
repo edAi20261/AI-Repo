@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from typing import Any
 
 from ..context import PipelineContext
 from ..state import Element, Figure, IngestionState, PageResult
 from ..utils import is_garbage, normalise_text
 from ..utils import pdf
+from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
+from ..utils.source import materialise
 
 try:
     from langdetect import DetectorFactory, detect
@@ -29,6 +32,19 @@ logger = logging.getLogger(__name__)
 
 
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    """Extract one lesson from its body text, or from its file once fetched."""
+    if state.get("source_text"):
+        return _extract_body_text(state, ctx)
+
+    with materialise(state["source_uri"], ctx.config) as source_path:
+        doc = pdf.open_document(source_path)
+        try:
+            return _extract(state, ctx, doc)
+        finally:
+            doc.close()
+
+
+def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> IngestionState:
     cfg = ctx.config
     ing = cfg.ingestion
     ocr = ing.get("ocr", {})
@@ -39,9 +55,6 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     min_chars = ocr.get("min_chars_per_page", 40)
     render_dpi = ocr.get("render_dpi", 300)
     vision_enabled = ocr.get("engine") == "vision"
-
-    source_path = _local_path(state["source_uri"])
-    doc = pdf.open_document(source_path)
 
     # Re-ingest housekeeping: drop this lecture's prior figure objects so the run
     # leaves exactly the figures it produces. Keys are content-addressed, so a
@@ -184,8 +197,6 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
             )
         )
 
-    doc.close()
-
     state["pages"] = pages
     state["elements"] = elements
     state["figures"] = figures
@@ -211,6 +222,59 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+
+def _extract_body_text(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    """Lessons authored in the platform editor: the body text is the whole source."""
+    cfg = ctx.config
+    norm = cfg.ingestion.get("normalise", {})
+    supported = tuple(cfg.get("language.supported", ["ar", "en"]))
+    default_lang = state.get("language_hint") or cfg.get("language.default", "en")
+
+    blocks = to_blocks(state["source_text"] or "")
+    elements = [
+        Element(
+            text=text,
+            page=1,
+            is_heading=block.is_heading,
+            level=block.level,
+            route="text",
+            language=_language(text, default_lang, supported),
+        )
+        for block in blocks
+        if (text := _norm(block.text, norm))
+    ]
+
+    language = elements[0].language if elements else default_lang
+    char_count = sum(len(el.text) for el in elements)
+    state["pages"] = [
+        PageResult(
+            number=1,
+            route="text",
+            language=language or default_lang,
+            char_count=char_count,
+            elements=elements,
+        )
+    ]
+    state["elements"] = elements
+    state["figures"] = []
+    state.setdefault("stats", {})["extract"] = {
+        "pages": 1,
+        "text": 1,
+        "elements": len(elements),
+        "characters": char_count,
+        "ingestion_status": state.get("ingestion_status"),
+    }
+    if not elements:
+        state["ingestion_status"] = "needs_review"
+        state.setdefault("errors", []).append(
+            "lesson body text held no readable content after parsing"
+        )
+    logger.info(
+        "extracted body text",
+        extra={"lecture_id": state["lecture_id"], "elements": len(elements)},
+    )
+    return state
+
 
 def _clear_previous_figures(ctx: PipelineContext, lecture_id: str) -> None:
     try:
@@ -499,18 +563,3 @@ def _language(text: str, default: str, supported: tuple[str, ...]) -> str:
     except Exception:
         return default
     return code if code in supported else default
-
-
-def _local_path(source_uri: str) -> str:
-    """Resolve a source URI to a local path. S3 fetch-to-temp is not wired yet;
-    a plain path or file:// URI is used directly."""
-    if source_uri.startswith("file://"):
-        from urllib.parse import urlparse
-        from urllib.request import url2pathname
-
-        return url2pathname(urlparse(source_uri).path)
-    if source_uri.startswith("s3://"):
-        raise NotImplementedError(
-            "S3 fetch-to-temp not wired yet; pass a local path or file:// URI."
-        )
-    return source_uri

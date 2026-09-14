@@ -72,6 +72,10 @@ vector_store:
     ef_search: 128
 
 ingestion:
+  source:
+    timeout_seconds: 120
+    max_bytes: 209715200
+    chunk_bytes: 1048576
   chunk:
     target_tokens: 650
     min_tokens: 400
