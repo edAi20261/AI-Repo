@@ -27,6 +27,7 @@ from shared.logging import setup_logging
 from . import get_backend_client, get_config, new_state, resolve_lesson, run_ingestion
 from .backend import BackendClient, LessonSource
 from .context import PipelineContext
+from .utils.grades import to_platform_grade
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def _run_direct(args, config) -> int:
         lecture_id=args.lecture_id,
         subject_id=args.subject_id,
         source_uri=_to_uri(args.source),
-        grade=args.grade,
+        grade=to_platform_grade(args.grade),
         namespace=args.namespace,
         version=args.version,
         subject_is_math=args.subject_is_math,

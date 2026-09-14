@@ -643,6 +643,21 @@ def test_discipline_derivation_from_name_code():
     assert discipline_of({"discipline": "bogus"}) is Discipline.OTHER
 
 
+def test_grade_labels_normalise_to_the_platform_enum():
+    """The API serialises the enum by name, the column stores its value."""
+    from ingestion.utils.grades import to_platform_grade
+
+    assert to_platform_grade("GRADE_7") == "Grade 7"
+    assert to_platform_grade("Grade 7") == "Grade 7"
+    assert to_platform_grade("g8") == "Grade 8"
+    assert to_platform_grade("12") == "Grade 12"
+    assert to_platform_grade("year 3") == "Grade 3"
+    assert to_platform_grade(None) is None
+    assert to_platform_grade("") is None
+    assert to_platform_grade("KG1") is None
+    assert to_platform_grade("GRADE_13") is None
+
+
 def test_fixture_backend_resolves_lesson(tmp_path):
     manifest = _write_fixture(tmp_path)
     client = FixtureBackendClient(manifest)
@@ -650,7 +665,7 @@ def test_fixture_backend_resolves_lesson(tmp_path):
     assert client.list_pending_lesson_ids() == ["lesson-1"]
     src = resolve_lesson(client, "lesson-1")
     assert src.subject_id == "subj-1"
-    assert src.grade == "g8" and src.language == "en"
+    assert src.grade == "Grade 8" and src.language == "en"
     assert src.discipline is Discipline.MATH
     assert src.subject_is_math is True
     assert src.source_uri.startswith("file://") and src.source_uri.endswith("lesson.pdf")
