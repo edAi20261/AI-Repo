@@ -25,7 +25,7 @@ class Discipline(str, Enum):
 
 # How a page's text was recovered, set by the extract routing:
 # "digital" = PyMuPDF; "scanned"/"math" = render + vision.
-PageRoute = Literal["digital", "scanned", "math"]
+PageRoute = Literal["digital", "scanned", "math", "text"]
 
 
 @dataclass
@@ -130,7 +130,8 @@ class IngestionState(TypedDict, total=False):
     subject_name: Optional[str]   # readable citation labels (payload only)
     lesson_title: Optional[str]
     lesson_order: Optional[int]
-    source_uri: str          # S3 or local URI
+    source_uri: str          # S3 or local URI; empty when the lesson body is the source
+    source_text: Optional[str]    # content.lessons.text_content, when there is no file
     namespace: str           # "syllabus" for permanent content; session_* for TTL
     version: int             # bumped on re-ingestion
     language_hint: Optional[str]
@@ -152,7 +153,8 @@ def new_state(
     *,
     lecture_id: str,
     subject_id: str,
-    source_uri: str,
+    source_uri: str = "",
+    source_text: Optional[str] = None,
     grade: Optional[str] = None,
     subject_name: Optional[str] = None,
     lesson_title: Optional[str] = None,
@@ -163,6 +165,8 @@ def new_state(
     subject_is_math: bool = False,
 ) -> IngestionState:
     """Build a fresh state for one lesson with its lists initialised empty."""
+    if not source_uri and not source_text:
+        raise ValueError("a lesson needs either a source_uri or source_text to ingest")
     return IngestionState(
         lecture_id=lecture_id,
         subject_id=subject_id,
@@ -171,6 +175,7 @@ def new_state(
         lesson_title=lesson_title,
         lesson_order=lesson_order,
         source_uri=source_uri,
+        source_text=source_text,
         namespace=namespace,
         version=version,
         language_hint=language_hint,

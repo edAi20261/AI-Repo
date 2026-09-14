@@ -143,6 +143,11 @@ def get_uploader(config: Config) -> Uploader:
     )
 
 
+def s3_client(config: Config) -> Any:
+    """An S3 client built from the service's configured region and endpoint."""
+    return _s3_client(config.secret("S3_REGION"), config.secret("S3_ENDPOINT_URL"))
+
+
 def _s3_client(region: str | None, endpoint_url: str | None) -> Any:
     import boto3
 
