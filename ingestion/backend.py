@@ -32,6 +32,7 @@ class LessonSource:
     subject_name: Optional[str] = None
     lesson_title: Optional[str] = None
     lesson_order: Optional[int] = None
+    text_content: Optional[str] = None   # set instead of source_uri for body-text lessons
 
     @property
     def subject_is_math(self) -> bool:
@@ -208,10 +209,11 @@ def resolve_lesson(client: BackendClient, lesson_id: str) -> LessonSource:
     """Resolve a lesson id to a :class:`LessonSource` the pipeline can run."""
     lesson = client.get_lesson(lesson_id)
     subject = client.get_subject(lesson["subject_id"])
-    source_uri = client.get_media_url(_source_media_id(lesson))
+    text_content, media_id = _ingestible_source(lesson)
     return LessonSource(
         lesson_id=lesson_id,
-        source_uri=source_uri,
+        source_uri="" if media_id is None else client.get_media_url(media_id),
+        text_content=text_content,
         subject_id=lesson["subject_id"],
         grade=subject.get("grade_level"),
         language=subject.get("language"),
@@ -222,15 +224,31 @@ def resolve_lesson(client: BackendClient, lesson_id: str) -> LessonSource:
     )
 
 
-def _source_media_id(lesson: dict[str, Any]) -> str:
-    """Media id of the file to ingest. Which lesson field is the canonical source
-    is an unsettled backend question; the first attachment is used."""
+def _ingestible_source(lesson: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """The lesson's source as ``(text_content, media_id)`` — exactly one is set.
+
+    The platform computes ``ingestible_source`` for this pipeline: body text wins
+    over attachments, and the first attachment by order wins among files. Lessons
+    served by older backends and by the fixture manifest carry no such field, so
+    the attachment list is still honoured.
+    """
+    declared = lesson.get("ingestible_source") or {}
+    kind = declared.get("type")
+    if kind == "text_content":
+        text = lesson.get("text_content")
+        if text and text.strip():
+            return text, None
+        raise ValueError(f"lesson {lesson.get('id')!r} declares body text but has none")
+    if kind == "attachment" and declared.get("media_id"):
+        return None, declared["media_id"]
+
     attachments = lesson.get("attachments") or []
     if attachments:
-        return attachments[0]["media_id"]
-    if lesson.get("primary_video_media_id"):
-        return lesson["primary_video_media_id"]
-    raise ValueError(f"lesson {lesson.get('id')!r} has no ingestible source media")
+        return None, attachments[0]["media_id"]
+    text = lesson.get("text_content")
+    if text and text.strip():
+        return text, None
+    raise ValueError(f"lesson {lesson.get('id')!r} has no ingestible source")
 
 
 # Deriving discipline from subject name/code (AR + EN keyword substrings).

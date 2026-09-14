@@ -18,6 +18,7 @@ from ..context import PipelineContext
 from ..state import Element, Figure, IngestionState, PageResult
 from ..utils import is_garbage, normalise_text
 from ..utils import pdf
+from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
 from ..utils.source import materialise
 
@@ -31,7 +32,10 @@ logger = logging.getLogger(__name__)
 
 
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
-    """Extract one lesson, fetching its source first when it is not already local."""
+    """Extract one lesson from its body text, or from its file once fetched."""
+    if state.get("source_text"):
+        return _extract_body_text(state, ctx)
+
     with materialise(state["source_uri"], ctx.config) as source_path:
         doc = pdf.open_document(source_path)
         try:
@@ -218,6 +222,59 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+
+def _extract_body_text(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    """Lessons authored in the platform editor: the body text is the whole source."""
+    cfg = ctx.config
+    norm = cfg.ingestion.get("normalise", {})
+    supported = tuple(cfg.get("language.supported", ["ar", "en"]))
+    default_lang = state.get("language_hint") or cfg.get("language.default", "en")
+
+    blocks = to_blocks(state["source_text"] or "")
+    elements = [
+        Element(
+            text=text,
+            page=1,
+            is_heading=block.is_heading,
+            level=block.level,
+            route="text",
+            language=_language(text, default_lang, supported),
+        )
+        for block in blocks
+        if (text := _norm(block.text, norm))
+    ]
+
+    language = elements[0].language if elements else default_lang
+    char_count = sum(len(el.text) for el in elements)
+    state["pages"] = [
+        PageResult(
+            number=1,
+            route="text",
+            language=language or default_lang,
+            char_count=char_count,
+            elements=elements,
+        )
+    ]
+    state["elements"] = elements
+    state["figures"] = []
+    state.setdefault("stats", {})["extract"] = {
+        "pages": 1,
+        "text": 1,
+        "elements": len(elements),
+        "characters": char_count,
+        "ingestion_status": state.get("ingestion_status"),
+    }
+    if not elements:
+        state["ingestion_status"] = "needs_review"
+        state.setdefault("errors", []).append(
+            "lesson body text held no readable content after parsing"
+        )
+    logger.info(
+        "extracted body text",
+        extra={"lecture_id": state["lecture_id"], "elements": len(elements)},
+    )
+    return state
+
 
 def _clear_previous_figures(ctx: PipelineContext, lecture_id: str) -> None:
     try:

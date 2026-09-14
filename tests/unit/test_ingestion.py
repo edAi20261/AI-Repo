@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from ingestion.config import Config
 from ingestion.extractors import LLMDependencyDeriver, LLMTopicExtractor
 from ingestion.llm_provider import (
@@ -642,6 +644,110 @@ def test_fixture_backend_resolves_lesson(tmp_path):
     assert src.source_uri.startswith("file://") and src.source_uri.endswith("lesson.pdf")
 
 
+def test_resolver_uses_the_platform_declared_body_text(tmp_path):
+    """A text-only lesson has no media at all; the body text is the source."""
+
+    class _TextLessonClient(FixtureBackendClient):
+        def get_lesson(self, lesson_id):
+            return {
+                "id": lesson_id,
+                "subject_id": "subj-1",
+                "text_content": "# Lab Safety\n\nWear goggles.",
+                "attachments": [],
+                "ingestible_source": {"type": "text_content", "media_id": None},
+            }
+
+        def get_media_url(self, media_id):
+            raise AssertionError("a text-only lesson must not ask for a media URL")
+
+    src = resolve_lesson(_TextLessonClient(_write_fixture(tmp_path)), "lesson-9")
+
+    assert src.text_content.startswith("# Lab Safety")
+    assert src.source_uri == ""
+
+
+def test_resolver_uses_the_platform_declared_attachment(tmp_path):
+    """With an attachment declared, the media URL is resolved as before."""
+
+    class _AttachmentLessonClient(FixtureBackendClient):
+        def get_lesson(self, lesson_id):
+            return {
+                "id": lesson_id,
+                "subject_id": "subj-1",
+                "text_content": None,
+                "attachments": [{"media_id": "media-2"}, {"media_id": "media-3"}],
+                "ingestible_source": {"type": "attachment", "media_id": "media-2"},
+            }
+
+        def get_media_url(self, media_id):
+            return f"https://signed.example/{media_id}.pdf?X-Amz-Signature=abc"
+
+    src = resolve_lesson(_AttachmentLessonClient(_write_fixture(tmp_path)), "lesson-9")
+
+    assert src.source_uri.startswith("https://signed.example/media-2.pdf")
+    assert src.text_content is None
+
+
+def test_resolver_falls_back_when_the_backend_declares_nothing(tmp_path):
+    """Fixtures and older backends send no ingestible_source; attachments still win."""
+
+    class _LegacyClient(FixtureBackendClient):
+        def __init__(self, manifest, lesson):
+            super().__init__(manifest)
+            self._lesson = lesson
+
+        def get_lesson(self, lesson_id):
+            return dict(self._lesson, id=lesson_id, subject_id="subj-1")
+
+        def get_media_url(self, media_id):
+            return f"file:///media/{media_id}.pdf"
+
+    manifest = _write_fixture(tmp_path)
+    with_file = _LegacyClient(manifest, {"attachments": [{"media_id": "m-1"}]})
+    with_text = _LegacyClient(manifest, {"attachments": [], "text_content": "Body only"})
+    with_nothing = _LegacyClient(manifest, {"attachments": [], "text_content": None})
+
+    assert resolve_lesson(with_file, "l").source_uri == "file:///media/m-1.pdf"
+    assert resolve_lesson(with_text, "l").text_content == "Body only"
+    with pytest.raises(ValueError, match="no ingestible source"):
+        resolve_lesson(with_nothing, "l")
+
+
+def test_extract_reads_a_lesson_body_without_any_file():
+    ctx = PipelineContext.build(Config.load())
+    st = new_state(
+        lecture_id="l",
+        subject_id="s",
+        source_text="<h1>Addition</h1><p>Combining quantities of objects.</p>",
+    )
+
+    result = run_extract(st, ctx)
+
+    assert [(e.text, e.is_heading) for e in result["elements"]] == [
+        ("Addition", True),
+        ("Combining quantities of objects.", False),
+    ]
+    assert result["figures"] == []
+    assert result["stats"]["extract"]["text"] == 1
+    assert result["pages"][0].route == "text"
+
+
+def test_extract_flags_a_lesson_whose_body_holds_no_content():
+    ctx = PipelineContext.build(Config.load())
+    st = new_state(lecture_id="l", subject_id="s", source_text="<p>&nbsp;</p>")
+
+    result = run_extract(st, ctx)
+
+    assert result["elements"] == []
+    assert result["ingestion_status"] == "needs_review"
+    assert result["errors"]
+
+
+def test_a_lesson_needs_a_source():
+    with pytest.raises(ValueError, match="source_uri or source_text"):
+        new_state(lecture_id="l", subject_id="s")
+
+
 def _has_httpx():
     try:
         import httpx  # noqa: F401
@@ -697,6 +803,48 @@ def test_resolver_pipeline_end_to_end(tmp_path):
         # completed into the dry-run index.
         assert result["stats"]["extract"]["math"] >= 1
         assert result["stats"]["extract"]["digital"] == 0
+        assert result["stats"]["index"]["points_upserted"] >= 1
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_body_text_lesson_runs_end_to_end(tmp_path):
+    """A lesson with no file at all still reaches the index — Farah's bug 1."""
+    from ingestion.extractors import StubTopicExtractor
+
+    saved = {
+        k: os.environ.get(k)
+        for k in ("DATABASE_URL", "QDRANT_URL", "MOONSHOT_API_KEY",
+                  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")
+    }
+    try:
+        os.environ["DATABASE_URL"] = "postgresql+asyncpg://user:password@localhost"
+        os.environ["QDRANT_URL"] = "dryrun"
+        for k in ("MOONSHOT_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+            os.environ.pop(k, None)
+
+        cfg = Config.load()
+        cfg._data["embeddings"]["provider"] = "hash"
+        ctx = PipelineContext.build(cfg)
+        ctx._topic_extractor = StubTopicExtractor()
+
+        body = (
+            "<h1>Addition</h1>"
+            "<p>" + ("Addition combines two quantities into a single total. " * 20) + "</p>"
+            "<h2>Counting on</h2>"
+            "<p>" + ("Start from the larger number and count on. " * 20) + "</p>"
+        )
+        state = new_state(lecture_id="lesson-text", subject_id="subj-1", source_text=body)
+
+        result = run_ingestion(state, ctx=ctx, config=cfg)
+
+        assert result["stats"]["extract"]["text"] == 1
+        assert result["chunks"]
+        assert result["chunks"][0].heading_path
         assert result["stats"]["index"]["points_upserted"] >= 1
     finally:
         for k, v in saved.items():
