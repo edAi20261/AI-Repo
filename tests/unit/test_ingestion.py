@@ -383,6 +383,18 @@ def _dep(a, b):
     return Dependency(topic_id=a, prereq_topic_id=b)
 
 
+def test_dependency_strength_matches_the_platform_enum():
+    """ai.dependency_strength is (required, related) in the platform database."""
+    from ingestion.schemas import DEPENDENCY_STRENGTHS, DependencyItem
+
+    assert DEPENDENCY_STRENGTHS == {"required", "related"}
+    # A model reaching for another word lands on the nearest real value, not a default.
+    assert DependencyItem(prereq="p", strength="recommended").strength == "related"
+    assert DependencyItem(prereq="p", strength="Optional").strength == "related"
+    assert DependencyItem(prereq="p", strength="essential").strength == "required"
+    assert DependencyItem(prereq="p", strength="banana").strength == "required"
+
+
 def test_clean_drops_self_edges_and_duplicates():
     edges = [_dep("A", "A"), _dep("A", "B"), _dep("A", "B")]
     kept = _clean(edges, drop_self=True, max_out_degree=5, break_cycles=True)
@@ -431,7 +443,7 @@ def test_dependencies_stage_writes_edges():
     deriver = _FakeDeriver(
         {"solving equations": [
             {"prereq": "adding fractions", "strength": "required"},
-            {"prereq": "multiplying fractions", "strength": "recommended"},
+            {"prereq": "multiplying fractions", "strength": "recommended"},  # alias -> related
         ]}
     )
 
