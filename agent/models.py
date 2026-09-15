@@ -10,8 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, get_args
 
-from pydantic import (
-    BaseModel, Field, computed_field, field_validator, model_validator)
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 # The closed vocabularies, as Literal types (one source of truth). In a pydantic model a
 # Literal becomes an enum in the JSON schema, so structured output is constrained to valid
@@ -239,7 +238,7 @@ class ItemDraft(BaseModel):
     explanation: Optional[str] = Field(default=None, description="Why that answer is correct.")
 
     @model_validator(mode="after")
-    def _answerable(self) -> "ItemDraft":
+    def _answerable(self) -> ItemDraft:
         if self.type == "mcq":
             options = self.options or []
             if len(options) < 2:

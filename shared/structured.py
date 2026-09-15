@@ -16,7 +16,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Callable, Optional, Sequence, TypeVar
+from collections.abc import Callable, Sequence
+from typing import Any, Optional, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -160,7 +161,7 @@ def _reask(problem: str) -> str:
     return (
         "Your previous reply did not satisfy the request. Fix ONLY this and return "
         "the corrected JSON object — same shape, no prose, no code fence.\n\n"
-        f"- {problem}"
+        + f"- {problem}"
     )
 
 
@@ -273,17 +274,19 @@ def _feedback(error: Any, schema: type[BaseModel], raw_text: str) -> str:
     invites the same mistake again, while a named field with its permitted values
     is something a model can actually fix.
     """
-    lines = [
+    header = (
         "Your previous reply did not satisfy the required schema. Fix ONLY these "
         "fields and return the corrected JSON object — same shape, no prose, no "
-        "code fence.",
-        "",
-    ]
+        "code fence."
+    )
+    lines = [header, ""]
 
     problems = _problems(error, schema)
     if not problems:
-        problems = ["the reply was not a JSON object matching the schema; "
-                    "return the object described above and nothing else."]
+        problems = [
+            ("the reply was not a JSON object matching the schema; "
+             "return the object described above and nothing else.")
+        ]
     lines.extend(f"- {problem}" for problem in problems[:MAX_REPORTED_ERRORS])
     if len(problems) > MAX_REPORTED_ERRORS:
         lines.append(f"- (and {len(problems) - MAX_REPORTED_ERRORS} more)")

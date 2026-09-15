@@ -3,6 +3,8 @@ the chat model is forced off so nodes take their deterministic grounded path."""
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from agent import retrieval as rmod
@@ -667,8 +669,8 @@ def test_an_unreadable_plan_does_not_become_an_explain_task():
         def invoke(self, _msgs):
             class _Reply:
                 content = "Sure, I can help with that!"
-                additional_kwargs: dict = {}
-                response_metadata: dict = {}
+                additional_kwargs: ClassVar[dict] = {}
+                response_metadata: ClassVar[dict] = {}
             return _Reply()
 
     config = Config.load()

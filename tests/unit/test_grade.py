@@ -3,6 +3,8 @@ routing. No real LLM or DB: tools are monkeypatched."""
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from agent.config import get_config
@@ -207,8 +209,8 @@ def test_batch_grade_matches_answers_by_block_id():
 
 def test_batch_grade_refuses_to_guess_when_an_answer_is_missing():
     """A short reply used to be padded by position, grading the wrong question."""
-    from shared.structured import StructuredOutputError
     from agent.graph.subgraphs.grade_sg import _batch_grade
+    from shared.structured import StructuredOutputError
 
     llm = _BatchLLM('{"items": [{"id": "b1", "correct": true, "partial_score": 1}]}')
     with pytest.raises(StructuredOutputError):
@@ -217,8 +219,8 @@ def test_batch_grade_refuses_to_guess_when_an_answer_is_missing():
 
 def test_batch_grade_rejects_an_out_of_range_score():
     """The prompt promised [0,1]; only mastery clamped, so the student saw 5/1."""
-    from shared.structured import StructuredOutputError
     from agent.graph.subgraphs.grade_sg import _batch_grade
+    from shared.structured import StructuredOutputError
 
     llm = _BatchLLM('{"items": [{"id": "b1", "correct": true, "partial_score": 5}]}')
     with pytest.raises(StructuredOutputError):
@@ -375,8 +377,6 @@ def test_unparseable_grading_moves_no_mastery():
     from agent.graph.subgraphs.grade_sg import build_grade_sg
     from shared.config import Config
 
-    written: list = []
-
     class _Prose:
         """The real shape of the failure: schema decoding errors, and the model's
         actual reply is prose that no schema can be read out of."""
@@ -391,8 +391,8 @@ def test_unparseable_grading_moves_no_mastery():
         def invoke(self, _msgs):
             class _Reply:
                 content = "I'm afraid I can't mark these for you."
-                additional_kwargs: dict = {}
-                response_metadata: dict = {}
+                additional_kwargs: ClassVar[dict] = {}
+                response_metadata: ClassVar[dict] = {}
             return _Reply()
 
     config = Config.load()

@@ -15,10 +15,10 @@ from pydantic import BaseModel, Field
 from shared.config import Config
 from shared.structured import (
     StructuredOutputError,
-    align_by_id,
     StructuredRefusal,
     StructuredTruncation,
     StructuredValidationFailure,
+    align_by_id,
     call_structured,
     schema_hint,
 )
