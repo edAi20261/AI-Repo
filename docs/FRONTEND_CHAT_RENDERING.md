@@ -27,7 +27,7 @@ the wrong side.
 
 | # | Change | Where | Priority |
 |---|---|---|---|
-| 1 | Stop forcing the answer language | Frontend | **Bug — do first** |
+| 1 | Add an answer-language control | Frontend | **Bug — do first** |
 | 2 | Render the reply as Markdown | Frontend | **Required** |
 | 3 | Right-to-left layout | Frontend | **Required** |
 | 4 | Fix the typing animation | Frontend | **Required** |
@@ -45,37 +45,58 @@ exists with the same meaning; `citations` is added, not swapped in.
 
 ---
 
-## 1. Stop forcing the answer language — bug, do first
+## 1. Give the student a real answer-language control — bug, do first
 
 **Symptom:** a student writes in Arabic, the tutor answers in English. Same for
 French. Every reply comes back English.
 
-**Cause:** the request carries a `language` field, and it is being filled with the
-**interface** language — the one from the header dropdown. The service treats
-`language` as an explicit instruction from the platform and honours it over
-everything else, including the language the student actually typed in:
+**Cause:** the request carries a `language` field, and it is being filled from
+`i18n.language` — the header dropdown that switches the app's buttons and menus.
+The service treats `language` as the student's explicit choice and honours it
+over everything else, including the language they typed in:
 
 ```
 Arabic question + language: "en"   ->  answered in English   (decided by: api)
 Arabic question, no language sent  ->  answered in Arabic    (decided by: script)
 ```
 
-The service is doing as it was told. The header dropdown is the language of the
-app's buttons and menus — it is not the student saying "answer me in English".
+The service is doing as it was told. The problem is what it is being told: an
+interface preference is not the student saying "answer me in English". A student
+reading an English UI in Cairo and typing Arabic wants Arabic back.
 
-**Fix:** do not send `language` at all, unless you have a real per-student
-preference for the tutor. With the field absent, the service reads the message:
-Arabic script means Arabic, every time.
+The Lesson Context panel already shows **Learning language**, but that is a label
+derived from `i18n.language` too — there is no control behind it.
 
-```ts
-// wrong — the header dropdown is not a statement about the answer
-language: i18n.language
+### What to build
 
-// right — omit it, and let the message decide
-```
+A language selector for the tutor, separate from the header one. Three or five
+options:
 
-**Done when:** a question typed in Arabic comes back in Arabic while the
-interface is still set to English.
+| Option | What to send |
+|---|---|
+| **Match my question** (default) | omit `language` |
+| العربية | `language: "ar"` |
+| English | `language: "en"` |
+| Français | `language: "fr"` |
+| Deutsch | `language: "de"` |
+
+**"Match my question" must be the default**, and it means leaving the field out
+entirely — then the service reads the message and answers in the same language,
+which is what a student expects without touching anything.
+
+When the student picks a specific language, send it. The service will then answer
+in that language whatever they type — which is the point: a student practising
+English can ask in Arabic and be answered in English.
+
+One exception the service handles on its own: if a student writes "answer in
+French" inside their message, that wins over the dropdown for that turn.
+
+Once the control exists, the **Learning language** label in the Lesson Context
+panel should show the tutor's answer language, not the interface language.
+
+**Done when:** with the control on "Match my question" and the interface in
+English, a question typed in Arabic comes back in Arabic — and switching the
+control to English makes the same Arabic question come back in English.
 
 ---
 
