@@ -279,3 +279,40 @@ def test_short_answers_are_not_judged():
 def test_prose_strips_what_carries_no_language():
     stripped = prose_of("The answer is $x^2 + 1$ [1] see `code` https://example.com")
     assert "$" not in stripped and "[1]" not in stripped and "http" not in stripped
+
+
+# --- languages we do not answer in ------------------------------------------
+
+@pytest.mark.parametrize("text,detected", [
+    ("explícame el ciclo del agua por favor", "es"),
+    ("spiegami il ciclo dell'acqua per favore", "it"),
+    ("bana su döngüsünü açıkla lütfen", "tr"),
+    ("leg me de waterkringloop uit alsjeblieft", "nl"),
+    ("explique-me o ciclo da água por favor", "pt"),
+])
+def test_an_unsupported_language_falls_back_instead_of_guessing(policy, text, detected):
+    """A detector built only from the languages we answer in has to pick the
+    nearest of them, and does so confidently — Turkish scored 1.00 for German,
+    Dutch 0.82. Naming the languages we merely recognise lets us decline."""
+    from shared.language.detect import detect
+
+    assert detect(text, SUPPORTED).code == detected
+    decision = policy.resolve(text)
+    assert decision.code == "en"
+    assert decision.refused is True, "a declined language must not trigger repair"
+
+
+def test_the_caller_s_language_catches_an_unsupported_message(policy):
+    """Falling back is where the parameter earns its place."""
+    decision = policy.resolve("spiegami il ciclo dell'acqua", api_language="ar")
+    assert (decision.code, decision.source) == ("ar", "api")
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("explain column subtraction", "en"),
+    ("explique-moi le cycle de l'eau s'il te plaît", "fr"),
+    ("erkläre mir bitte den Wasserkreislauf", "de"),
+    ("اشرح لي عملية الطرح", "ar"),
+])
+def test_widening_the_detector_did_not_cost_the_supported_ones(policy, text, expected):
+    assert policy.resolve(text).code == expected
