@@ -22,6 +22,7 @@ from ..tools import resolve_topics
 from shared.language import (
     clear_request,
     explicit_request,
+    language_instruction_only,
     LanguageDecision, LanguagePolicy, language_directive, translate)
 from shared.language.catalog import STRINGS
 from ..citations import cited_numbers, renumber
@@ -118,11 +119,19 @@ def build_route(config, embedder=None):
             return {"intent": decision.intent}
 
         language = state.get("language", "en")
+        key = f"intent.{decision.intent}"
+        if decision.intent == "language":
+            # Setting a language and revoking one are different answers. classify
+            # already resolved `language`, so the acknowledgement arrives in the
+            # language just asked for without any further plumbing.
+            instruction = language_instruction_only(state.get("message", ""))
+            if instruction and instruction[1] is None:
+                key = "intent.language_cleared"
         logger.info("route: answered without retrieval", extra=decision.log_fields())
         return {
             "intent": decision.intent,
             "tasks": [],
-            "response": translate(f"intent.{decision.intent}", language),
+            "response": translate(key, language),
         }
 
     return route

@@ -213,3 +213,66 @@ def test_building_the_graph_does_not_load_a_model(monkeypatch):
     from agent.config import Config
     from agent.graph.graph import build_graph
     build_graph(Config.load())
+
+
+# --- a message that is only a language instruction ---------------------------
+
+@pytest.mark.parametrize("message", [
+    "reply in Arabic",
+    "switch to Arabic",
+    "answer in the language I write in",
+    "stop replying in Arabic",
+    "من فضلك رد بالعربي",
+])
+def test_a_bare_language_instruction_is_not_a_question(router, message):
+    """Otherwise it is planned as an explain task and the syllabus is searched
+    for the phrase "reply in Arabic"."""
+    decision = router.classify(message)
+    assert decision.intent == "language"
+    assert decision.needs_syllabus is False
+
+
+@pytest.mark.parametrize("message", [
+    "explain subtraction, reply in Arabic",
+    "اشرح لي الدرس بالعربي",
+    "explain subtraction",
+])
+def test_a_question_carrying_an_instruction_still_reaches_the_syllabus(router, message):
+    assert router.classify(message).needs_syllabus is True
+
+
+def test_the_acknowledgement_is_in_the_language_just_asked_for():
+    """classify resolves the language before route translates, so this needs no
+    plumbing of its own."""
+    from agent.config import Config
+    from agent.graph import nodes
+
+    config = Config.load()
+    classify = nodes.build_classify(config)
+    route = nodes.build_route(config, embedder=None)
+    state = {"message": "reply in Arabic", "user_type": "student"}
+    state.update(classify(state))
+    out = route(state)
+
+    assert out["intent"] == "language"
+    assert out["tasks"] == []
+    assert state["language"] == "ar"
+    from shared.language.script import ARABIC
+    assert ARABIC.search(out["response"]), "acknowledged in the wrong language"
+
+
+def test_setting_and_clearing_say_different_things():
+    from agent.config import Config
+    from agent.graph import nodes
+
+    config = Config.load()
+    route = nodes.build_route(config, embedder=None)
+    setting = route({"message": "reply in English", "language": "en"})["response"]
+    clearing = route({"message": "answer in the language I write in",
+                      "language": "en"})["response"]
+    assert setting != clearing
+
+
+def test_acknowledgement_can_be_switched_off():
+    off = IntentRouter(acknowledge=False)
+    assert off.classify("reply in Arabic").intent == "question"

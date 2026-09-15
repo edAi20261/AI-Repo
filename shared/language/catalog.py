@@ -44,6 +44,18 @@ STRINGS: dict[str, dict[str, str]] = {
         "fr": "Je peux expliquer les leçons de ton programme, les résumer, créer des exercices, corriger tes réponses et dessiner des cartes mentales. Pose-moi une question sur une leçon.",
         "de": "Ich kann Lektionen aus deinem Lehrplan erklären, zusammenfassen, Übungsfragen stellen, deine Antworten bewerten und Mindmaps zeichnen. Frag mich zu einer Lektion.",
     },
+    "intent.language": {
+        "ar": "تمام، سأجيبك بالعربية من الآن فصاعدًا. عن أي درس تحب أن تسأل؟",
+        "en": "Got it — I'll reply in English from now on. Which lesson would you like to ask about?",
+        "fr": "C'est noté — je te répondrai en français à partir de maintenant. Sur quelle leçon veux-tu travailler ?",
+        "de": "Alles klar — ich antworte ab jetzt auf Deutsch. Zu welcher Lektion hast du eine Frage?",
+    },
+    "intent.language_cleared": {
+        "ar": "تمام، سأردّ بنفس اللغة التي تكتب بها. عن أي درس تحب أن تسأل؟",
+        "en": "Got it — I'll reply in whichever language you write in. Which lesson would you like to ask about?",
+        "fr": "C'est noté — je répondrai dans la langue que tu utilises. Sur quelle leçon veux-tu travailler ?",
+        "de": "Alles klar — ich antworte in der Sprache, in der du schreibst. Zu welcher Lektion hast du eine Frage?",
+    },
     "intent.chitchat": {
         "ar": "بخير، شكرًا لسؤالك! هيّا نذاكر — عن أي درس تحب أن تسأل؟",
         "en": "I'm well, thank you for asking! Let's get to studying — which lesson would you like to ask about?",
