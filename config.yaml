@@ -166,6 +166,9 @@ agent:
   resolve_topics_qdrant: false  # topic resolution via the Qdrant topics collection; false = Postgres
                                 # brute-force (default until the re-ingest populates the collection)
   prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
+  max_prereqs: 5             # nearest prerequisite topics kept from that walk; the rest
+                             # would outweigh the lesson the student actually asked about
+  max_citations: 6           # sources published per turn; markers beyond this are dropped
   explain_figures: false     # emit an auto math figure from explain/summarize (math subjects). Off for now
   recursion_limit: 25        # LangGraph backstop
   infer_subject_k: 5         # top-k topics considered when inferring a subject, filtered to enrolled

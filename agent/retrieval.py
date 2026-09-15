@@ -51,20 +51,39 @@ def retrieve(
     return kept
 
 
+DEFAULT_MAX_PREREQS = 5
+
+# Nearest first, and a required prerequisite before a merely recommended one: the
+# topic you must know to follow this lesson outranks one that would help.
+_STRENGTH_RANK = {"required": 0, "recommended": 1}
+
+
 def resolve_prereqs(
     topic_ids: list[str],
     namespaces: list[str],
     *,
     depth: int = 2,
+    limit: int = DEFAULT_MAX_PREREQS,
 ) -> tuple[list[PrereqTopic], list[RetrievedChunk]]:
+    """Prerequisite topics for ``topic_ids`` and the chunks that teach them.
+
+    The walk fans out: two hops over a well-connected subject reaches dozens of
+    topics, each contributing chunks that are fetched by id and so carry no
+    relevance score to filter on. Unbounded, prerequisite material outweighed the
+    lesson the student actually asked about. ``limit`` keeps the nearest few.
+    """
     if not topic_ids:
         return [], []
-    prereqs = get_topic_deps(topic_ids, depth=depth)
+    found = get_topic_deps(topic_ids, depth=depth)
+    prereqs = sorted(
+        found, key=lambda p: (p.depth, _STRENGTH_RANK.get(p.strength, 9), p.label)
+    )[:limit] if limit else found
     prereq_ids = [p.topic_id for p in prereqs]
     prereq_chunks = get_topic_chunks(prereq_ids, namespaces) if prereq_ids else []
     logger.info("resolve_prereqs", extra={
-        "prereqs": len(prereqs), "prereq_chunks": len(prereq_chunks)})
-    return prereqs, prereq_chunks       # prereqs: list[PrereqTopic]
+        "found": len(found), "prereqs": len(prereqs),
+        "prereq_chunks": len(prereq_chunks)})
+    return prereqs, prereq_chunks
 
 
 def cite(chunk: RetrievedChunk, n: int) -> Citation:

@@ -23,8 +23,9 @@ from pydantic import ValidationError
 from shared.language import language_directive, translate
 
 from ... import render, retrieval
+from ...citations import cited_numbers, has_citation, keep_cited
 from ...models import MathFigureSpec, Citation, PrereqTopic, RetrievedChunk, Style
-from ...prompts import EXPLAIN_PROMPT, SUMMARIZE_PROMPT
+from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, SUMMARIZE_PROMPT
 
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
 _MATH_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -47,6 +48,7 @@ class ExplainSummarizeState(TypedDict, total=False):
     instructions: str               # subject-specific prompt addendum (e.g. math), or ""
     k: int
     prereq_depth: int
+    prereq_limit: int
     min_score: float
     topic_filter: str               # soft = a topic-filtered miss retries unscoped (config agent.topic_filter)
     # produced
@@ -78,6 +80,7 @@ def _resolve_prereqs(state: ExplainSummarizeState) -> dict:
         state.get("topic_ids") or [],
         state["namespaces"],
         depth=state.get("prereq_depth", 2),
+        limit=state.get("prereq_limit", retrieval.DEFAULT_MAX_PREREQS),
     )
     return {"prereq_topics": prereq_topics, "prereq_chunks": prereq_chunks}
 
@@ -115,6 +118,7 @@ def _build_answer(mode: str, llm, config):
             length=state.get("length", "medium"),
             style=style,
             instructions=instructions,
+            formatting=FORMATTING_CONTRACT,
             context=primary_ctx,
             prereq_context=prereq_ctx or "(none)",
             query=state.get("query", ""),
@@ -123,6 +127,7 @@ def _build_answer(mode: str, llm, config):
             length=state.get("length", "medium"),
             style=style,
             instructions=instructions,
+            formatting=FORMATTING_CONTRACT,
             context=primary_ctx,
             query=state.get("query", ""),
         )
@@ -152,23 +157,16 @@ def _finalize(text, citations, mode, state, chunks, config) -> dict:
     clean, math_spec = _math_figure_from_answer(text, config)
     # Grounded = the answer used the material: an inline [n] citation, or an emitted math
     # figure (a refusal has neither). Ungrounded -> suppress sources/prereqs/figure.
-    grounded = _is_grounded(clean) or bool(math_spec)
-    out = {"explanation": clean, "grounded": grounded,
-           "citations": citations if grounded else []}
+    grounded = has_citation(clean) or bool(math_spec)
+    # Retrieval hands over every chunk it found; the answer usually leans on two or
+    # three. Publishing the rest lists lessons the student was never pointed at.
+    cited = keep_cited(citations, cited_numbers(clean)) if grounded else []
+    out = {"explanation": clean, "grounded": grounded, "citations": cited}
     if grounded:
         spec = math_spec or _figure_spec(mode, state, chunks, config)
         if spec:
             out["visual_spec"] = spec
     return out
-
-
-_CITE_MARKER = re.compile(r"\[\d+\]")
-
-
-def _is_grounded(text: str) -> bool:
-    """True when the answer carries an inline [n] citation — the mark of an answer that used
-    the retrieved context, as the explain/summarize prompts require. A decline has none."""
-    return bool(text and _CITE_MARKER.search(text))
 
 
 def _math_figure_from_answer(text, config) -> tuple[str, Optional[dict]]:
