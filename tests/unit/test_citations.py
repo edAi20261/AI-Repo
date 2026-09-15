@@ -245,3 +245,48 @@ def test_a_turn_with_no_sources_returns_an_empty_list_not_an_error():
 
     payload = ChatResponse.from_state({"response": "Hello!", "language": "en"}, "req-2")
     assert payload.citations == []
+
+
+# --- citation labels --------------------------------------------------------
+
+def test_topic_chunks_are_named_not_just_identified():
+    """A prerequisite chunk is fetched by id straight from Postgres, where the
+    lesson name does not live — so the citation rendered as a raw uuid."""
+    from agent.tools import _apply_labels
+
+    chunks = [_retrieved("c1"), _retrieved("c2")]
+    named = _apply_labels(chunks, {
+        "c1": {"subject_name": "Mathematics", "lesson_title": "Subtraction",
+               "lesson_order": 4},
+    })
+    assert (named[0].subject_name, named[0].lesson_title) == ("Mathematics", "Subtraction")
+    assert named[0].lesson_order == 4
+    # A chunk the payload does not cover keeps its lecture id and cites by that.
+    assert named[1].lesson_title is None and named[1].lecture_id == "lec-c2"
+
+
+def _retrieved(chunk_id: str):
+    from agent.models import RetrievedChunk
+    return RetrievedChunk(
+        chunk_id=chunk_id, score=0.0, text="t", heading_path=None, page_from=1,
+        page_to=1, lecture_id=f"lec-{chunk_id}", language="en", topic_ids=[])
+
+
+def test_missing_labels_degrade_to_the_lecture(monkeypatch):
+    """Qdrant being unreachable must cost the label, not the answer."""
+    from agent import tools
+
+    class Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("qdrant down")
+
+    monkeypatch.setattr("qdrant_client.QdrantClient", Boom)
+
+    class Cfg:
+        def __init__(self):
+            self.vector_store = {"collection": "x"}
+
+        def secret(self, *a):
+            return "http://localhost:6333"
+
+    assert tools._citation_labels(["c1"], Cfg()) == {}
