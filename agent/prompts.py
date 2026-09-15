@@ -78,7 +78,8 @@ Message:
 # Subject-specific instructions appended to any subgraph prompt via its {instructions}
 # slot. The parent (adapter) picks which addendum applies; empty for a plain subject.
 # Math is the first; add more (e.g. a language subject) the same way.
-REPORT_STUDENT_PROMPT = """Write a short progress note for a student, in {language}.
+REPORT_STUDENT_PROMPT = """Write a short progress note for a student.
+{language}
 Ground it ONLY in the data below — never invent a topic, a number, or a cause.
 
 Weak topics (label — score, attempts), weakest first:
@@ -116,7 +117,7 @@ EXPLAIN_PROMPT = """You are a patient tutor. Explain the concept using ONLY the 
 below. Do not add facts that are not supported by it. If the context is insufficient,
 say so plainly.
 
-Write the explanation in {language}. Keep technical terms in their source language.
+{language}
 Target level: {level}. Style: {style}.
 {instructions}
 When you use a passage, cite it inline as [n] using the source numbers given.
@@ -132,7 +133,7 @@ Concept to explain: {query}"""
 SUMMARIZE_PROMPT = """You are a study assistant. Summarize the material using ONLY the
 context below. Do not introduce anything not present in it.
 
-Write the summary in {language}. Keep technical terms in their source language.
+{language}
 Length: {length}. Style: {style}.
 {instructions}
 Cite passages inline as [n] using the source numbers given.
@@ -147,7 +148,7 @@ ONLY in ITS OWN context block below — do not use facts outside that item's con
 mix contexts between items. If an item's context cannot support a fair question, return an empty
 question for that item.
 
-Write in {language}. Keep technical terms in their source language.
+{language}
 {instructions}
 For each item, match the requested type and difficulty:
 - difficulty: easy = recall a fact stated directly; medium = apply or relate concepts;
@@ -198,7 +199,7 @@ against ITS OWN block below, using this authority order:
 Every block carries a reference answer, syllabus context, or both. NEVER use outside facts or your
 own knowledge — grade ONLY against what the block provides.
 
-Write all feedback and explanations in {language}. Keep technical terms in their source language.
+{language}
 {instructions}
 For each answer return:
 - "correct": true only if the answer is fully correct; false otherwise.
@@ -231,7 +232,7 @@ Return JSON only, no prose:
 POWERPOINT_POINTS_PROMPT = """Turn the content below into a slide-by-slide outline the user can
 paste into their own slides. This is TEXT, not a file — do not describe images.
 
-Write in {language}. Keep technical terms in their source language.
+{language}
 {instructions}
 Produce AT MOST {max_slides} slides — consolidate related points and prioritise the essentials;
 only exceed this if the material genuinely cannot be covered otherwise.
@@ -253,7 +254,8 @@ Slide 2: <title>
 MINDMAP_PROMPT = """Build a concise mind map of the topic below, grounded ONLY in the context.
 Return JSON only — a tree of nodes, each {{"label": "<short>", "children": [ ...same shape... ]}}.
 The root is the topic; 2-5 top branches; each branch 0-4 leaves. Labels <= 6 words. Write labels
-in {language}. Do NOT add anything the context does not support.
+Do NOT add anything the context does not support.
+{language}
 
 Topic: {topic}
 
@@ -262,14 +264,16 @@ Topic: {topic}
 
 FLASHCARDS_PROMPT = """Create study flashcards from the material below, grounded ONLY in the context.
 Return JSON only: {{"cards": [{{"front": "<question or term>", "back": "<answer or definition>"}}]}}.
-Make up to {n} cards, each side short. Write in {language}. Do NOT invent facts beyond the context.
+Make up to {n} cards, each side short. Do NOT invent facts beyond the context.
+{language}
 
 Topic: {topic}
 
 --- CONTEXT ---
 {context}"""
 
-MATH_VISUAL_PROMPT = """Extract a precise, plottable spec for the math/geometry request below.
+MATH_VISUAL_PROMPT = """{language}
+Extract a precise, plottable spec for the math/geometry request below.
 Commit to ONE concrete spec: if the request can be shown as a function of x, plot it; otherwise
 draw it as geometry. Return JSON only. Use Python arithmetic (** for powers) — do NOT list sample points.
 For a function plot:
@@ -286,7 +290,7 @@ PDF_STRUCTURE_PROMPT = """Turn the material below into a structured document, gr
 Return JSON only: {{"title": "<short title>", "blocks": [{{"type": "heading|text", "text": "<...>"}}]}}.
 Organise it into a few sections — each a short "heading" block followed by one or more "text"
 blocks (a concise paragraph each). Be faithful: do not add anything the material does not contain.
-Write in {language}. Keep technical terms in their source language.
+{language}
 
 Topic: {topic}
 
@@ -294,7 +298,7 @@ Topic: {topic}
 {content}"""
 
 COMPOSE_PROMPT = """Combine the drafted answer(s) below into one coherent reply to the
-student, in {language}, in a {tone} voice. Preserve inline citation markers [n]. Preserve any
+student, in a {tone} voice. {language} Preserve inline citation markers [n]. Preserve any
 mathematical notation (LaTeX $...$, $$...$$, equations) exactly as written. Do not invent new
 content. If prerequisite topics are listed, end with a short line pointing the student to them.
 

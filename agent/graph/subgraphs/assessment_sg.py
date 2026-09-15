@@ -15,6 +15,7 @@ runs first (invariant 8). BANK/HYBRID are built but config-off. ``validate`` enf
 from __future__ import annotations
 
 import logging
+from shared.language import content_directive
 from typing import Any, Optional, TypedDict
 
 from langchain_core.messages import HumanMessage
@@ -304,7 +305,7 @@ def _batch_generate(
         for i, (slot, chunk) in enumerate(bound, 1)
     ]
     prompt_text = ASSESSMENT_BATCH_PROMPT.format(
-        language=state.get("language", "en"),
+        language=content_directive(state.get("language", "en")),
         instructions=state.get("instructions", ""),
         query=state.get("query", ""),
         n=len(bound),

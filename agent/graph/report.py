@@ -46,7 +46,7 @@ def run_report(payload: dict[str, Any], *, config: Optional[Config] = None) -> d
         "user_id": payload.get("user_id"),
         "subject_id": payload.get("subject_id"),
         "lecture_ids": payload.get("lecture_ids") or None,
-        "language": facts.language or payload.get("language", "en"),
+        "language": payload.get("language", "en"),
     })
     result = state.get("result", {})
     if state.get("visual_spec"):

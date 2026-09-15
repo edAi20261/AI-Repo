@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import logging
 import uuid
+from shared.language import content_directive
 from typing import Any, Mapping, Optional, Sequence
 
 import matplotlib
@@ -419,7 +420,8 @@ def powerpoint_points(
     if llm is None:
         return content
     prompt_text = POWERPOINT_POINTS_PROMPT.format(
-        language=language, instructions=instructions, content=content, max_slides=max_slides)
+        language=content_directive(language), instructions=instructions,
+        content=content, max_slides=max_slides)
     return llm.invoke([HumanMessage(content=prompt_text)]).content
 
 

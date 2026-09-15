@@ -137,13 +137,18 @@ def _subject_instructions(facts: SubjectFacts, *, with_figure: bool = False) -> 
 
 def _build_assessment_adapter(compiled, config: Config, client=None):
     q = config.get("assessment", {}) or {}
+    quiz_follows_subject = config.get("language.quiz_single_language", True)
 
     def adapter(payload) -> dict:
         task = payload["task"]
         params = task.get("params", {})
         facts = _subject_facts(client, payload.get("subject_id"))
-        # Generate in the subject's language when known; fall back to the turn language.
-        language = facts.language or payload.get("language", "en")
+        # Questions are material a student will sit, so they follow the subject's
+        # language when it is known — an IGCSE physics quiz stays in English even
+        # for an Arabic-speaking student. Everything addressed TO the student
+        # (feedback, reports, captions) follows the student instead.
+        language = (facts.language or payload.get("language", "en")
+                    if quiz_follows_subject else payload.get("language", "en"))
         # (1) translate in: each `params.X or q.get(X)` = per-request override, else config default.
         result = compiled.invoke({
             "query": params.get("query", ""),
@@ -199,7 +204,7 @@ def _build_grade_adapter(compiled, config: Config, client=None):
             "subject_id": payload.get("subject_id"),
             "lecture_ids": payload.get("lecture_ids") or None,
             "user_id": payload.get("user_id"),
-            "language": facts.language or payload.get("language", "en"),
+            "language": payload.get("language", "en"),
             "instructions": _subject_instructions(facts),
             "kind": spec.get("kind"),
             "assessment_id": spec.get("assessment_id"),
@@ -247,7 +252,7 @@ def _build_report_adapter(compiled, config: Config, client=None):
             "user_id": payload.get("user_id"),
             "subject_id": payload.get("subject_id"),
             "lecture_ids": payload.get("lecture_ids") or None,
-            "language": facts.language or payload.get("language", "en"),
+            "language": payload.get("language", "en"),
         })
         result = state.get("result", {})
         out: dict = {"answers": [{
@@ -286,7 +291,7 @@ def _build_render_visuals(compiled, config: Config, client=None):
             "lecture_ids": state.get("lecture_ids") or None,
             "user_id": state.get("user_id"),
             "conversation_id": state.get("session_id"),
-            "language": facts.language or state.get("language", "en"),
+            "language": state.get("language", "en"),
             "namespaces": state.get("namespaces"),
             "content": content,
             "instructions": _subject_instructions(facts),

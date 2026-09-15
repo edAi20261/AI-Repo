@@ -23,6 +23,8 @@ from langchain_core.messages import HumanMessage
 from ... import render, retrieval
 from ...prompts import EXPLAIN_PROMPT, SUMMARIZE_PROMPT
 from ...models import Citation, PrereqTopic, RetrievedChunk, Style
+from shared.language import language_directive, translate
+
 from ...utils import degraded_message
 
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
@@ -109,7 +111,7 @@ def _build_answer(mode: str, llm, config):
 
         instructions = state.get("instructions", "")
         prompt_text = prompt.format(
-            language=state.get("language", "en"),
+            language=language_directive(state.get("language", "en")),
             level=state.get("level", "intermediate"),
             length=state.get("length", "medium"),
             style=style,
@@ -118,7 +120,7 @@ def _build_answer(mode: str, llm, config):
             prereq_context=prereq_ctx or "(none)",
             query=state.get("query", ""),
         ) if mode == "explain" else prompt.format(
-            language=state.get("language", "en"),
+            language=language_directive(state.get("language", "en")),
             length=state.get("length", "medium"),
             style=style,
             instructions=instructions,
@@ -209,9 +211,7 @@ def _figure_spec(mode, state, chunks, config) -> Optional[dict]:
 
 
 def _no_context_message(language: str) -> str:
-    if language == "ar":
-        return "لا توجد مادة كافية في المنهج للإجابة عن هذا السؤال."
-    return "There isn't enough syllabus material to answer this yet."
+    return translate("explain.no_context", language)
 
 
 def _stub_answer(mode: str, chunks: list[RetrievedChunk], language: str) -> str:

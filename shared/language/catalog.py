@@ -113,6 +113,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "fr": "Il n'y a pas encore assez de travail noté pour faire le point sur tes progrès.",
         "de": "Es gibt noch nicht genug bewertete Arbeit, um deinen Fortschritt zu berichten.",
     },
+    "report.focus_next": {
+        "ar": "ركّز بعد ذلك على: {focus}.",
+        "en": "Focus next on: {focus}.",
+        "fr": "Concentre-toi ensuite sur : {focus}.",
+        "de": "Konzentriere dich als Nächstes auf: {focus}.",
+    },
     "report.chart_title": {
         "ar": "تقدّم الإتقان", "en": "Mastery over time",
         "fr": "Maîtrise au fil du temps", "de": "Lernfortschritt",

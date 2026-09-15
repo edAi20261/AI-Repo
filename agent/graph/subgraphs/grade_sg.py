@@ -32,6 +32,8 @@ from ...tools import (
     update_mastery,
     write_mastery_events,
 )
+from shared.language import language_directive, translate
+
 from ...utils import degraded_message, extract_json, parse_structured
 
 logger = logging.getLogger(__name__)
@@ -223,12 +225,7 @@ def _gradable(item: SubmissionItem) -> bool:
 
 
 # Decline message when there is no key and no syllabus evidence (en is the fallback).
-_NO_EVIDENCE = {
-    "ar": "لا يوجد نموذج إجابة أو محتوى كافٍ من المنهج لتقييم هذه الإجابة.",
-    "en": "There isn't a reference answer or enough syllabus material to grade this answer.",
-    "fr": "Aucune réponse de référence ni contenu suffisant du programme pour évaluer cette réponse.",
-    "de": "Es gibt keine Musterlösung oder ausreichenden Lehrplaninhalt, um diese Antwort zu bewerten.",
-}
+
 
 
 def _not_graded(item: SubmissionItem, feedback: str) -> GradedItem:
@@ -244,7 +241,7 @@ def _not_graded(item: SubmissionItem, feedback: str) -> GradedItem:
 def _declined(item: SubmissionItem, language: str) -> GradedItem:
     """Declined: no reference key and no syllabus context — decline rather than grade on the
     model's own knowledge."""
-    return _not_graded(item, _NO_EVIDENCE.get(language, _NO_EVIDENCE["en"]))
+    return _not_graded(item, translate("grade.no_evidence", language))
 
 
 def _stub_draft(item: SubmissionItem):
@@ -397,7 +394,7 @@ def _build_grade(llm, config):
             if not _gradable(it):
                 graded.append(_declined(it, language))          # no key + no context
             elif degraded:
-                graded.append(_not_graded(it, degraded_message(language)))
+                graded.append(_not_graded(it, translate("common.degraded", language)))
             else:
                 graded.append(_build_graded(it, drafts[gi], threshold))
                 gi += 1
@@ -422,7 +419,7 @@ def _batch_grade(llm, items, state: GradeState, config=None) -> list:
     items by position. A real call failure propagates so the grade node degrades (no stub,
     no mastery moved)."""
     prompt_text = GRADE_BATCH_PROMPT.format(
-        language=state.get("language", "en"),
+        language=language_directive(state.get("language", "en")),
         instructions=state.get("instructions", ""),
         n=len(items),
         items_block=_grade_blocks(items),
