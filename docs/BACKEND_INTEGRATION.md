@@ -40,7 +40,7 @@ caller is allowed to do, so a wrong role grants the wrong capabilities.
 | `message` | yes | 1–8000 chars |
 | `subject_id` | no | scopes the search. Inferred from the message if omitted |
 | `lecture_ids` | no | narrows to specific lessons |
-| `session_id` | no | conversation id |
+| `session_id` | no | Conversation id. **Now carries the standing answer language**: stable for a conversation, new for a new one |
 | `grade` | no | academic year, e.g. `g8` |
 | `language` | no | Fallback only — the message decides. Never send the UI language |
 
