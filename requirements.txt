@@ -37,7 +37,12 @@ pymupdf>=1.25.0
 python-docx>=1.1.2
 pytesseract>=0.3.13
 pillow>=11.0.0
-langdetect>=1.0.9
+
+# --- Language policy -------------------------------------------------------
+# Short queries are the norm in a tutor and are where trigram detectors fail
+# ("explain column subtraction" reads as French). lingua reports a confidence
+# and can decline, which is what the resolver needs to fall back deliberately.
+lingua-language-detector>=2.0.0
 
 # --- Embeddings (bilingual AR/EN index) -------------------------------------
 # BAAI/bge-m3 run locally (multilingual, ~2GB with torch). Versions pinned to a

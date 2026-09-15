@@ -16,9 +16,16 @@ from langchain_core.messages import HumanMessage
 
 from ..models import (
     AssessmentSpec, Citation, GradeSpec, PlannerOutput, PrereqTopic, Style, VisualSpec)
-from ..prompts import COMPOSE_PROMPT, PLAN_PROMPT, TASK_DESCRIPTIONS
+from ..prompts import (
+    COMPOSE_PROMPT, LANGUAGE_REPAIR_PROMPT, PLAN_PROMPT, TASK_DESCRIPTIONS)
 from ..tools import resolve_topics
-from ..utils import degraded_message, detect_language, extract_json, parse_structured
+from shared.language import (
+    LanguageDecision, LanguagePolicy, language_directive, translate)
+from shared.language.catalog import STRINGS
+from shared.language.verify import (
+    DEFAULT_MIN_ANSWER_CHARS, DEFAULT_MIN_CONFIDENCE, verify_answer)
+
+from ..utils import extract_json, parse_structured
 from .pathways import build_namespaces, resolve_style
 
 logger = logging.getLogger(__name__)
@@ -28,33 +35,33 @@ logger = logging.getLogger(__name__)
 
 # Shown (localized) when the request has no valid role — the graph halts rather than
 # guessing a persona (en is the fallback for any unlisted language).
-_SIGN_IN = {
-    "ar": "عذرًا، يرجى تسجيل الدخول بحساب صالح (طالب أو معلّم أو وليّ أمر) للمتابعة.",
-    "en": "Sorry — please sign in with a valid account (student, teacher, or parent) to continue.",
-    "fr": "Désolé — veuillez vous connecter avec un compte valide (élève, enseignant ou parent).",
-    "de": "Entschuldigung — bitte melden Sie sich mit einem gültigen Konto an (Schüler, Lehrer oder Elternteil).",
-}
 
 
 def build_classify(config):
-    default_lang = config.get("language.default", "en")
-    supported = tuple(config.get("language.supported", ["ar", "en", "fr", "de"]))
-    arabic_ratio = config.get("language.arabic_ratio", 0.30)
+    policy = LanguagePolicy.from_config(config)
     known_pathways = set((config.get("agent.pathways", {}) or {}).keys())
 
     def classify(state) -> dict:
-        language = detect_language(
-            state.get("message", ""), default_lang, supported=supported,
-            arabic_ratio=arabic_ratio)
+        # A caller that knows the learner outranks anything inferred from a
+        # sentence: the language parameter is a statement, not a hint.
+        decision = policy.resolve(
+            state.get("message", ""),
+            api_language=state.get("language"),
+            profile_language=state.get("profile_language"),
+            previous_language=state.get("previous_language"),
+        )
+        language = decision.code
         user_type = state.get("user_type")
         pathway = user_type if user_type in known_pathways else None
         if pathway is None:
             # Unknown/missing role: don't run the graph — ask the user to sign in.
             logger.warning("classify: unknown user_type %r", user_type)
             return {"pathway": None, "language": language,
-                    "response": _SIGN_IN.get(language, _SIGN_IN["en"])}
-        logger.info("classify", extra={"pathway": pathway, "language": language})
-        return {"pathway": pathway, "language": language}
+                    "language_decision": decision.model_dump(),
+                    "response": translate("classify.sign_in", language)}
+        logger.info("classify", extra={"pathway": pathway, **decision.log_fields()})
+        return {"pathway": pathway, "language": language,
+                "language_decision": decision.model_dump()}
 
     return classify
 
@@ -227,7 +234,7 @@ def _assessment_type_mix(spec: AssessmentSpec, default: dict) -> dict:
 
 def build_plan(config, llm, client=None):
     default_tasks = config.get("agent.default_tasks", ["explain", "summarize"])
-    supported = set(config.get("language.supported", ["ar", "en", "fr", "de"]))
+    policy = LanguagePolicy.from_config(config)
 
     languages = ", ".join(config.get("language.supported", ["ar", "en", "fr", "de"]))
 
@@ -243,7 +250,7 @@ def build_plan(config, llm, client=None):
             # Planning itself failed (LLM call error): degrade — a friendly message, no tasks.
             # dispatch sees no tasks and routes straight to the end (never a silently-picked task).
             logger.error("planning failed; degrading", exc_info=True)
-            return {"tasks": [], "response": degraded_message(state.get("language", "en"))}
+            return {"tasks": [], "response": translate("common.degraded", state.get("language", "en"))}
         # TODO(sprint3-clarify): a clarify node that asks for missing assessment params (count/
         # types) before generating — the model is variance-prone at copying an explicit count
         # (e.g. "4 MCQs" sometimes yields 3). A regex over the message is not the fix.
@@ -329,10 +336,20 @@ def build_plan(config, llm, client=None):
         # scope to it; an explicit subject is already in state.
         if subject_id and subject_id != state.get("subject_id"):
             out["subject_id"] = subject_id
-        # An explicit "answer in <language>" request overrides the detected message
-        # language for the whole turn.
-        if req_lang in supported:
-            out["language"] = req_lang
+        # The planner may read a request the matcher missed, but it re-enters
+        # through the resolver: a model never outranks what the user stated.
+        if req_lang:
+            prior = state.get("language_decision") or {}
+            decision = policy.resolve(
+                state.get("message", ""),
+                api_language=prior.get("code") if prior.get("source") == "api" else None,
+                planner_hint=req_lang,
+                profile_language=state.get("profile_language"),
+                previous_language=state.get("previous_language"),
+            )
+            if decision.code != state.get("language"):
+                out["language"] = decision.code
+                out["language_decision"] = decision.model_dump()
         logger.info("plan", extra={
             "pathway": pathway, "tasks": len(tasks),
             "subject_id": subject_id, "inferred_subject": bool(inferred),
@@ -383,10 +400,6 @@ def _dedupe_prereqs(prereqs: list[PrereqTopic]) -> list[PrereqTopic]:
 
 
 # Localised section headers (en is the fallback for any unlisted language).
-_PREREQ_HEAD = {"ar": "مواضيع تمهيدية", "en": "Prerequisite topics",
-                "fr": "Sujets prérequis", "de": "Voraussetzungen"}
-_SOURCES_HEAD = {"ar": "المصادر", "en": "Sources", "fr": "Sources", "de": "Quellen"}
-_LESSON_WORD = {"ar": "الدرس", "en": "Lesson", "fr": "Leçon", "de": "Lektion"}
 # Trailing punctuation stripped off a heading before appending ", p.N".
 _HEAD_TRAIL = " \t،,;:."
 
@@ -401,7 +414,7 @@ def _citation_where(c: Citation, language: str) -> str:
     order = c.lesson_order
     lesson = ""
     if order is not None:
-        lesson = f"{_LESSON_WORD.get(language, _LESSON_WORD['en'])} {order}"
+        lesson = f"{translate('compose.lesson_word', language)} {order}"
     if title:
         lesson = f"{lesson}: {title}" if lesson else title
     label = " · ".join(p for p in (subject, lesson) if p)
@@ -410,7 +423,7 @@ def _citation_where(c: Citation, language: str) -> str:
 
 def _prereq_line(prereqs: list[PrereqTopic], language: str) -> str:
     labels = ", ".join(p.label for p in prereqs)
-    head = _PREREQ_HEAD.get(language, _PREREQ_HEAD["en"])
+    head = translate("compose.prereq_head", language)
     return f"{head}: {labels}"
 
 
@@ -418,9 +431,7 @@ def _assessment_line(assessment: dict, language: str) -> str:
     # A neutral acknowledgment only — the questions + answer keys are in the structured
     # `assessment` field. No UI/save framing (the frontend decides what to do with it).
     n = assessment.get("count", len(assessment.get("items", [])))
-    if language == "ar":
-        return f"إليك اختبارًا من {n} سؤالًا."
-    return f"Here's a {n}-question assessment."
+    return translate("compose.assessment_line", language, n=n)
 
 
 def _visual_line(visuals: list, language: str) -> str:
@@ -431,26 +442,16 @@ def _visual_line(visuals: list, language: str) -> str:
         if v.get("kind") == "slides" and v.get("text"):
             lines.append(v["text"])
         elif v.get("s3_uri"):
-            label = "شكل" if language == "ar" else v.get("kind", "visual").capitalize()
-            reused = " (from your syllabus)" if v.get("reused") else ""
+            key = f"visual.noun.{v.get('kind')}"
+            label = (translate(key, language) if key in STRINGS
+                     else v.get("kind", "visual").capitalize())
+            reused = translate("compose.from_syllabus", language) if v.get("reused") else ""
             lines.append(f"[{label}{reused}]({v['s3_uri']})")
     return "\n".join(lines)
 
 
 # A short lead-in for a standalone visual turn (no explanatory prose accompanies it),
 # by kind and language. Slides carry their own text, so they get no caption.
-_VISUAL_CAPTION = {"ar": "إليك {noun}:", "en": "Here's your {noun}:",
-                   "fr": "Voici votre {noun} :", "de": "Hier ist Ihre {noun}:"}
-_VISUAL_NOUN = {
-    "mindmap": {"ar": "خريطة ذهنية", "en": "mind map", "fr": "carte mentale", "de": "Mindmap"},
-    "flashcards": {"ar": "بطاقات تعليمية", "en": "flashcards", "fr": "cartes mémoire",
-                   "de": "Lernkarten"},
-    "pdf": {"ar": "ملف PDF", "en": "PDF", "fr": "PDF", "de": "PDF"},
-    "chart": {"ar": "رسم بياني", "en": "chart", "fr": "graphique", "de": "Diagramm"},
-    "image": {"ar": "رسم توضيحي", "en": "illustration", "fr": "illustration",
-              "de": "Illustration"},
-    "figure": {"ar": "شكل", "en": "figure", "fr": "figure", "de": "Abbildung"},
-}
 
 
 def _visual_caption(visuals: list, language: str) -> str:
@@ -460,27 +461,17 @@ def _visual_caption(visuals: list, language: str) -> str:
         kind = v.get("kind")
         if kind == "slides":
             continue
-        noun_map = _VISUAL_NOUN.get(kind)
-        if not noun_map:
+        if f"visual.noun.{kind}" not in STRINGS:
             continue
-        noun = noun_map.get(language) or noun_map["en"]
-        return _VISUAL_CAPTION.get(language, _VISUAL_CAPTION["en"]).format(noun=noun)
+        noun = translate(f"visual.noun.{kind}", language)
+        return translate("visual.caption", language, noun=noun)
     return ""
 
 
 # Shown when a visual_spec RAISED during render — an honest error, never the off-syllabus decline.
-_RENDER_ERROR = {
-    "ar": "حدث خطأ أثناء إنشاء العنصر المرئي. يرجى المحاولة مرة أخرى لاحقًا.",
-    "en": "Something went wrong creating the visual. Please try again later.",
-    "fr": "Une erreur s'est produite lors de la création du visuel. Veuillez réessayer plus tard.",
-    "de": "Beim Erstellen des Visuals ist ein Fehler aufgetreten. Bitte versuchen Sie es später erneut.",
-}
 
 
 # Localised inline labels for the correct answer / explanation shown on a wrong answer.
-_ANSWER_LABEL = {"ar": "الإجابة الصحيحة", "en": "Correct answer",
-                 "fr": "Bonne réponse", "de": "Richtige Antwort"}
-_WHY_LABEL = {"ar": "الشرح", "en": "Why", "fr": "Explication", "de": "Erklärung"}
 
 
 def _grade_line(grade_result: dict, language: str) -> str:
@@ -491,10 +482,9 @@ def _grade_line(grade_result: dict, language: str) -> str:
     score = summary.get("score", 0)
     total = summary.get("max_score", summary.get("count", 0))
     graded = grade_result.get("graded") or []
-    head = (f"صحّحتُ إجابتك: {score} من {total}." if language == "ar"
-            else f"I've graded your work: {score} / {total}.")
-    ans_label = _ANSWER_LABEL.get(language, _ANSWER_LABEL["en"])
-    why_label = _WHY_LABEL.get(language, _WHY_LABEL["en"])
+    head = translate("grade.head", language, score=score, total=total)
+    ans_label = translate("grade.answer_label", language)
+    why_label = translate("grade.why_label", language)
     lines = [head]
     for i, g in enumerate(graded, 1):
         fb = g.get("feedback")
@@ -572,7 +562,7 @@ def _sources_block(citations: list[Citation], language: str) -> str:
         lines.append(f"[{c.n}] {where}{pages}")
     if not lines:
         return ""
-    head = _SOURCES_HEAD.get(language, _SOURCES_HEAD["en"])
+    head = translate("compose.sources_head", language)
     return head + ":\n" + "\n".join(lines)
 
 
@@ -580,7 +570,8 @@ def _compose_llm(llm, answers, prereqs, language, tone) -> str:
     joined = "\n\n".join(a.get("text", "") for a in answers)
     prereq_str = ", ".join(p.label for p in prereqs) or "(none)"
     prompt_text = COMPOSE_PROMPT.format(
-        language=language, tone=tone, answers=joined, prereq_topics=prereq_str)
+        language=language_directive(language), tone=tone, answers=joined,
+        prereq_topics=prereq_str)
     return llm.invoke([HumanMessage(content=prompt_text)]).content
 
 
@@ -597,7 +588,7 @@ def build_compose(config, llm):
         # that task's own short line (degraded note first — an LLM failure never shows a stub).
         if not answers:
             if grade_result.get("degraded") or assessment.get("degraded"):
-                return {"response": degraded_message(language)}
+                return {"response": translate("common.degraded", language)}
             if grade_result.get("graded"):
                 return {"response": _grade_line(grade_result, language)}
             if visuals:
@@ -608,9 +599,8 @@ def build_compose(config, llm):
                 return {"response": _assessment_line(assessment, language)}
             # A visual that RAISED (not merely off-syllabus) gets an honest error, not a decline.
             if state.get("visual_error"):
-                return {"response": _RENDER_ERROR.get(language, _RENDER_ERROR["en"])}
-            msg = ("لا توجد مادة كافية في المنهج للإجابة." if language == "ar"
-                   else "There isn't enough syllabus material to answer this yet.")
+                return {"response": translate("visual.render_error", language)}
+            msg = translate("compose.no_material", language)
             return {"response": msg}
 
         # One global [n] numbering across tasks before merging (each subgraph numbered from [1]).
@@ -638,17 +628,17 @@ def build_compose(config, llm):
         if sources:
             parts.append(sources)
         if assessment.get("degraded"):
-            parts.append(degraded_message(language))
+            parts.append(translate("common.degraded", language))
         elif assessment.get("items"):
             parts.append(_assessment_line(assessment, language))
         if grade_result.get("degraded"):
-            parts.append(degraded_message(language))
+            parts.append(translate("common.degraded", language))
         elif grade_result.get("graded"):
             parts.append(_grade_line(grade_result, language))
         if visuals:
             parts.append(_visual_line(visuals, language))
         elif state.get("visual_error"):
-            parts.append(_RENDER_ERROR.get(language, _RENDER_ERROR["en"]))
+            parts.append(translate("visual.render_error", language))
         logger.info("compose", extra={"answers": len(answers), "prereqs": len(prereqs)})
         return {"response": "\n\n".join(p for p in parts if p)}
 
@@ -666,3 +656,67 @@ def build_persist(config):
         return {}
 
     return persist
+
+
+# --- verify_language --------------------------------------------------------
+
+def build_verify_language(config, llm=None):
+    """Check the finished answer is in the language the turn resolved to.
+
+    A directive in the prompt is an instruction, not a guarantee: grounded
+    material in another language pulls the model across, and the student is the
+    one who finds out. Detection on the answer costs microseconds; a repair costs
+    one call and only runs when the mismatch is confident and the language was
+    something we actually knew rather than guessed.
+    """
+    enabled = config.get("language.verify.enabled", True)
+    languages = tuple(config.get("language.supported", ["ar", "en", "fr", "de"]))
+    min_chars = config.get("language.verify.answer_min_chars", DEFAULT_MIN_ANSWER_CHARS)
+    min_confidence = config.get("language.verify.min_confidence", DEFAULT_MIN_CONFIDENCE)
+
+    def verify_language(state) -> dict:
+        answer = state.get("response") or ""
+        raw_decision = state.get("language_decision")
+        if not enabled or not answer or not raw_decision:
+            return {}
+
+        decision = LanguageDecision(**raw_decision)
+        check = verify_answer(
+            answer, decision, languages=languages,
+            min_chars=min_chars, min_confidence=min_confidence,
+        )
+        if not check.needs_repair:
+            return {}
+
+        if llm is None:
+            logger.warning("language mismatch, no model to repair with",
+                           extra={"expected": decision.code, "detected": check.detected})
+            return {"language_repair": "failed"}
+
+        try:
+            rewritten = (llm.invoke([HumanMessage(content=LANGUAGE_REPAIR_PROMPT.format(
+                language=language_directive(decision.code, context_may_differ=False),
+                answer=answer))]).content or "").strip()
+        except Exception:
+            logger.exception("language repair call failed")
+            return {"language_repair": "failed"}
+
+        # A rewrite that is still wrong, or that came back empty, is worse than the
+        # original: the student gets a coherent answer in the wrong language rather
+        # than a mangled one in no language at all.
+        if not rewritten:
+            return {"language_repair": "failed"}
+        recheck = verify_answer(
+            rewritten, decision, languages=languages,
+            min_chars=min_chars, min_confidence=min_confidence,
+        )
+        if recheck.needs_repair:
+            logger.warning("language repair did not take",
+                           extra={"expected": decision.code, "detected": recheck.detected})
+            return {"language_repair": "failed"}
+
+        logger.info("language repaired", extra={"expected": decision.code,
+                                                "was": check.detected})
+        return {"response": rewritten, "language_repair": "repaired"}
+
+    return verify_language

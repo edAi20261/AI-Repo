@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent import retrieval as rmod
 from agent.config import get_config
 from agent.graph import build_graph
 from agent.graph import nodes as nmod
@@ -17,23 +18,11 @@ from agent.graph.nodes import (
     build_load_context,
 )
 from agent.graph.pathways import build_namespaces, resolve_style
-from agent import retrieval as rmod
 from agent.models import Citation, PrereqTopic, ResolvedTopic, RetrievedChunk
 from agent.tools import AuthorizationError, assert_user_type
-from agent.utils import detect_language, extract_json
-
+from agent.utils import extract_json
 
 # --- utils ------------------------------------------------------------------
-
-def test_detect_language_across_supported():
-    assert detect_language("اشرح لي عملية البناء الضوئي") == "ar"
-    assert detect_language("explain photosynthesis to me clearly") == "en"
-    assert detect_language("Expliquez la photosynthèse aux plantes vertes") == "fr"
-    assert detect_language("Erklären Sie mir bitte die Photosynthese der Pflanzen") == "de"
-    assert detect_language("", default="en") == "en"
-    # A detected language outside the supported set falls back to default.
-    assert detect_language("Hola, explícame la fotosíntesis", supported=("ar", "en")) == "en"
-
 
 def test_extract_json_handles_fence_and_prose():
     assert extract_json('```json\n{"a": 1}\n```') == {"a": 1}
@@ -289,7 +278,7 @@ def test_validate_assessment_spec_sanitizes():
 
 
 def test_assessment_type_mix_distribution():
-    from agent.graph.nodes import _assessment_type_mix, AssessmentSpec
+    from agent.graph.nodes import AssessmentSpec, _assessment_type_mix
     default = {"mcq": 3, "true_false": 1, "short_answer": 1}
     assert _assessment_type_mix(AssessmentSpec(count=4, types=["mcq"]), default) == {"mcq": 4}
     assert _assessment_type_mix(AssessmentSpec(count=3, types=["mcq", "true_false"]), default) == \

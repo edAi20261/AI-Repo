@@ -22,9 +22,10 @@ from typing import Any, Optional, TypedDict
 
 from langchain_core.messages import HumanMessage
 
+from shared.language import language_directive, translate
+
 from ...prompts import REPORT_STUDENT_PROMPT
 from ...tools import get_mastery, get_mastery_trend, get_topic_deps, get_topic_labels
-from ...utils import degraded_message
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +36,8 @@ _SUPPORTED = {"student_progress"}
 _SHELLED = {"class_analytics", "at_risk", "parent", "homework_batch"}
 
 # No-weak-topics and no-data notes (the LLM is only used when there IS something to explain).
-_ALL_GOOD = {
-    "en": "You're on track — no weak spots are showing up right now. Keep it up.",
-    "ar": "أداؤك جيد — لا توجد نقاط ضعف واضحة حاليًا. واصل التقدّم.",
-    "fr": "Tu es sur la bonne voie — aucun point faible pour l'instant. Continue.",
-    "de": "Du bist auf einem guten Weg — derzeit keine Schwachstellen. Weiter so.",
-}
-_NO_DATA = {
-    "en": "There isn't enough graded work yet to report on your progress.",
-    "ar": "لا يوجد قدر كافٍ من الأعمال المصحّحة بعد لإعداد تقرير عن تقدّمك.",
-    "fr": "Il n'y a pas encore assez de travail noté pour faire le point sur tes progrès.",
-    "de": "Es gibt noch nicht genug bewertete Arbeit, um deinen Fortschritt zu berichten.",
-}
+
+
 
 
 class ReportState(TypedDict, total=False):
@@ -161,7 +152,7 @@ def _trend_chart(trend: dict, language: str) -> Optional[dict]:
     if len(events) < 2:
         return None
     values = [round(float(e.get("score") or 0.0), 3) for e in events]
-    title = "تقدّم الإتقان" if language == "ar" else "Mastery over time"
+    title = translate("report.chart_title", language)
     return {
         "kind": "chart",
         "description": title,
@@ -181,15 +172,16 @@ def _build_narrate(llm, config):
         degraded = False
 
         if not state.get("weak_ids") and not (trend.get("events")):
-            narrative = _NO_DATA.get(language, _NO_DATA["en"])
+            narrative = translate("report.no_data", language)
         elif not weak_topics:
-            narrative = _ALL_GOOD.get(language, _ALL_GOOD["en"])
+            narrative = translate("report.all_good", language)
         elif llm is None:                       # dev/test: no key -> deterministic stub
             focus = (root_cause or {}).get("label") or weak_topics[0].get("label") or ""
-            narrative = f"Focus next on: {focus}." if focus else _ALL_GOOD["en"]
+            narrative = (translate("report.focus_next", language, focus=focus) if focus
+                         else translate("report.all_good", language))
         else:
             prompt_text = REPORT_STUDENT_PROMPT.format(
-                language=language,
+                language=language_directive(language),
                 weak_block=_weak_block(weak_topics),
                 root_cause=(root_cause or {}).get("label") or "none",
                 trend=trend.get("direction", "insufficient"))
@@ -199,7 +191,7 @@ def _build_narrate(llm, config):
                     raise ValueError("empty narrative")
             except Exception:
                 logger.error("report narrate failed; degrading", exc_info=True)
-                narrative = degraded_message(language)
+                narrative = translate("common.degraded", language)
                 degraded = True
 
         result = {
