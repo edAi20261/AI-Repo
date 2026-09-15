@@ -12,9 +12,11 @@ from shared.language import (
     LanguageDecision,
     LanguagePolicy,
     classify,
+    clear_request,
     content_directive,
     explicit_request,
     language_directive,
+    language_instruction_only,
     looks_arabizi,
     translate,
     verify_answer,
@@ -316,3 +318,117 @@ def test_the_caller_s_language_catches_an_unsupported_message(policy):
 ])
 def test_widening_the_detector_did_not_cost_the_supported_ones(policy, text, expected):
     assert policy.resolve(text).code == expected
+
+
+# --- refusing a language ----------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "stop replying in Arabic",
+    "don't answer in French",
+    "do not reply in Arabic",
+    "no longer answer in German",
+    "بلاش ترد بالعربي",
+])
+def test_refusing_a_language_is_not_requesting_it(text):
+    """The anchors include reply/respond/answer, so without a negation guard the
+    escape hatch reads as a request for the very language being refused — and
+    once an override sticks, the student trying to get out locks themselves in."""
+    assert explicit_request(text) is None
+    assert clear_request(text) is not None
+
+
+def test_a_negation_does_not_reach_across_a_clause(policy):
+    """"I don't like maths" must not cancel the request that follows it."""
+    assert policy.resolve("I don't like maths, explain in Arabic").code == "ar"
+
+
+@pytest.mark.parametrize("text", [
+    "answer in the language I write in",
+    "reply in my own language please",
+    "match my language",
+    "رد بنفس لغتي",
+    "réponds dans ma langue",
+])
+def test_asking_to_be_followed_is_a_clear(text):
+    assert clear_request(text) is not None
+
+
+@pytest.mark.parametrize("text", ["reply in Arabic", "explain subtraction", ""])
+def test_an_ordinary_message_clears_nothing(text):
+    assert clear_request(text) is None
+
+
+# --- a message that is only an instruction ----------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("reply in Arabic", "ar"),
+    ("reply in Arabic please", "ar"),
+    ("switch to Arabic", "ar"),
+    ("من فضلك رد بالعربي", "ar"),
+])
+def test_a_bare_instruction_is_recognised(text, expected):
+    found = language_instruction_only(text)
+    assert found is not None and found[1] == expected
+
+
+@pytest.mark.parametrize("text", [
+    "stop replying in Arabic",
+    "answer in the language I write in",
+])
+def test_a_bare_clear_is_recognised(text):
+    found = language_instruction_only(text)
+    assert found is not None and found[1] is None
+
+
+@pytest.mark.parametrize("text", [
+    "explain subtraction, reply in Arabic",
+    "explain subtraction. reply in Arabic",
+    "اشرح لي الدرس بالعربي",
+    "explain subtraction",
+])
+def test_a_question_carrying_an_instruction_still_needs_an_answer(text):
+    """Both halves matter: the instruction is obeyed, and the question answered."""
+    assert language_instruction_only(text) is None
+
+
+# --- a standing request from earlier in the session --------------------------
+
+@pytest.mark.parametrize("message", [
+    "and what about addition?",      # plain English, the common next turn
+    "explique-moi la soustraction",  # a confidently-detected other language
+    "ok",                            # too short to read
+    "2 + 2 = ?",                     # no letters at all
+])
+def test_a_standing_request_outranks_the_message(policy, message):
+    """"Reply in Arabic from now on" means from now on. Only a newer request
+    changes it — not the language of the next thing they happen to type."""
+    decision = policy.resolve(message, session_language="ar")
+    assert (decision.code, decision.source) == ("ar", "session")
+
+
+def test_a_standing_request_is_verified_not_guessed(policy):
+    """These are the turns most likely to drift: the message and the answer are
+    in different languages, so the retrieved material pulls against the answer."""
+    decision = policy.resolve("and what about addition?", session_language="ar")
+    assert decision.refused is False and decision.verifiable is True
+
+
+def test_a_new_request_replaces_the_standing_one(policy):
+    decision = policy.resolve("explain this, reply in French", session_language="ar")
+    assert (decision.code, decision.source) == ("fr", "explicit")
+
+
+def test_the_standing_request_outranks_the_caller(policy):
+    decision = policy.resolve("and what about addition?",
+                              session_language="ar", api_language="en")
+    assert decision.code == "ar"
+
+
+def test_an_unsupported_standing_value_is_ignored(policy):
+    decision = policy.resolve("explain subtraction", session_language="es")
+    assert (decision.code, decision.source) == ("en", "detected")
+
+
+def test_no_standing_request_leaves_everything_as_it_was(policy):
+    assert policy.resolve("explain subtraction").code == "en"
+    assert policy.resolve("اشرح لي عملية الطرح").code == "ar"

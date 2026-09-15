@@ -7,7 +7,7 @@ available, and records why. Everything downstream reads that decision.
 from .catalog import translate
 from .detect import Detection, detect, is_trustworthy
 from .directive import content_directive, language_directive, name_of
-from .request import explicit_request
+from .request import clear_request, explicit_request, language_instruction_only
 from .resolver import DEFAULT_LANGUAGE, DEFAULT_SUPPORTED, LanguagePolicy
 from .script import arabic_ratio, classify, looks_arabizi
 from .types import (
@@ -34,11 +34,13 @@ __all__ = [
     "Script",
     "arabic_ratio",
     "classify",
+    "clear_request",
     "content_directive",
     "detect",
     "explicit_request",
     "is_trustworthy",
     "language_directive",
+    "language_instruction_only",
     "looks_arabizi",
     "name_of",
     "prose_of",

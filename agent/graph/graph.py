@@ -22,6 +22,7 @@ from shared.llm import llm_key_available, maybe_llm
 from .. import retrieval
 from ..config import Config, get_config
 from ..models import Style, SubjectFacts
+from ..session_memory import SessionLanguage
 from ..state import MainState
 from . import nodes
 from .subgraphs import (
@@ -336,7 +337,10 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
 
     # Parent nodes run on MainState directly; each subgraph is wrapped in one adapter node.
     graph = StateGraph(MainState)
-    graph.add_node("classify", nodes.build_classify(config))
+    # None when session memory is off; the nodes treat that as "no memory",
+    # which is also what a store that cannot reach the database returns.
+    sticky = SessionLanguage.from_config(config)
+    graph.add_node("classify", nodes.build_classify(config, sticky=sticky))
     # Resolved per turn, never at build time: loading the embedder here blocked
     # startup behind a multi-gigabyte download and failed the health check.
     graph.add_node("route", nodes.build_route(config, lambda: loaded_embedder(config)))
@@ -352,7 +356,7 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
     graph.add_node("compose", nodes.build_compose(config, maybe_llm(config, "compose")))
     graph.add_node("verify_language", nodes.build_verify_language(
         config, maybe_llm(config, "compose")))
-    graph.add_node("persist", nodes.build_persist(config))
+    graph.add_node("persist", nodes.build_persist(config, sticky=sticky))
 
     # Linear front, then plan fans out (dispatch returns one Send per planned task — only
     # those adapters fire), then every adapter fans back in to render_visuals -> compose.

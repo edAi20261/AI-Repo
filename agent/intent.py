@@ -23,13 +23,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from shared.language.request import language_instruction_only
 from shared.language.script import ARABIC
 
 logger = logging.getLogger(__name__)
 
-Intent = Literal["greeting", "thanks", "meta", "chitchat", "question"]
+Intent = Literal["greeting", "thanks", "meta", "chitchat", "language", "question"]
 
-CONVERSATIONAL: tuple[Intent, ...] = ("greeting", "thanks", "meta", "chitchat")
+CONVERSATIONAL: tuple[Intent, ...] = (
+    "greeting", "thanks", "meta", "chitchat", "language")
 
 DEFAULT_MAX_WORDS = 6
 DEFAULT_SIMILARITY = 0.72
@@ -113,8 +115,10 @@ class IntentRouter:
         max_words: int = DEFAULT_MAX_WORDS,
         similarity: float = DEFAULT_SIMILARITY,
         enabled: bool = True,
+        acknowledge: bool = True,
     ) -> None:
         self._embedder = embedder
+        self._acknowledge = acknowledge
         self._max_words = max_words
         self._similarity = similarity
         self._enabled = enabled
@@ -132,11 +136,21 @@ class IntentRouter:
             max_words=config.get("agent.intent.max_words", DEFAULT_MAX_WORDS),
             similarity=config.get("agent.intent.similarity", DEFAULT_SIMILARITY),
             enabled=config.get("agent.intent.enabled", True),
+            acknowledge=config.get("language.sticky.acknowledge", True),
         )
 
     def classify(self, message: str) -> IntentDecision:
         """What this message is. Anything unrecognised is a question."""
         text = message or ""
+
+        # "reply in Arabic" is an instruction, not a question about the word
+        # "reply". Deterministic and ahead of the enabled gate, because an
+        # instruction must be honoured even where similarity routing is off.
+        if self._acknowledge:
+            instruction = language_instruction_only(text)
+            if instruction:
+                return IntentDecision("language", "phrase", evidence=instruction[0])
+
         if not self._enabled or not text.strip():
             return IntentDecision("question", "default")
 
