@@ -155,6 +155,19 @@ language:
     enabled: true
     min_confidence: 0.60
     answer_min_chars: 40
+  sticky:
+    # "reply in Arabic from now on" is an instruction, not a preference: it is
+    # remembered against the session so the next turn still honours it.
+    enabled: true
+    ttl_hours: 720             # a month; an older conversation starts fresh
+    acknowledge: true          # a message that is only an instruction is answered,
+                               # not searched for in the syllabus
+    # This read sits at the front of every turn, so it gets its own limits: a
+    # database that hangs rather than refuses must not stall the service.
+    connect_timeout_seconds: 2
+    statement_timeout_ms: 500
+    failure_threshold: 3       # consecutive failures before the store is paused
+    breaker_seconds: 30
   quiz_single_language: true   # questions follow the subject; prose follows the student
   keep_technical_terms_in_source_language: true
 
