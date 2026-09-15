@@ -159,8 +159,11 @@ class IntentRouter:
         vectors = self._seed_vectors()
         if not vectors or not folded:
             return None
+        embedder = self._resolve_embedder()
+        if embedder is None:
+            return None
         try:
-            query = self._embedder.embed_query(folded)
+            query = embedder.embed_query(folded)
         except Exception:
             logger.exception("intent embedding failed; treating the turn as a question")
             return None
@@ -174,16 +177,37 @@ class IntentRouter:
             return None
         return IntentDecision(best_intent, "similarity", confidence=best_score, evidence=folded)
 
+    def _resolve_embedder(self):
+        """The embedder, if one is available right now.
+
+        ``embedder`` may be a model or a callable that returns one — or returns
+        ``None`` when it is not loaded yet. Routing must never be what triggers a
+        model load: it has a phrase pass that answers without one, and blocking
+        here would block a greeting behind a multi-gigabyte download.
+        """
+        source = self._embedder
+        if source is None or hasattr(source, "embed"):
+            return source
+        try:
+            return source()
+        except Exception:
+            logger.exception("intent embedder unavailable; falling back to phrases")
+            return None
+
     def _seed_vectors(self) -> list[tuple[Intent, list[float]]]:
-        """Seed embeddings, computed once per process."""
+        """Seed embeddings, computed once the embedder is available.
+
+        Not cached when it is unavailable: the model usually loads on the first
+        retrieval, so a later turn can still get the similarity pass.
+        """
         if self._vectors is not None:
             return self._vectors
-        if self._embedder is None:
-            self._vectors = []
-            return self._vectors
+        embedder = self._resolve_embedder()
+        if embedder is None:
+            return []
         seeds = [(intent, seed) for intent, group in SEEDS.items() for seed in group]
         try:
-            vectors = self._embedder.embed([normalise(seed) for _, seed in seeds])
+            vectors = embedder.embed([normalise(seed) for _, seed in seeds])
         except Exception:
             logger.exception("seed embedding failed; intent routing falls back to phrases")
             self._vectors = []

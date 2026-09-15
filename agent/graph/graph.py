@@ -16,7 +16,7 @@ import logging
 from typing import Optional
 
 from shared.backend import get_backend_client
-from shared.embeddings import get_embedder
+from shared.embeddings import loaded_embedder
 from shared.llm import llm_key_available, maybe_llm
 
 from .. import retrieval
@@ -337,7 +337,9 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
     # Parent nodes run on MainState directly; each subgraph is wrapped in one adapter node.
     graph = StateGraph(MainState)
     graph.add_node("classify", nodes.build_classify(config))
-    graph.add_node("route", nodes.build_route(config, get_embedder(config)))
+    # Resolved per turn, never at build time: loading the embedder here blocked
+    # startup behind a multi-gigabyte download and failed the health check.
+    graph.add_node("route", nodes.build_route(config, lambda: loaded_embedder(config)))
     graph.add_node("load_context", nodes.build_load_context(config))
     graph.add_node("plan", nodes.build_plan(config, maybe_llm(config, "plan"), backend_client))
     graph.add_node("explain_adapter", _build_explain_summarize_adapter(explain_sg, "explain", config, backend_client))
