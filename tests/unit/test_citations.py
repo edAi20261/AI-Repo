@@ -114,6 +114,18 @@ def test_keep_cited_filters_by_number():
     assert [c.n for c in kept] == [1, 3]
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("away [1][2][1].", "away [1][2]."),
+    ("triple [1][1][1] here", "triple [1] here"),
+    ("both agree [1, 2].", "both agree [1][2]."),
+    ("separate [1]. and [2].", "separate [1]. and [2]."),
+])
+def test_a_source_is_not_cited_twice_in_one_breath(text, expected):
+    """A model leaning on the same passages writes them after every sentence;
+    split one per source that reads as "[1][2][1]"."""
+    assert renumber(text, {1: 1, 2: 2}) == expected
+
+
 def test_renumber_leaves_text_without_markers_alone():
     assert renumber("plain prose", {1: 2}) == "plain prose"
 
