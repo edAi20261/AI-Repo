@@ -228,10 +228,20 @@ def test_topic_extractor_clamps_to_max():
     assert len(ex.extract(["x"])) == 8
 
 
-def test_topic_extractor_garbage_returns_empty():
-    ex = LLMTopicExtractor(_FakeLLM("I could not find any topics."), min_topics=3, max_topics=8)
-    assert ex.extract(["x"]) == []
+def test_topic_extractor_reports_prose_instead_of_swallowing_it():
+    """Prose is a failure to comply, not a lesson with no skills in it."""
+    from shared.structured import StructuredOutputError
+
+    ex = LLMTopicExtractor(_FakeLLM("I could not find any topics."),
+                           min_topics=3, max_topics=8)
+    with pytest.raises(StructuredOutputError):
+        ex.extract(["x"])
     assert ex.extract([]) == []  # no chunks -> no LLM call needed
+
+
+def test_topic_extractor_accepts_a_genuinely_empty_answer():
+    ex = LLMTopicExtractor(_FakeLLM('{"topics": []}'), min_topics=3, max_topics=8)
+    assert ex.extract(["x"]) == []
 
 
 class _SeqLLM:
@@ -982,27 +992,41 @@ def _topics_state(emb):
     return st
 
 
-def test_topics_empty_retries_then_flags_needs_review():
+def test_topics_empty_answer_flags_needs_review_without_re_asking():
+    """An empty answer is a real answer: the model read the lesson and named
+    nothing. Compliance retries live in the structured-call contract now, so the
+    stage asks once and flags rather than paying for the same reply three times."""
     cfg = _config()
     emb = HashEmbedder(dimension=64)
-    ex = _CountingExtractor([[]])  # always empty
+    ex = _CountingExtractor([[]])
     st = run_topics(_topics_state(emb), _FakeCtx(cfg, ex, emb, DryRunChunkStore()))
 
-    assert ex.calls == 1 + cfg.get("ingestion.topics.empty_retries", 2)  # initial + retries
+    assert ex.calls == 1
     assert st["ingestion_status"] == "needs_review"
     assert any("no topics" in e for e in st.get("errors", []))
 
 
-def test_topics_empty_then_recovers_on_retry():
+def test_topics_extraction_failure_is_flagged_not_lost():
+    """A lesson keeps its chunks and its OCR when topic naming fails."""
+    from shared.structured import StructuredValidationFailure
+
+    class _Failing:
+        is_stub = False
+        calls = 0
+
+        def extract(self, _texts):
+            self.calls += 1
+            raise StructuredValidationFailure(
+                "topics: the model did not return valid output after 2 attempts.",
+                task="extract_topics", label="topics", attempts=2)
+
     cfg = _config()
     emb = HashEmbedder(dimension=64)
-    topic = [{"label": "Fractions", "description": "d", "bloom_level": "understand"}]
-    ex = _CountingExtractor([[], topic])  # empty once, then succeeds
-    st = run_topics(_topics_state(emb), _FakeCtx(cfg, ex, emb, DryRunChunkStore()))
+    st = run_topics(_topics_state(emb), _FakeCtx(cfg, _Failing(), emb, DryRunChunkStore()))
 
-    assert ex.calls == 2
-    assert st.get("ingestion_status") != "needs_review"
-    assert st["stats"]["topics"]["extracted"] == 1
+    assert st["ingestion_status"] == "needs_review"
+    assert any("topic extraction failed" in e for e in st.get("errors", []))
+    assert st["topics"] == []
 
 
 def test_topics_stub_empty_stays_silent():

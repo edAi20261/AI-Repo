@@ -57,9 +57,12 @@ class TopicItem(BaseModel):
     """One extracted skill. ``label`` is clamped to the ``ai.topics.label`` width;
     an out-of-vocabulary ``bloom_level`` folds to ``None`` rather than failing."""
 
-    label: str
-    description: Optional[str] = None
-    bloom_level: Optional[str] = None
+    label: str = Field(description="The skill, 2-6 words, in the lesson's main language.")
+    description: Optional[str] = Field(
+        default=None, description="One sentence on what mastering it means.")
+    bloom_level: Optional[str] = Field(
+        default=None,
+        description="One of: remember, understand, apply, analyze, evaluate, create.")
 
     @field_validator("label", mode="before")
     @classmethod
@@ -90,9 +93,11 @@ class DependencyItem(BaseModel):
     """One prerequisite edge proposed for a topic. ``prereq`` is a candidate label;
     an unknown ``strength`` folds to ``required``."""
 
-    prereq: str
-    strength: str = "required"
-    rationale: Optional[str] = None
+    prereq: str = Field(description="An exact label copied from the candidate list.")
+    strength: str = Field(
+        default="required",
+        description="required when the target cannot be learned without it, else related.")
+    rationale: Optional[str] = Field(default=None, description="Short reason, one clause.")
 
     @field_validator("prereq", mode="before")
     @classmethod

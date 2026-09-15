@@ -9,10 +9,15 @@ closest topics. Writes ``ai.topics``. Stub returns none when no chat key is set.
 
 from __future__ import annotations
 
+import logging
 import uuid
+
+from shared.structured import StructuredOutputError
 
 from ..context import PipelineContext
 from ..state import Chunk, IngestionState, Topic
+
+logger = logging.getLogger(__name__)
 
 
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
@@ -23,21 +28,23 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
         state.setdefault("stats", {})["topics"] = stats
         return state
 
-    raw = ctx.topic_extractor.extract([c.text for c in chunks])
+    try:
+        raw = ctx.topic_extractor.extract([c.text for c in chunks])
+    except StructuredOutputError as exc:
+        # Compliance is retried one layer down; reaching here means the model
+        # never produced a usable answer. Index the lesson without topic_ids and
+        # flag it, rather than losing the extraction and the OCR behind it.
+        logger.error("topic extraction failed", extra=exc.log_fields())
+        state["ingestion_status"] = "needs_review"
+        state.setdefault("errors", []).append(f"topic extraction failed: {exc}")
+        raw = []
     if not raw and not ctx.topic_extractor.is_stub:
-        # A non-stub extractor returning nothing for a non-empty lesson is a likely
-        # transient LLM failure. Retry, then flag needs_review rather than silently
-        # indexing untagged chunks (invariant 12).
-        for _ in range(ctx.config.get("ingestion.topics.empty_retries", 2)):
-            raw = ctx.topic_extractor.extract([c.text for c in chunks])
-            if raw:
-                break
-        if not raw:
-            state["ingestion_status"] = "needs_review"
-            state.setdefault("errors", []).append(
-                "topic extraction returned no topics for a non-empty lesson; "
-                "chunks indexed without topic_ids."
-            )
+        # A valid but empty answer: the model read the lesson and named nothing.
+        state["ingestion_status"] = "needs_review"
+        state.setdefault("errors", []).append(
+            "topic extraction returned no topics for a non-empty lesson; "
+            "chunks indexed without topic_ids."
+        )
     if not raw:
         # Stub path (no chat key) or retries exhausted: leave topic_ids empty.
         state["topics"] = []

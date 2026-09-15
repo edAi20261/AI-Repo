@@ -96,7 +96,6 @@ ingestion:
     max_input_tokens: 12000      # above this, extract in batches and union (0 = single call)
     reuse_threshold: 0.60        # re-ingest reuses a lecture's own topic_id above this cosine similarity
     assign_threshold: 0.45       # tag a chunk with a topic above this similarity
-    empty_retries: 2             # retries when a non-stub extractor returns 0 topics
   dependencies:
     max_out_degree: 5            # max prerequisites kept per topic
     max_candidates: 40           # cap candidates per topic to the K nearest (0 = no cap)
