@@ -29,12 +29,12 @@ no formatting in them render as an ordinary paragraph, so nothing regresses.
 | 1 | Render the reply as Markdown | **Required** | 30 min |
 | 2 | Lay Arabic out right-to-left | **Required** | 15 min |
 | 3 | Fix the typing animation | **Required** | 20 min |
-| 4 | Show sources as badges | **Blocked on me** | 1–2 h |
+| 4 | Show sources as badges | Recommended | 1–2 h |
 | 5 | Render maths with KaTeX | Later | — |
 
 1–3 are what stop the current output from looking broken, and they are
-independent of each other. 4 is waiting on a fix on my side — please do not start
-it. 5 only matters once maths lessons are indexed, and none are yet.
+independent of each other. 4 is a real improvement but the answer reads correctly
+without it. 5 only matters once maths lessons are indexed, and none are yet.
 
 **Prerequisite:** the tutor page still reads from `use-demo-chat.ts`, so it is
 showing scripted demo replies. None of the below is visible until that hook calls
@@ -157,23 +157,13 @@ text is not cut mid-word.
 
 ---
 
-## 4. Show sources as badges — **not ready yet, do not start**
+## 4. Show sources as badges — recommended
 
 Replies carry `[1]`, `[2]` markers pointing at the lessons they came from. Until
 now the only way to resolve them was a plain-text list at the end of the reply.
 The response now carries the same information as data.
 
-> **Wait for me before building this.** The field ships and the shape below is
-> final, but the lesson names are not populated in the current index — every
-> `lesson_title`, `subject_name` and `heading_path` comes back `null` today, so a
-> badge would render an empty chip or a raw id. That is a fix on my side. I will
-> tell you when real names are coming back; the rest of this section is here so
-> you know what is coming, not as something to start now.
-
 ### The new field
-
-The shape, with the lesson names filled in as they will be once I have
-fixed the index:
 
 ```json
 {
@@ -186,7 +176,7 @@ fixed the index:
       "lesson_title": "Subtraction",
       "lesson_order": 4,
       "subject_name": "Mathematics",
-      "heading_path": "Unit 2 > Column subtraction",
+      "heading_path": null,
       "page_from": 12,
       "page_to": 13
     }
@@ -194,31 +184,15 @@ fixed the index:
 }
 ```
 
-What the same call returns **today** — the ids and pages are real, the names are
-not there yet:
-
-```json
-{
-  "n": 1,
-  "lecture_id": "061d4017-9ed6-475f-8bfd-8dc44c0f5d09",
-  "lesson_title": null,
-  "lesson_order": null,
-  "subject_name": null,
-  "heading_path": null,
-  "page_from": 1,
-  "page_to": 1
-}
-```
-
-| Field | Type | Notes | Populated today |
-|---|---|---|---|
-| `n` | `int` | Matches the `[n]` in the text. Starts at 1, no gaps | yes |
-| `lecture_id` | `string \| null` | What to link to, if the badge opens the lesson | yes |
-| `page_from`, `page_to` | `int \| null` | Page range in the source PDF; null for lessons with no PDF | yes |
-| `lesson_title` | `string \| null` | What to show on the badge or tooltip | **no — null** |
-| `lesson_order` | `int \| null` | Lesson number within the subject | **no — null** |
-| `subject_name` | `string \| null` | Subject the lesson belongs to | **no — null** |
-| `heading_path` | `string \| null` | Where in the lesson, e.g. unit and section | **no — null** |
+| Field | Type | Notes |
+|---|---|---|
+| `n` | `int` | Matches the `[n]` in the text. Starts at 1, no gaps |
+| `lesson_title` | `string \| null` | What to show on the badge or tooltip |
+| `lesson_order` | `int \| null` | Lesson number within the subject |
+| `subject_name` | `string \| null` | Subject the lesson belongs to |
+| `lecture_id` | `string \| null` | What to link to, if the badge opens the lesson |
+| `page_from`, `page_to` | `int \| null` | Page range in the source PDF; null for lessons with no PDF |
+| `heading_path` | `string \| null` | Where in the lesson. **Empty on everything indexed so far** — do not rely on it yet |
 
 Guarantees from the service side: every `[n]` in the text has a matching entry,
 every entry is referenced by at least one marker, and the list is capped at 6 and
@@ -242,7 +216,7 @@ component.
 ### Done when
 
 Each `[n]` renders as a badge showing the lesson it refers to, and the sources
-appear once rather than twice. Blocked until the lesson names are populated.
+appear once rather than twice.
 
 ---
 

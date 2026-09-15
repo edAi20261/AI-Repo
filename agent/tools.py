@@ -386,6 +386,47 @@ def get_topic_lectures(
 
 # --- get_topic_chunks: representative chunks for topics ----------------------
 
+def _citation_labels(
+    chunk_ids: Sequence[str], config: Config
+) -> dict[str, dict[str, Any]]:
+    """Readable labels (subject, lesson, order) for chunks fetched without a search.
+
+    These live on the Qdrant payload, not on ``ai.chunks``, so a lookup that goes
+    straight to Postgres has no way to name the lesson it found — the citation
+    renders as a raw id. One retrieve by point id fills them in.
+
+    Best effort: a citation with no label still resolves to a lecture, so a
+    missing payload degrades the label rather than failing the turn.
+    """
+    if not chunk_ids:
+        return {}
+    from qdrant_client import QdrantClient
+
+    collection = config.vector_store.get("collection", "eduai_chunks")
+    try:
+        client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
+                              api_key=config.secret("QDRANT_API_KEY"))
+        points = client.retrieve(collection, ids=list(chunk_ids), with_payload=True,
+                                 with_vectors=False)
+    except Exception:
+        logger.warning("citation labels unavailable; citing by lecture id",
+                       exc_info=True)
+        return {}
+    return {str(point.id): (point.payload or {}) for point in points}
+
+
+def _apply_labels(
+    chunks: list[RetrievedChunk], labels: dict[str, dict[str, Any]]
+) -> list[RetrievedChunk]:
+    """Attach readable citation labels to chunks that were fetched without them."""
+    for chunk in chunks:
+        label = labels.get(chunk.chunk_id) or {}
+        chunk.subject_name = label.get("subject_name")
+        chunk.lesson_title = label.get("lesson_title")
+        chunk.lesson_order = label.get("lesson_order")
+    return chunks
+
+
 def get_topic_chunks(
     topic_ids: Sequence[str],
     namespaces: Sequence[str],
@@ -447,7 +488,8 @@ def get_topic_chunks(
             page_from=r[3], page_to=r[4], lecture_id=r[5], language=r[6],
             topic_ids=chunk_topics,
         ))
-    return out
+
+    return _apply_labels(out, _citation_labels([c.chunk_id for c in out], config))
 
 
 # --- get_figures: syllabus figures for topics/lectures -----------------------
