@@ -167,3 +167,49 @@ def test_a_question_is_left_for_the_planner():
 def test_normalise_folds_punctuation_and_case():
     assert normalise("  HELLO!!  ") == "hello"
     assert word_count("how are you?") == 3
+
+
+# --- startup cost -----------------------------------------------------------
+
+def test_routing_never_builds_the_embedder():
+    """The deploy regression: resolving the embedder while building the graph
+    blocked startup on a multi-gigabyte model download, so the health check
+    failed and ECS killed the task in a loop."""
+    built: list[str] = []
+
+    def factory():
+        built.append("built")               # a cold process: nothing loaded yet
+
+    router = IntentRouter(embedder=factory)
+    assert router.classify("hello").intent == "greeting"     # phrase pass
+    assert built == [], "the phrase pass asked for an embedder"
+
+    assert router.classify("howdy partner").intent == "question"
+    assert built == ["built"], "the similarity pass should have asked once"
+
+
+def test_the_similarity_pass_warms_up_later():
+    """A cold turn must not permanently disable the similarity pass — the model
+    usually loads on the first retrieval, after routing has already run."""
+    state = {"loaded": False}
+
+    def factory():
+        return _Embedder() if state["loaded"] else None
+
+    router = IntentRouter(embedder=factory, max_words=6)
+    router.classify("howdy")              # cold: phrase pass only
+    state["loaded"] = True
+    assert router._seed_vectors(), "seeds should compute once the model is there"
+
+
+def test_building_the_graph_does_not_load_a_model(monkeypatch):
+    from shared import embeddings
+
+    def explode(*args, **kwargs):
+        raise AssertionError("graph construction must not build an embedder")
+
+    monkeypatch.setattr(embeddings, "_build_embedder", explode)
+
+    from agent.config import Config
+    from agent.graph.graph import build_graph
+    build_graph(Config.load())

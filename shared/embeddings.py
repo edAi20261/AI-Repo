@@ -105,14 +105,31 @@ def _build_embedder(provider: str, emb: dict) -> Embedder:
     )
 
 
+def _cache_key(config: Config) -> tuple:
+    emb = config.embeddings
+    return ((emb.get("provider") or "huggingface").lower(), emb.get("model"),
+            bool(emb.get("normalize", True)), emb.get("batch_size", 64),
+            emb.get("dimensions") or 1024)
+
+
+def loaded_embedder(config: Config) -> Embedder | None:
+    """The embedder for ``config``, but only if it is already in memory.
+
+    For callers that can use embeddings when they happen to be available and do
+    something else when they are not. Building one loads a multi-gigabyte model:
+    that cost belongs to retrieval, which cannot work without it, and never to a
+    caller that has a cheaper fallback.
+    """
+    return _CACHE.get(_cache_key(config))
+
+
 def get_embedder(config: Config) -> Embedder:
     """Return the embedder for ``config.embeddings`` (default BGE-M3 locally;
     ``provider: hash`` selects the test embedder). Cached per config signature so
     the model is loaded once per process, not once per query."""
     emb = config.embeddings
     provider = (emb.get("provider") or "huggingface").lower()
-    key = (provider, emb.get("model"), bool(emb.get("normalize", True)),
-           emb.get("batch_size", 64), emb.get("dimensions") or 1024)
+    key = _cache_key(config)
 
     cached = _CACHE.get(key)
     if cached is not None:
