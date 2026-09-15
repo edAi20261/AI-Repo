@@ -113,14 +113,32 @@ For geometry: {"geometry": {"segments": [[[x1, y1], [x2, y2]]], "points": {"A": 
 Omit the block entirely when no figure is needed."""
 
 
+# How an answer is shaped. The client renders Markdown, so this is a rendering
+# contract, not decoration: rules the model can follow literally, and nothing that
+# depends on knowing how wide the student's screen is.
+FORMATTING_CONTRACT = """Write in Markdown:
+- Short paragraphs, two or three sentences each, separated by a blank line.
+- A list only for steps, or for items that are genuinely parallel. Never a list of
+  one item, and never a list where a sentence would do.
+- Headings only in a long answer, and only `###`. A short answer needs none.
+- **Bold** the term being taught, on first use only.
+- Mathematics in LaTeX: `$x^2$` inline, `$$...$$` for a formula on its own line.
+  Never write mathematics as plain text when it has notation.
+- No tables unless the material is genuinely tabular.
+- Do not open with a heading that restates the question, and do not close with a
+  summary of what you just said."""
+
 EXPLAIN_PROMPT = """You are a patient tutor. Explain the concept using ONLY the context
 below. Do not add facts that are not supported by it. If the context is insufficient,
 say so plainly.
 
 {language}
-Target level: {level}. Style: {style}.
+Target level: {level}. Length: {length}. Style: {style}.
 {instructions}
-When you use a passage, cite it inline as [n] using the source numbers given.
+When you use a passage, cite it inline as [n] using the source numbers given. Cite
+the passage a statement rests on, not every passage you read.
+
+{formatting}
 
 --- CONTEXT (primary) ---
 {context}
@@ -136,7 +154,10 @@ context below. Do not introduce anything not present in it.
 {language}
 Length: {length}. Style: {style}.
 {instructions}
-Cite passages inline as [n] using the source numbers given.
+Cite passages inline as [n] using the source numbers given. Cite the passage a
+statement rests on, not every passage you read.
+
+{formatting}
 
 --- CONTEXT ---
 {context}
@@ -278,6 +299,8 @@ COMPOSE_PROMPT = """Combine the drafted answer(s) below into one coherent reply 
 student, in a {tone} voice. {language} Preserve inline citation markers [n]. Preserve any
 mathematical notation (LaTeX $...$, $$...$$, equations) exactly as written. Do not invent new
 content. If prerequisite topics are listed, end with a short line pointing the student to them.
+
+{formatting}
 
 --- DRAFTED ANSWERS ---
 {answers}

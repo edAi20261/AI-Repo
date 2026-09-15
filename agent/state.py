@@ -32,6 +32,7 @@ class MainState(TypedDict, total=False):
 
     # -- classify --
     pathway: str                    # student | teacher
+    intent: str                     # greeting | thanks | meta | chitchat | question
     language: str                   # ar | en | fr | de — the reply language for the turn
     language_decision: dict[str, Any]   # which rule chose it (shared.language.LanguageDecision)
     profile_language: Optional[str]     # the learner's stored preference, when known
@@ -62,4 +63,8 @@ class MainState(TypedDict, total=False):
 
     # -- compose --
     response: str
+    # The citations the reply actually carries, renumbered globally and capped. Kept
+    # apart from ``citations`` because that one merges by addition: compose replaces
+    # the subgraphs' local numbering rather than adding to it.
+    published_citations: list[Citation]
     language_repair: str            # "" | "repaired" | "failed" — set by verify_language
