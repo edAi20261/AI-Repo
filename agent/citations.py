@@ -18,6 +18,9 @@ from collections.abc import Iterable
 # [1] | [1, 2] | [1,2] — a group of numbers inside one pair of brackets.
 MARKER = re.compile(r"\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")
 
+# A run of markers with nothing between them: "[1][2][1]".
+RUN = re.compile(r"(?:\[\d+\]){2,}")
+
 
 def cited_numbers(text: str) -> list[int]:
     """Every source number referenced in ``text``, in order of first appearance."""
@@ -51,8 +54,26 @@ def renumber(text: str, mapping: dict[int, int]) -> str:
         dropped = dropped or len(kept) < len(numbers)
         return "".join(f"[{n}]" for n in kept)
 
-    rewritten = MARKER.sub(replace, text or "")
+    rewritten = _collapse_runs(MARKER.sub(replace, text or ""))
     return _tidy(rewritten) if dropped else rewritten
+
+
+def _collapse_runs(text: str) -> str:
+    """Drop repeats inside a run of adjacent markers.
+
+    A model that leans on the same two passages all the way through an answer
+    writes them after every sentence, and once grouped markers are split one per
+    source that reads as "[1][2][1]". The same source twice in one breath tells
+    the student nothing; keep the first of each, in order.
+    """
+    def collapse(match: re.Match[str]) -> str:
+        seen: list[str] = []
+        for number in re.findall(r"\[(\d+)\]", match.group(0)):
+            if number not in seen:
+                seen.append(number)
+        return "".join(f"[{n}]" for n in seen)
+
+    return RUN.sub(collapse, text)
 
 
 def strip_markers(text: str) -> str:
