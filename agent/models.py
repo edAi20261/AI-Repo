@@ -276,15 +276,27 @@ class GradedItem(BaseModel):
 
 
 class GradeDraft(BaseModel):
-    """One graded answer as the LLM returns it (wire shape, pre-canonicalization). No
-    topic_id/lecture_id — those are system-carried from the ``SubmissionItem`` by
-    position. ``mistakes`` are short free-text labels, only for a wrong answer."""
-    correct: bool = False
-    partial_score: Optional[float] = None
-    feedback: Optional[str] = None
-    explanation: Optional[str] = None
-    mistakes: list[str] = Field(default_factory=list)
-    confidence: Optional[float] = None
+    """One graded answer as the LLM returns it (wire shape, pre-canonicalization).
+
+    ``id`` ties the grade back to its block: answers used to be matched by
+    position, so a reply that skipped or reordered one graded a student against
+    somebody else's question. Scores are bounded here rather than downstream —
+    mastery clamped them, but the score shown to the student did not.
+    """
+    id: str = Field(default="", description="The block id being graded, copied verbatim.")
+    correct: bool = Field(default=False, description="True only if fully correct.")
+    partial_score: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Credit earned: 1 = fully correct, 0 = wrong or blank.")
+    feedback: Optional[str] = Field(
+        default=None, description="One or two sentences to the student.")
+    explanation: Optional[str] = Field(
+        default=None, description="The correct reasoning, grounded in the block.")
+    mistakes: list[str] = Field(
+        default_factory=list,
+        description="1-3 short, reusable error labels for a wrong answer; empty when correct.")
+    confidence: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="Confidence in this grade.")
 
 
 class GradeBatch(BaseModel):

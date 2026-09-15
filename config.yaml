@@ -15,6 +15,12 @@ llm:
   # gemini-2.5-flash-lite via OpenRouter DO support it -> true. (Kimi did NOT — set false if you switch
   # back.) Revisit this line whenever you change the model.
   structured_output: true
+  # Only route to endpoints that accept the parameters we send: OpenRouter serves
+  # one model from several providers and not all enforce a schema.
+  require_structured_endpoints: true
+  # One retry, carrying the validation errors back. Published guidance is that a
+  # third attempt signals a prompt or schema problem, not a recoverable one.
+  structured_attempts: 2
 
   # Per-task settings merged over the block above; absent keys inherit it.
   # HOT-PATH SPLIT: light/fast gemini-2.5-flash-lite for the small nodes on the critical path of
