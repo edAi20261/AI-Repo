@@ -3,6 +3,8 @@ routing. No real LLM or DB: tools are monkeypatched."""
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from agent.config import get_config
@@ -189,17 +191,40 @@ class _BatchLLM:
         return r
 
 
-def test_batch_grade_maps_by_position_json():
+def test_batch_grade_matches_answers_by_block_id():
+    """Grades carry the id of the block they grade; order is not trusted."""
     from agent.graph.subgraphs.grade_sg import _batch_grade
     llm = _BatchLLM(
         '{"items": ['
-        '{"correct": true, "partial_score": 1, "feedback": "good", "mistakes": []},'
-        '{"correct": false, "partial_score": 0, "feedback": "no", "mistakes": ["sign error"]}]}')
+        '{"id": "b2", "correct": false, "partial_score": 0, "feedback": "no",'
+        ' "mistakes": ["sign error"]},'
+        '{"id": "b1", "correct": true, "partial_score": 1, "feedback": "good",'
+        ' "mistakes": []}]}')
     items = [_sub(), _sub(student_answer="5")]
     drafts = _batch_grade(llm, items, {"language": "en"})
     assert len(drafts) == 2
     assert drafts[0].correct and drafts[0].feedback == "good"
     assert not drafts[1].correct and drafts[1].mistakes == ["sign error"]
+
+
+def test_batch_grade_refuses_to_guess_when_an_answer_is_missing():
+    """A short reply used to be padded by position, grading the wrong question."""
+    from agent.graph.subgraphs.grade_sg import _batch_grade
+    from shared.structured import StructuredOutputError
+
+    llm = _BatchLLM('{"items": [{"id": "b1", "correct": true, "partial_score": 1}]}')
+    with pytest.raises(StructuredOutputError):
+        _batch_grade(llm, [_sub(), _sub(student_answer="5")], {"language": "en"})
+
+
+def test_batch_grade_rejects_an_out_of_range_score():
+    """The prompt promised [0,1]; only mastery clamped, so the student saw 5/1."""
+    from agent.graph.subgraphs.grade_sg import _batch_grade
+    from shared.structured import StructuredOutputError
+
+    llm = _BatchLLM('{"items": [{"id": "b1", "correct": true, "partial_score": 5}]}')
+    with pytest.raises(StructuredOutputError):
+        _batch_grade(llm, [_sub()], {"language": "en"})
 
 
 def test_batch_grade_structured_output():
@@ -208,10 +233,10 @@ def test_batch_grade_structured_output():
 
     class _Structured:
         def invoke(self, _msgs):
-            return GradeBatch(items=[GradeDraft(correct=True, partial_score=1.0)])
+            return GradeBatch(items=[GradeDraft(id="b1", correct=True, partial_score=1.0)])
 
     class _StructLLM:
-        def with_structured_output(self, model_cls):
+        def with_structured_output(self, model_cls, **kwargs):
             assert model_cls is GradeBatch
             return _Structured()
 
@@ -339,3 +364,50 @@ def test_dispatch_routes_grade_and_forwards_user_id():
     assert len(sends) == 1
     assert sends[0].node == "grade_adapter"
     assert sends[0].arg["user_id"] == "u1"
+
+
+def test_unparseable_grading_moves_no_mastery():
+    """The regression this contract exists for.
+
+    A grading reply that does not satisfy the schema used to fall through to
+    case-insensitive string matching, mark every essay wrong, report success, and
+    write the result to mastery. The degrade path already existed — the silent
+    empty dict is what stopped it firing.
+    """
+    from agent.graph.subgraphs.grade_sg import build_grade_sg
+    from shared.config import Config
+
+    class _Prose:
+        """The real shape of the failure: schema decoding errors, and the model's
+        actual reply is prose that no schema can be read out of."""
+
+        class _Structured:
+            def invoke(self, _msgs):
+                raise ValueError("Failed to parse GradeBatch from completion")
+
+        def with_structured_output(self, schema, **kwargs):
+            return self._Structured()
+
+        def invoke(self, _msgs):
+            class _Reply:
+                content = "I'm afraid I can't mark these for you."
+                additional_kwargs: ClassVar[dict] = {}
+                response_metadata: ClassVar[dict] = {}
+            return _Reply()
+
+    config = Config.load()
+    sg = build_grade_sg(config=config, llm=_Prose())
+    state = sg.invoke({
+        "submissions": [
+            {"question": "Why does ice float?", "student_answer": "Because it is less dense.",
+             "correct_answer": "Ice is less dense than water."},
+        ],
+        "user_id": "u-1",
+        "language": "en",
+    })
+
+    result = state.get("result", {})
+    assert result.get("degraded") is True, "a failed grading call must be reported, not hidden"
+    assert result.get("mastery_events", 0) == 0, "no mastery may move on a grade we did not compute"
+    assert not any(g.get("correct") for g in result.get("graded", [])), \
+        "a correct answer must never be marked wrong by a fallback the caller cannot see"

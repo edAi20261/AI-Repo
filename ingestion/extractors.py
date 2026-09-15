@@ -11,60 +11,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Sequence
 
+from shared.structured import call_structured, schema_hint
+
 from .config import Config
 from .llm_provider import get_llm, llm_key_available
 from .prompts import DERIVE_DEPS_PROMPT, TOPIC_EXTRACTION_PROMPT
-from .schemas import DependencyItem, DependencyList, TopicItem, TopicList
+from .schemas import DependencyList, TopicList
 from .utils.tokens import count_tokens
 
 
 # --- shared helpers --------------------------------------------------------
-
-def _message_content(message) -> str:
-    """Text of a LangChain message or a plain string."""
-    if isinstance(message, str):
-        return message
-    content = getattr(message, "content", message)
-    if isinstance(content, list):  # some providers return content parts
-        return "".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
-        )
-    return str(content)
-
-
-def _structured_output(llm, prompt: str, model_cls):
-    """Provider-native structured output, or ``None`` when unsupported/failed.
-
-    Kept optional and defensive: gateways (e.g. Qwen/Kimi over OpenRouter) that do not
-    honour ``json_schema`` fall through to the tolerant text parser rather than error."""
-    factory = getattr(llm, "with_structured_output", None)
-    if factory is None:
-        return None
-    try:
-        result = factory(model_cls).invoke(prompt)
-    except Exception:
-        return None
-    return result if isinstance(result, model_cls) else None
-
-
-def _json_array(content: str) -> list:
-    """Recover a JSON array from a response that may wrap it in a fence or prose."""
-    import json
-    import re
-
-    text = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.MULTILINE).strip()
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1:
-        return []
-    try:
-        raw = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return []
-    return raw if isinstance(raw, list) else []
-
-
-# --- topics ----------------------------------------------------------------
 
 class TopicExtractor(ABC):
     """Extract 3-8 topics (skills) from a lesson's chunk texts."""
@@ -90,16 +46,17 @@ class LLMTopicExtractor(TopicExtractor):
     """Extract topics with any chat LLM (an object with ``.invoke(str) -> message``).
     A lesson whose chunks exceed ``max_input_tokens`` is processed in batches and the
     topics unioned (label-deduped), so a large or mis-split lesson never sends one
-    oversized prompt. Uses provider-native structured output when available, falling
-    back to tolerant JSON parsing."""
+    oversized prompt."""
 
     def __init__(
-        self, llm, *, min_topics: int, max_topics: int, max_input_tokens: int = 0
+        self, llm, *, min_topics: int, max_topics: int, max_input_tokens: int = 0,
+        config: Config | None = None,
     ) -> None:
         self._llm = llm
         self._min = min_topics
         self._max = max_topics
         self._max_input_tokens = max_input_tokens
+        self._config = config
 
     def extract(self, chunk_texts: Sequence[str]) -> list[dict]:
         if not chunk_texts:
@@ -133,23 +90,13 @@ class LLMTopicExtractor(TopicExtractor):
             min_topics=self._min,
             max_topics=self._max,
             chunks="\n\n---\n\n".join(batch),
+            schema=schema_hint(TopicList),
         )
-        structured = _structured_output(self._llm, prompt, TopicList)
-        if structured is not None:
-            return [t.model_dump() for t in structured.topics if t.label]
-        return _parse_topics(_message_content(self._llm.invoke(prompt)))
-
-
-def _parse_topics(content: str) -> list[dict]:
-    """Validate each item through :class:`TopicItem`; drop empty-label items."""
-    out: list[dict] = []
-    for item in _json_array(content):
-        if not isinstance(item, dict):
-            continue
-        topic = TopicItem.model_validate(item)
-        if topic.label:
-            out.append(topic.model_dump())
-    return out
+        result = call_structured(
+            TopicList, prompt, task="extract_topics", config=self._config,
+            llm=self._llm, label="topics",
+        )
+        return [t.model_dump() for t in result.topics if t.label]
 
 
 def get_topic_extractor(config: Config) -> TopicExtractor:
@@ -164,6 +111,7 @@ def get_topic_extractor(config: Config) -> TopicExtractor:
         min_topics=topics_cfg.get("min_per_lecture", 3),
         max_topics=topics_cfg.get("max_per_lecture", 8),
         max_input_tokens=topics_cfg.get("max_input_tokens", 0),
+        config=config,
     )
 
 
@@ -191,8 +139,9 @@ class StubDependencyDeriver(DependencyDeriver):
 class LLMDependencyDeriver(DependencyDeriver):
     """Derive prerequisites with any chat LLM. One call per topic."""
 
-    def __init__(self, llm) -> None:
+    def __init__(self, llm, config: Config | None = None) -> None:
         self._llm = llm
+        self._config = config
 
     def derive(self, topic_label: str, candidate_labels: Sequence[str]) -> list[dict]:
         if not candidate_labels:
@@ -201,25 +150,15 @@ class LLMDependencyDeriver(DependencyDeriver):
         prompt = DERIVE_DEPS_PROMPT.format(
             topic=topic_label,
             candidates="\n".join(f"- {c}" for c in candidate_labels),
+            schema=schema_hint(DependencyList),
         )
-        structured = _structured_output(self._llm, prompt, DependencyList)
-        if structured is not None:
-            items = (d.model_dump() for d in structured.dependencies)
-        else:
-            items = _parse_deps(_message_content(self._llm.invoke(prompt)))
-        # Only labels from the candidate list survive.
-        return [d for d in items if d["prereq"] in candidates]
-
-
-def _parse_deps(content: str) -> list[dict]:
-    """Validate each item through :class:`DependencyItem` (candidate filtering is the
-    caller's job)."""
-    out: list[dict] = []
-    for item in _json_array(content):
-        if not isinstance(item, dict):
-            continue
-        out.append(DependencyItem.model_validate(item).model_dump())
-    return out
+        result = call_structured(
+            DependencyList, prompt, task="derive_deps", config=self._config,
+            llm=self._llm, label="dependencies",
+        )
+        # Only labels from the candidate list survive: a prerequisite the model
+        # invented has no topic to point at.
+        return [d.model_dump() for d in result.dependencies if d.prereq in candidates]
 
 
 def get_dependency_deriver(config: Config) -> DependencyDeriver:
@@ -228,4 +167,4 @@ def get_dependency_deriver(config: Config) -> DependencyDeriver:
     spec = config.llm_for("derive_deps")
     if not llm_key_available(config, spec):
         return StubDependencyDeriver()
-    return LLMDependencyDeriver(get_llm(config, "derive_deps"))
+    return LLMDependencyDeriver(get_llm(config, "derive_deps"), config)

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, get_args
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 # The closed vocabularies, as Literal types (one source of truth). In a pydantic model a
 # Literal becomes an enum in the JSON schema, so structured output is constrained to valid
@@ -215,15 +215,43 @@ class PlannerOutput(BaseModel):
 
 
 class ItemDraft(BaseModel):
-    """One raw question the generator returns — the LLM's wire shape, pre-validation. It
-    has no topic_id/lecture_id (those are system-stamped from the bound slot/chunk);
-    ``_build_item`` stamps them + converts options and produces the final
-    ``AssessmentItem``."""
-    question: Optional[str] = None
-    type: Optional[QuestionType] = None
-    options: Optional[list[str]] = None
-    answer: Optional[str | list[str]] = None
-    explanation: Optional[str] = None
+    """One raw question the generator returns — the LLM's wire shape, pre-validation.
+
+    ``correct_indices`` points at the right options instead of repeating their text:
+    correctness used to be derived by string-matching the answer against the option
+    list, so a model answering "A" while the options were full sentences produced a
+    question with no correct option at all — and it passed validation.
+
+    topic_id/lecture_id are system-stamped from the bound slot, never taken from
+    the model.
+    """
+    id: str = Field(default="", description="The block id this question answers, copied verbatim.")
+    question: Optional[str] = Field(default=None, description="The question text.")
+    type: Optional[QuestionType] = Field(default=None, description="The question type.")
+    options: Optional[list[str]] = Field(
+        default=None, description="For mcq only: at least two answer options.")
+    correct_indices: Optional[list[int]] = Field(
+        default=None,
+        description="For mcq only: 0-based positions in options that are correct.")
+    answer: Optional[str | list[str]] = Field(
+        default=None, description="For non-mcq types: the reference answer.")
+    explanation: Optional[str] = Field(default=None, description="Why that answer is correct.")
+
+    @model_validator(mode="after")
+    def _answerable(self) -> ItemDraft:
+        if self.type == "mcq":
+            options = self.options or []
+            if len(options) < 2:
+                raise ValueError("an mcq needs at least two options")
+            indices = self.correct_indices or []
+            if not indices:
+                raise ValueError("an mcq needs correct_indices naming at least one option")
+            if any(i < 0 or i >= len(options) for i in indices):
+                raise ValueError(
+                    f"correct_indices must point inside options (0..{len(options) - 1})")
+        elif self.type is not None and not self.answer:
+            raise ValueError(f"a {self.type} question needs an answer")
+        return self
 
 
 class DraftBatch(BaseModel):
@@ -276,15 +304,27 @@ class GradedItem(BaseModel):
 
 
 class GradeDraft(BaseModel):
-    """One graded answer as the LLM returns it (wire shape, pre-canonicalization). No
-    topic_id/lecture_id — those are system-carried from the ``SubmissionItem`` by
-    position. ``mistakes`` are short free-text labels, only for a wrong answer."""
-    correct: bool = False
-    partial_score: Optional[float] = None
-    feedback: Optional[str] = None
-    explanation: Optional[str] = None
-    mistakes: list[str] = Field(default_factory=list)
-    confidence: Optional[float] = None
+    """One graded answer as the LLM returns it (wire shape, pre-canonicalization).
+
+    ``id`` ties the grade back to its block: answers used to be matched by
+    position, so a reply that skipped or reordered one graded a student against
+    somebody else's question. Scores are bounded here rather than downstream —
+    mastery clamped them, but the score shown to the student did not.
+    """
+    id: str = Field(default="", description="The block id being graded, copied verbatim.")
+    correct: bool = Field(default=False, description="True only if fully correct.")
+    partial_score: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Credit earned: 1 = fully correct, 0 = wrong or blank.")
+    feedback: Optional[str] = Field(
+        default=None, description="One or two sentences to the student.")
+    explanation: Optional[str] = Field(
+        default=None, description="The correct reasoning, grounded in the block.")
+    mistakes: list[str] = Field(
+        default_factory=list,
+        description="1-3 short, reusable error labels for a wrong answer; empty when correct.")
+    confidence: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="Confidence in this grade.")
 
 
 class GradeBatch(BaseModel):
@@ -298,6 +338,57 @@ class Flashcard(BaseModel):
     """One flashcard — the flip-UI shape ``gen_flashcards`` echoes back."""
     front: str
     back: str = ""
+
+
+class MindmapNode(BaseModel):
+    """One node of a mind map. Children recurse to the depth the prompt asks for."""
+    label: str = Field(description="Short node label, a few words.")
+    children: list[MindmapNode] = Field(
+        default_factory=list, description="Sub-branches of this node.")
+
+
+class FlashcardSet(BaseModel):
+    """The flashcard builder's reply."""
+    cards: list[Flashcard] = Field(default_factory=list, description="The cards, front and back.")
+
+
+class MathFunction(BaseModel):
+    """One curve to plot. The expression is sampled by us, never evaluated by the model."""
+    name: Optional[str] = Field(default=None, description="Legend label for the curve.")
+    expr: str = Field(description="Formula in x, Python arithmetic (** for powers).")
+    domain: Optional[list[float]] = Field(
+        default=None, description="[min, max] range of x to plot over.")
+
+
+class MathGeometry(BaseModel):
+    """A geometry figure given as labelled points and the segments between them."""
+    points: dict[str, list[float]] = Field(
+        default_factory=dict, description="Label -> [x, y] coordinates.")
+    segments: list[list[Any]] = Field(
+        default_factory=list, description="Pairs of point labels to join.")
+
+
+class MathFigureSpec(BaseModel):
+    """A plot or figure a model asked for, before we sample it.
+
+    Modelling this is what keeps an expression the student's own message can
+    steer from reaching the renderer as an unchecked string.
+    """
+    title: Optional[str] = Field(default=None, description="Figure title.")
+    functions: list[MathFunction] = Field(default_factory=list)
+    geometry: Optional[MathGeometry] = None
+
+
+class PdfBlock(BaseModel):
+    """One block of a generated document."""
+    type: Literal["heading", "text"] = Field(description="heading or text.")
+    text: str = Field(description="The block's content.")
+
+
+class PdfDocument(BaseModel):
+    """A document structured into a title and ordered blocks."""
+    title: Optional[str] = Field(default=None, description="Short document title.")
+    blocks: list[PdfBlock] = Field(default_factory=list)
 
 
 class ArtifactRef(BaseModel):

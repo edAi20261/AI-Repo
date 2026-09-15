@@ -6,9 +6,8 @@ subject. Choose the candidates that are genuine PREREQUISITES — skills a stude
 must already have to learn the target. Pick from anywhere in the list, not just
 nearby ones. Choose none if there are no real prerequisites.
 
-Use only labels from the candidate list, verbatim. Return a JSON array of objects:
-{{"prereq": "<exact candidate label>", "strength": "required" | "related",
-  "rationale": "<short reason>"}}
+Use only labels from the candidate list, verbatim. Return JSON only, no prose. Fields:
+{schema}
 
 Target skill: {topic}
 

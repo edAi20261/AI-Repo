@@ -60,8 +60,7 @@ def get_llm(config: Config, task: str | None = None):
         from .metering import MeteringCallback
 
         base_url, key_env = _OPENAI_COMPAT[provider]
-        # OpenRouter returns per-call cost when asked; the callback records it.
-        extra_body = {"usage": {"include": True}} if provider == "openrouter" else None
+        extra_body = _openrouter_body(config) if provider == "openrouter" else None
         return ChatOpenAI(
             model=model,
             base_url=spec.get("base_url", base_url),
@@ -74,6 +73,19 @@ def get_llm(config: Config, task: str | None = None):
     from langchain.chat_models import init_chat_model  # lazy
 
     return init_chat_model(model=model, model_provider=provider, **common)
+
+
+def _openrouter_body(config: Config) -> dict:
+    """Per-call cost accounting, and routing that can actually honour a schema.
+
+    OpenRouter serves the same model from several providers and only some enforce
+    ``strict`` — ``require_parameters`` keeps a structured call off the endpoints
+    that would treat the schema as a suggestion and hand back prose.
+    """
+    body: dict = {"usage": {"include": True}}
+    if config.get("llm.require_structured_endpoints", True):
+        body["provider"] = {"require_parameters": True}
+    return body
 
 
 def maybe_llm(config: Config, task: str):

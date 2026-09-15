@@ -18,6 +18,7 @@ from typing import Any
 from shared.language import LanguagePolicy
 
 from ..context import PipelineContext
+from ..schemas import FigureCaption
 from ..state import Element, Figure, IngestionState, PageResult
 from ..utils import is_garbage, normalise_text, pdf
 from ..utils.richtext import to_blocks
@@ -76,7 +77,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     figures: list[Figure] = []
     counts = {
         "digital": 0, "scanned": 0, "math": 0, "garbage": 0,
-        "figures": 0, "stub_vision": 0, "unreadable": 0,
+        "figures": 0, "stub_vision": 0, "unreadable": 0, "caption_failed": 0,
     }
     garbage_cfg = ocr.get("garbage", {})
 
@@ -123,7 +124,8 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             else:
                 counts["unreadable"] += 1
                 state["ingestion_status"] = "needs_review"
-            page_figs = _digital_figures(state, ctx, doc, page, page_no, ing, default_lang)
+            page_figs = _digital_figures(state, ctx, doc, page, page_no, ing, default_lang,
+                                         counts)
             figures.extend(page_figs)
             counts["figures"] += len(page_figs)
             elements.extend(page_elems)
@@ -176,7 +178,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             page_elems = _digital_elements(blocks, body_size, ing, page_lang, norm)
 
         # figures: embedded rasters (get_images), deduped
-        page_figs = _digital_figures(state, ctx, doc, page, page_no, ing, page_lang)
+        page_figs = _digital_figures(state, ctx, doc, page, page_no, ing, page_lang, counts)
         # math hybrid: add vision-detected figures get_images missed (vector geometry
         # diagrams have no embedded raster), deduped against the get_images figures.
         if math_boxes and ing.get("figures", {}).get("vision_fill_math", True):
@@ -311,7 +313,8 @@ def _vision_transcribe(
         page_elems.append(Element(text=text, page=page_no, route=route, language=elem_lang))
     page_figs: list[Figure] = []
     if with_figures:
-        page_figs = _figures_from_boxes(state, ctx, png, page_no, result.figures, lang)
+        page_figs = _figures_from_boxes(state, ctx, png, page_no, result.figures, lang,
+                                        counts)
         counts["figures"] += len(page_figs)
     return page_elems, page_figs
 
@@ -356,7 +359,15 @@ def _digital_elements(
     return out
 
 
-def _digital_figures(state, ctx, doc, page, page_no, ing, page_lang) -> list[Figure]:
+def _note_caption_failure(counts: dict | None) -> None:
+    """A figure whose caption failed is still worth keeping, but not worth hiding:
+    captions are what make a figure findable."""
+    if counts is not None:
+        counts["caption_failed"] = counts.get("caption_failed", 0) + 1
+
+
+def _digital_figures(state, ctx, doc, page, page_no, ing, page_lang,
+                     counts: dict | None = None) -> list[Figure]:
     """Extract, filter, dedupe, upload and caption embedded images on a page."""
     figs_cfg = ing.get("figures", {})
     if not figs_cfg.get("extract_embedded", True):
@@ -399,7 +410,10 @@ def _digital_figures(state, ctx, doc, page, page_no, ing, page_lang) -> list[Fig
         alt = None
         if figs_cfg.get("generate_alt_text", True):
             caption = ctx.vision.caption_figure(im.image_bytes, language_hint=page_lang)
-            cap, alt = caption.caption, caption.alt_text
+            if caption is None:
+                _note_caption_failure(counts)
+            else:
+                cap, alt = caption.caption, caption.alt_text
         out.append(
             Figure(
                 lecture_id=state["lecture_id"],
@@ -414,7 +428,7 @@ def _digital_figures(state, ctx, doc, page, page_no, ing, page_lang) -> list[Fig
 
 
 def _vision_fill_figures(state, ctx, page_png, page_no, boxes, existing,
-                         render_dpi, lang, ing) -> list[Figure]:
+                         render_dpi, lang, ing, counts: dict | None = None) -> list[Figure]:
     """Math hybrid: add vision-detected figures that get_images missed (vector
     diagrams). A box overlapping an existing get_images figure is skipped (get_images
     is higher fidelity). Kept boxes are cropped from the rendered page."""
@@ -444,7 +458,10 @@ def _vision_fill_figures(state, ctx, page_png, page_no, boxes, existing,
         cap = alt = None
         if figs_cfg.get("generate_alt_text", True):
             caption = ctx.vision.caption_figure(crop, language_hint=lang)
-            cap, alt = caption.caption, caption.alt_text
+            if caption is None:
+                _note_caption_failure(counts)
+            else:
+                cap, alt = caption.caption, caption.alt_text
         out.append(
             Figure(lecture_id=state["lecture_id"], page=page_no, s3_uri=s3_uri,
                    bbox=tuple(vb), caption=cap, alt_text=alt)
@@ -466,7 +483,8 @@ def _bbox_overlap(a, b) -> float:
     return inter / smaller if smaller > 0 else 0.0
 
 
-def _figures_from_boxes(state, ctx, page_png, page_no, boxes, lang) -> list[Figure]:
+def _figures_from_boxes(state, ctx, page_png, page_no, boxes, lang,
+                        counts: dict | None = None) -> list[Figure]:
     """Figures on a scanned page: the page-vision call already returned the boxes
     (stub -> none). Crop each from the rendered page image (boxes are in that
     image's pixel space) at full resolution, upload, then caption the crop."""
@@ -481,6 +499,9 @@ def _figures_from_boxes(state, ctx, page_png, page_no, boxes, lang) -> list[Figu
         s3_uri = ctx.uploader.upload(crop, key)
         # Caption the full-res crop (better than a region of the whole page).
         caption = ctx.vision.caption_figure(crop, language_hint=lang)
+        if caption is None:
+            _note_caption_failure(counts)
+            caption = FigureCaption(caption="", alt_text="")
         out.append(
             Figure(
                 lecture_id=state["lecture_id"],

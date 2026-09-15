@@ -153,16 +153,15 @@ question for that item.
 For each item, match the requested type and difficulty:
 - difficulty: easy = recall a fact stated directly; medium = apply or relate concepts;
   hard = analyse, compare, or reason across the context.
-- "mcq": four options. Usually exactly one is correct. Only when more than one option is
-  genuinely correct, set "answer" to a LIST of the correct option texts AND begin the question
-  stem with "(Select all that apply) " so the student knows; otherwise "answer" is a single
-  option text and exactly one option is correct.
+- "mcq": four options, with "correct_indices" giving the 0-based positions of the correct
+  ones. Usually exactly one. When more than one is genuinely correct, list them all AND begin
+  the question stem with "(Select all that apply) " so the student knows.
 - "true_false": a statement; "answer" is "true" or "false".
 - "short_answer": answerable in a sentence or two.
 - "essay": an open prompt; "answer" is a model-answer outline.
 
 Make every item DISTINCT — never repeat or restate another item's question. Return EXACTLY {n}
-items, in the SAME ORDER as the blocks below (item i corresponds to block i).
+items, one per block, each carrying its block's id verbatim in "id".
 
 Every item MUST be SELF-CONTAINED. The student sees ONLY your question stem (and, for mcq, the
 options) — never this context. So NEVER refer to "the text", "the passage", "the provided
@@ -175,14 +174,8 @@ Quiz the SUBJECT MATTER, never the lesson's structure. Do NOT write a question a
 objectives, learning outcomes, what "students will be able to" do, the lesson title, unit/lesson
 numbers, or any instructional/meta text — ask about the concepts and facts themselves.
 
-Return JSON only, no prose:
-{{"items": [
-  {{"question": "<stem>",
-    "type": "<this item's type>",
-    "options": ["<A>", "<B>", "<C>", "<D>"]  // mcq only; omit otherwise,
-    "answer": "<correct answer / model answer; a list for a multi-correct mcq>",
-    "explanation": "<why, grounded in this item's context>"}}
-]}}
+Return JSON only, no prose. Fields:
+{schema}
 
 Overall focus: {query}
 
@@ -201,30 +194,15 @@ own knowledge — grade ONLY against what the block provides.
 
 {language}
 {instructions}
-For each answer return:
-- "correct": true only if the answer is fully correct; false otherwise.
-- "partial_score": a number in [0,1] — how much credit the answer earns (1 = fully correct,
-  0 = wrong or blank). Use it for partial credit on short_answer/essay; for mcq/true_false it is
-  1 or 0.
-- "feedback": one or two sentences to the student — briefly, what was right or wrong.
-- "explanation": the correct reasoning, grounded in the reference answer or the provided context.
-- "mistakes": for a WRONG or partial answer, 1-3 SHORT mistake labels naming the error TYPE.
-  Use GENERAL, REUSABLE categories that would apply across many answers (e.g. "sign error",
-  "missing unit", "confused cause and effect") — NOT answer-specific descriptions (not "forgot the
-  2 in step 3"). Empty list when correct.
-- "confidence": your confidence in this grade, in [0,1].
+Use "partial_score" for partial credit on short_answer/essay; for mcq/true_false it is 1 or 0.
+Mistake labels must be GENERAL and REUSABLE, naming the error TYPE so they group across many
+answers (e.g. "sign error", "missing unit", "confused cause and effect") — never answer-specific
+descriptions like "forgot the 2 in step 3".
 
-Grade EXACTLY {n} answers, in the SAME ORDER as the blocks below (item i corresponds to block i).
+Grade EXACTLY {n} answers, one per block, each carrying its block's id verbatim in "id".
 
-Return JSON only, no prose:
-{{"items": [
-  {{"correct": true,
-    "partial_score": 1,
-    "feedback": "<short feedback to the student>",
-    "explanation": "<correct reasoning>",
-    "mistakes": [],
-    "confidence": 0.9}}
-]}}
+Return JSON only, no prose. Fields:
+{schema}
 
 --- ANSWERS ---
 {items_block}"""
@@ -252,9 +230,10 @@ Slide 2: <title>
 # --- visual builders: turn a topic + grounded context into a render tool's input -------
 
 MINDMAP_PROMPT = """Build a concise mind map of the topic below, grounded ONLY in the context.
-Return JSON only — a tree of nodes, each {{"label": "<short>", "children": [ ...same shape... ]}}.
-The root is the topic; 2-5 top branches; each branch 0-4 leaves. Labels <= 6 words. Write labels
+The root is the topic; 2-5 top branches; each branch 0-4 leaves. Labels <= 6 words.
 Do NOT add anything the context does not support.
+Return JSON only, no prose. Fields:
+{schema}
 {language}
 
 Topic: {topic}
@@ -263,8 +242,9 @@ Topic: {topic}
 {context}"""
 
 FLASHCARDS_PROMPT = """Create study flashcards from the material below, grounded ONLY in the context.
-Return JSON only: {{"cards": [{{"front": "<question or term>", "back": "<answer or definition>"}}]}}.
 Make up to {n} cards, each side short. Do NOT invent facts beyond the context.
+Return JSON only, no prose. Fields:
+{schema}
 {language}
 
 Topic: {topic}
@@ -273,23 +253,20 @@ Topic: {topic}
 {context}"""
 
 MATH_VISUAL_PROMPT = """{language}
-Extract a precise, plottable spec for the math/geometry request below.
-Commit to ONE concrete spec: if the request can be shown as a function of x, plot it; otherwise
-draw it as geometry. Return JSON only. Use Python arithmetic (** for powers) — do NOT list sample points.
-For a function plot:
-{{"functions": [{{"name": "<label>", "expr": "x**2", "domain": [-5, 5]}}], "title": ""}}.
-For geometry, give exact coordinates in "points", and list each segment as a PAIR OF POINT LABELS
-from that map:
-{{"geometry": {{"points": {{"A": [0, 0], "B": [4, 0], "C": [0, 3]}},
-  "segments": [["A", "B"], ["B", "C"], ["C", "A"]]}}, "title": ""}}.
-No prose.
+Describe the plot or figure that best illustrates the request below.
+Use Python arithmetic in expressions (** for powers) and give a domain for each function.
+For geometry, give exact coordinates in "points" and list each segment as a pair of point
+labels from that map. No prose.
+Return JSON only. Fields:
+{schema}
 
 Request: {topic}"""
 
 PDF_STRUCTURE_PROMPT = """Turn the material below into a structured document, grounded ONLY in it.
-Return JSON only: {{"title": "<short title>", "blocks": [{{"type": "heading|text", "text": "<...>"}}]}}.
 Organise it into a few sections — each a short "heading" block followed by one or more "text"
 blocks (a concise paragraph each). Be faithful: do not add anything the material does not contain.
+Return JSON only, no prose. Fields:
+{schema}
 {language}
 
 Topic: {topic}

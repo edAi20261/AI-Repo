@@ -25,7 +25,8 @@ from shared.language.catalog import STRINGS
 from shared.language.verify import (
     DEFAULT_MIN_ANSWER_CHARS, DEFAULT_MIN_CONFIDENCE, verify_answer)
 
-from ..utils import extract_json, parse_structured
+from shared.structured import call_structured
+
 from .pathways import build_namespaces, resolve_style
 
 logger = logging.getLogger(__name__)
@@ -108,40 +109,45 @@ def _plan_tasks(
     languages: str = "ar, en, fr, de", config=None,
 ) -> tuple[list[dict], str | None]:
     """LLM plan when a chat model is available; deterministic single task otherwise.
-    Returns ``(tasks, output_language)`` — ``output_language`` is set only when the user
-    explicitly asked for the answer in a specific language. A real LLM failure PROPAGATES
-    (the plan node degrades with a friendly message); an unusable/empty reply is a soft case
-    that falls back to a single explain task."""
+
+    Returns ``(tasks, output_language)``. A failure PROPAGATES so the plan node
+    degrades with a friendly message: a reply that could not be read is not the
+    same as a student asking for an explanation, and treating it as one silently
+    answered a different question than the one that was asked.
+
+    An empty task list is a genuine answer — the model read the message and found
+    nothing to do — and still falls back to a single explain task.
+    """
     if llm is not None:
         prompt_text = PLAN_PROMPT.format(
             allowed=", ".join(allowed), task_descriptions=_allowed_descriptions(allowed),
             role=role, languages=languages, message=message)
-        messages = [HumanMessage(content=prompt_text)]
-        # structured output when enabled; else one plain call (a real call failure raises here).
-        data = parse_structured(llm, PlannerOutput, messages, config, "planner")
-        raw = data.get("tasks") if isinstance(data, dict) else None
+        plan = call_structured(
+            PlannerOutput,
+            [HumanMessage(content=prompt_text)],
+            task="plan", config=config, llm=llm, label="planner",
+        )
         cleaned = []
-        for t in (raw or []):
-            if not (isinstance(t, dict) and t.get("type") in allowed):
+        for task in plan.tasks:
+            if task.type not in allowed:
                 continue
             entry = {
-                "type": t.get("type"),
-                "query": t.get("query") or message,
-                "level": t.get("level", "intermediate"),
-                "length": t.get("length", "medium"),
+                "type": task.type,
+                "query": task.query or message,
+                "level": task.level,
+                "length": task.length,
             }
-            # Optional user-requested assessment shape, only on assessment tasks.
-            if t.get("type") == "assessment" and isinstance(t.get("assessment"), dict):
-                entry["assessment"] = t["assessment"]
-            # Optional grade reference (assessment_id/kind), only on grade tasks.
-            if t.get("type") == "grade" and isinstance(t.get("grade"), dict):
-                entry["grade"] = t["grade"]
-            # Optional visual spec (kind/params/description), only on visual tasks.
-            if t.get("type") == "visual" and isinstance(t.get("visual"), dict):
-                entry["visual"] = t["visual"]
+            # Each sub-spec belongs to exactly one task type; anything else the
+            # model attached is dropped rather than carried into the wrong node.
+            if task.type == "assessment" and task.assessment:
+                entry["assessment"] = task.assessment.model_dump(exclude_none=True)
+            if task.type == "grade" and task.grade:
+                entry["grade"] = task.grade.model_dump(exclude_none=True)
+            if task.type == "visual" and task.visual:
+                entry["visual"] = task.visual.model_dump(exclude_none=True)
             cleaned.append(entry)
         if cleaned:
-            return _merge_same_type(cleaned), data.get("output_language")
+            return _merge_same_type(cleaned), plan.output_language
     # No LLM (dev/test), or the model returned nothing usable (not a failure) -> a safe default:
     # explain the message. A real LLM failure raised above and the plan node degrades instead.
     typ = "explain" if "explain" in allowed else allowed[0]
