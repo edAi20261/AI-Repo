@@ -61,6 +61,10 @@ class MainState(TypedDict, total=False):
     visuals: list[dict[str, Any]]
     visual_error: bool              # a visual_spec RAISED during render (vs produced nothing)
 
+    # -- session memory: the standing language instruction, and any change to it --
+    session_language: Optional[str]          # in force this turn, or None
+    session_language_write: Optional[dict]   # {"op": "set"|"clear", ...} for persist
+
     # -- compose --
     response: str
     # The citations the reply actually carries, renumbered globally and capped. Kept

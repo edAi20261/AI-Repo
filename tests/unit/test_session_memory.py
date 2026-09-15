@@ -176,3 +176,108 @@ def test_the_feature_can_be_turned_off(config, monkeypatch):
                         lambda key, default=None: False if key == "language.sticky.enabled"
                         else Config.load().get(key, default))
     assert SessionLanguage.from_config(config) is None
+
+
+# --- the feature, through the nodes -----------------------------------------
+
+class _FakeStore:
+    """The store without a database. Also stands in for one that is down, by
+    returning the same neutral values every method promises on failure."""
+
+    def __init__(self, working: bool = True):
+        self.rows: dict = {}
+        self.working = working
+
+    def get(self, user_id, session_id):
+        return self.rows.get((user_id, session_id)) if self.working else None
+
+    def set(self, user_id, session_id, *, code, user_type, evidence=None):
+        if not self.working:
+            return False
+        self.rows[(user_id, session_id)] = code
+        return True
+
+    def clear(self, user_id, session_id):
+        if not self.working:
+            return False
+        self.rows.pop((user_id, session_id), None)
+        return True
+
+
+def _conversation(store, session_id="s1"):
+    from agent.graph import nodes
+    config = Config.load()
+    classify = nodes.build_classify(config, sticky=store)
+    persist = nodes.build_persist(config, sticky=store)
+
+    def say(message):
+        state = {"message": message, "user_id": USER, "user_type": "student",
+                 "session_id": session_id}
+        out = classify(state)
+        persist({**state, **out})
+        return out["language"]
+
+    return say
+
+
+def test_from_now_on_means_from_now_on():
+    """The whole point. Turn 2 is plain English and must still come back Arabic."""
+    store = _FakeStore()
+    say = _conversation(store)
+    assert say("explain subtraction, and reply in Arabic from now on") == "ar"
+    assert say("and what about addition?") == "ar"
+    assert say("2 + 2 = ?") == "ar"
+
+
+def test_the_student_can_get_out_again():
+    store = _FakeStore()
+    say = _conversation(store)
+    say("reply in Arabic from now on")
+    assert say("answer in the language I write in") == "en"
+    assert say("and what about multiplication?") == "en"
+
+
+def test_an_instruction_does_not_leak_into_another_conversation():
+    store = _FakeStore()
+    _conversation(store, "s1")("reply in Arabic from now on")
+    assert _conversation(store, "s2")("and what about addition?") == "en"
+
+
+def test_a_newer_instruction_replaces_the_standing_one():
+    store = _FakeStore()
+    say = _conversation(store)
+    say("reply in Arabic from now on")
+    assert say("actually, answer in French") == "fr"
+    assert say("and what about addition?") == "fr"
+
+
+def test_a_database_that_is_down_costs_the_memory_not_the_answer():
+    """Degraded behaviour is exactly the behaviour the service shipped with."""
+    say = _conversation(_FakeStore(working=False))
+    assert say("explain subtraction, and reply in Arabic from now on") == "ar"
+    assert say("and what about addition?") == "en"
+    assert say("اشرح لي عملية الطرح") == "ar"
+
+
+def test_memory_switched_off_changes_nothing():
+    say = _conversation(None)
+    assert say("reply in Arabic from now on") == "ar"
+    assert say("and what about addition?") == "en"
+
+
+def test_an_instruction_turn_does_not_read_the_store():
+    """A message that gives or revokes an instruction settles it by itself."""
+    class _Counting(_FakeStore):
+        reads = 0
+
+        def get(self, user_id, session_id):
+            type(self).reads += 1
+            return super().get(user_id, session_id)
+
+    store = _Counting()
+    say = _conversation(store)
+    say("reply in Arabic from now on")
+    say("answer in the language I write in")
+    assert _Counting.reads == 0
+    say("and what about addition?")
+    assert _Counting.reads == 1
