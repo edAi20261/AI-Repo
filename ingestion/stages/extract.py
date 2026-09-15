@@ -12,23 +12,24 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from functools import lru_cache
 from typing import Any
+
+from shared.language import LanguagePolicy
 
 from ..context import PipelineContext
 from ..state import Element, Figure, IngestionState, PageResult
-from ..utils import is_garbage, normalise_text
-from ..utils import pdf
+from ..utils import is_garbage, normalise_text, pdf
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
 from ..utils.source import materialise
 
-try:
-    from langdetect import DetectorFactory, detect
-    DetectorFactory.seed = 0  # deterministic language detection
-except ImportError:  # pragma: no cover
-    detect = None  # type: ignore[assignment]
-
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=4)
+def _policy(supported: tuple[str, ...], default: str) -> LanguagePolicy:
+    return LanguagePolicy(supported=supported, default=default)
 
 
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
@@ -556,10 +557,10 @@ def _norm(text: str, norm: dict) -> str:
 
 
 def _language(text: str, default: str, supported: tuple[str, ...]) -> str:
-    if detect is None or len(text.strip()) < 10:
-        return default
-    try:
-        code = detect(text)
-    except Exception:
-        return default
-    return code if code in supported else default
+    """The language of one extracted block, through the shared policy.
+
+    Ingestion ran its own detector with a ten-character floor and no confidence
+    check, so a heading could label a whole page. The resolver declines instead,
+    and the block keeps the language it inherited.
+    """
+    return _policy(tuple(supported), default).resolve_document(text, hint=default).code

@@ -132,9 +132,23 @@ ingestion:
 language:
   supported: [ar, en, fr, de]
   default: en
-  detect_per_turn: true
   arabic_ratio: 0.30           # >= this share of Arabic-script letters -> the turn is Arabic
-  quiz_single_language: true
+  # Detection decides a turn only with enough evidence: below any of these it
+  # declines and the resolver falls back to what it already knew. "explain column
+  # subtraction" scored 0.57 for French under the old detector — exactly the kind
+  # of guess these floors exist to reject.
+  min_chars: 12
+  min_confidence: 0.55
+  min_margin: 0.15
+  arabizi:
+    # Arabic typed in Latin letters ("momken", "a7seb") defeats every detector
+    # measured. Set hint_to: ar to route it to Arabic instead of falling back.
+    hint_to: null
+  verify:
+    enabled: true
+    min_confidence: 0.60
+    answer_min_chars: 40
+  quiz_single_language: true   # questions follow the subject; prose follows the student
   keep_technical_terms_in_source_language: true
 
 agent:

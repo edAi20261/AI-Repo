@@ -20,10 +20,11 @@ from typing import Any, Optional, TypedDict
 
 from langchain_core.messages import HumanMessage
 
+from shared.language import language_directive, translate
+
 from ... import render, retrieval
-from ...prompts import EXPLAIN_PROMPT, SUMMARIZE_PROMPT
 from ...models import Citation, PrereqTopic, RetrievedChunk, Style
-from ...utils import degraded_message
+from ...prompts import EXPLAIN_PROMPT, SUMMARIZE_PROMPT
 
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
 _MATH_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -109,7 +110,7 @@ def _build_answer(mode: str, llm, config):
 
         instructions = state.get("instructions", "")
         prompt_text = prompt.format(
-            language=state.get("language", "en"),
+            language=language_directive(state.get("language", "en")),
             level=state.get("level", "intermediate"),
             length=state.get("length", "medium"),
             style=style,
@@ -118,7 +119,7 @@ def _build_answer(mode: str, llm, config):
             prereq_context=prereq_ctx or "(none)",
             query=state.get("query", ""),
         ) if mode == "explain" else prompt.format(
-            language=state.get("language", "en"),
+            language=language_directive(state.get("language", "en")),
             length=state.get("length", "medium"),
             style=style,
             instructions=instructions,
@@ -131,7 +132,7 @@ def _build_answer(mode: str, llm, config):
             # Runtime LLM failure (key present, call failed): a friendly message, not a stub
             # or a stack trace. No citations/figure on a degraded answer.
             logger.error("answer LLM call failed", exc_info=True)
-            return {"explanation": degraded_message(state.get("language", "en")),
+            return {"explanation": translate("common.degraded", state.get("language", "en")),
                     "citations": [], "grounded": False}
         logger.info("answer finished", extra={
             "mode": mode, "duration_s": round(time.perf_counter() - started, 3)})
@@ -209,9 +210,7 @@ def _figure_spec(mode, state, chunks, config) -> Optional[dict]:
 
 
 def _no_context_message(language: str) -> str:
-    if language == "ar":
-        return "لا توجد مادة كافية في المنهج للإجابة عن هذا السؤال."
-    return "There isn't enough syllabus material to answer this yet."
+    return translate("explain.no_context", language)
 
 
 def _stub_answer(mode: str, chunks: list[RetrievedChunk], language: str) -> str:

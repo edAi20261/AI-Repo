@@ -46,7 +46,7 @@ def run_grade(payload: dict[str, Any], *, config: Optional[Config] = None) -> di
         "subject_id": payload.get("subject_id"),
         "lecture_ids": payload.get("lecture_ids") or None,
         "user_id": payload.get("user_id"),
-        "language": facts.language or payload.get("language", "en"),
+        "language": payload.get("language", "en"),
         "instructions": _subject_instructions(facts),
         "kind": payload.get("kind"),
         "assessment_id": payload.get("assessment_id"),

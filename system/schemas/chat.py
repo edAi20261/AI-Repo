@@ -27,7 +27,9 @@ class ChatRequest(Schema):
         default=None, description="Set when the turn grades a saved assessment."
     )
     language: Optional[Language] = Field(
-        default=None, description="Overrides the language detected from the message."
+        default=None,
+        description=("Answer in this language. Outranks detection — pass it when the "
+                     "platform knows the learner's language."),
     )
 
     def to_state(self) -> dict[str, Any]:
@@ -51,7 +53,7 @@ class ChatRequest(Schema):
 class ChatResponse(Schema):
     request_id: str
     response: str = Field(description="The composed reply, with inline citations.")
-    language: str
+    language: Language
     pathway: Optional[str] = None
     tasks: list[str] = Field(default_factory=list, description="Tasks the planner selected.")
     visuals: list[Visual] = Field(default_factory=list)

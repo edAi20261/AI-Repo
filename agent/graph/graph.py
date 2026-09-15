@@ -23,8 +23,13 @@ from ..models import Style, SubjectFacts
 from ..state import MainState
 from . import nodes
 from .subgraphs import (
-    build_explain_sg, build_assessment_sg, build_grade_sg, build_report_sg,
-    build_summarize_sg, build_visual_sg)
+    build_assessment_sg,
+    build_explain_sg,
+    build_grade_sg,
+    build_report_sg,
+    build_summarize_sg,
+    build_visual_sg,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,13 +142,18 @@ def _subject_instructions(facts: SubjectFacts, *, with_figure: bool = False) -> 
 
 def _build_assessment_adapter(compiled, config: Config, client=None):
     q = config.get("assessment", {}) or {}
+    quiz_follows_subject = config.get("language.quiz_single_language", True)
 
     def adapter(payload) -> dict:
         task = payload["task"]
         params = task.get("params", {})
         facts = _subject_facts(client, payload.get("subject_id"))
-        # Generate in the subject's language when known; fall back to the turn language.
-        language = facts.language or payload.get("language", "en")
+        # Questions are material a student will sit, so they follow the subject's
+        # language when it is known — an IGCSE physics quiz stays in English even
+        # for an Arabic-speaking student. Everything addressed TO the student
+        # (feedback, reports, captions) follows the student instead.
+        language = (facts.language or payload.get("language", "en")
+                    if quiz_follows_subject else payload.get("language", "en"))
         # (1) translate in: each `params.X or q.get(X)` = per-request override, else config default.
         result = compiled.invoke({
             "query": params.get("query", ""),
@@ -199,7 +209,7 @@ def _build_grade_adapter(compiled, config: Config, client=None):
             "subject_id": payload.get("subject_id"),
             "lecture_ids": payload.get("lecture_ids") or None,
             "user_id": payload.get("user_id"),
-            "language": facts.language or payload.get("language", "en"),
+            "language": payload.get("language", "en"),
             "instructions": _subject_instructions(facts),
             "kind": spec.get("kind"),
             "assessment_id": spec.get("assessment_id"),
@@ -239,7 +249,6 @@ def _build_report_adapter(compiled, config: Config, client=None):
     def adapter(payload) -> dict:
         task = payload["task"]
         task_id = task.get("task_id")
-        facts = _subject_facts(client, payload.get("subject_id"))
         # Scope is forced by pathway: a student can only see their own progress. Teacher/parent
         # report scopes are shelled (Sprint 3), so no report task reaches them today.
         state = compiled.invoke({
@@ -247,7 +256,7 @@ def _build_report_adapter(compiled, config: Config, client=None):
             "user_id": payload.get("user_id"),
             "subject_id": payload.get("subject_id"),
             "lecture_ids": payload.get("lecture_ids") or None,
-            "language": facts.language or payload.get("language", "en"),
+            "language": payload.get("language", "en"),
         })
         result = state.get("result", {})
         out: dict = {"answers": [{
@@ -286,7 +295,7 @@ def _build_render_visuals(compiled, config: Config, client=None):
             "lecture_ids": state.get("lecture_ids") or None,
             "user_id": state.get("user_id"),
             "conversation_id": state.get("session_id"),
-            "language": facts.language or state.get("language", "en"),
+            "language": state.get("language", "en"),
             "namespaces": state.get("namespaces"),
             "content": content,
             "instructions": _subject_instructions(facts),
@@ -334,6 +343,8 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
     graph.add_node("visual_adapter", _build_visual_adapter(config, backend_client))
     graph.add_node("render_visuals", _build_render_visuals(visual_sg, config, backend_client))
     graph.add_node("compose", nodes.build_compose(config, maybe_llm(config, "compose")))
+    graph.add_node("verify_language", nodes.build_verify_language(
+        config, maybe_llm(config, "compose")))
     graph.add_node("persist", nodes.build_persist(config))
 
     # Linear front, then plan fans out (dispatch returns one Send per planned task — only
@@ -352,7 +363,8 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
                     "grade_adapter", "report_adapter", "visual_adapter"):
         graph.add_edge(adapter, "render_visuals")
     graph.add_edge("render_visuals", "compose")
-    graph.add_edge("compose", "persist")
+    graph.add_edge("compose", "verify_language")
+    graph.add_edge("verify_language", "persist")
     graph.add_edge("persist", END)
 
     compiled = graph.compile(checkpointer=checkpointer)

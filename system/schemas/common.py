@@ -6,8 +6,12 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.language import Lang
+
 Pathway = Literal["student", "teacher", "parent"]
-Language = Literal["ar", "en", "fr", "de"]
+# One definition of the supported set, so the API, the resolver and the string
+# catalogue cannot drift into disagreeing about what "supported" means.
+Language = Lang
 
 
 class Schema(BaseModel):

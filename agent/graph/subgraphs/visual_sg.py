@@ -17,6 +17,7 @@ never goes through an image model.
 from __future__ import annotations
 
 import logging
+from shared.language import content_directive
 from typing import Any, Optional, TypedDict
 
 from langchain_core.messages import HumanMessage
@@ -127,7 +128,8 @@ def _build_mindmap(desc: str, ctx: str, language: str, config, llm) -> Optional[
     failed/degenerate build renders nothing rather than a lone box (no visual > a wrong one)."""
     if llm is None:
         return None
-    prompt_text = R_prompts.MINDMAP_PROMPT.format(topic=desc, context=ctx, language=language)
+    prompt_text = R_prompts.MINDMAP_PROMPT.format(
+        topic=desc, context=ctx, language=content_directive(language))
     try:
         data = extract_json(llm.invoke([HumanMessage(content=prompt_text)]).content) or {}
     except Exception:
@@ -155,7 +157,8 @@ def _build_flashcards(desc: str, content: dict, spec, state, config, llm) -> lis
     ctx = _context_text(spec, content, state, config)
     n = config.get("render.flashcards.count", 8)
     prompt_text = R_prompts.FLASHCARDS_PROMPT.format(
-        topic=desc, context=ctx, n=n, language=state.get("language", "en"))
+        topic=desc, context=ctx, n=n,
+        language=content_directive(state.get("language", "en")))
     try:
         data = extract_json(llm.invoke([HumanMessage(content=prompt_text)]).content) or {}
     except Exception:
@@ -217,7 +220,8 @@ def _build_pdf(desc: str, ctx: str, language: str, llm) -> Optional[dict]:
     back to a single block. Grounded ONLY in ``ctx`` — the prompt reorganises, never invents."""
     if llm is None:
         return None
-    prompt_text = R_prompts.PDF_STRUCTURE_PROMPT.format(topic=desc, content=ctx, language=language)
+    prompt_text = R_prompts.PDF_STRUCTURE_PROMPT.format(
+        topic=desc, content=ctx, language=content_directive(language))
     try:
         data = extract_json(llm.invoke([HumanMessage(content=prompt_text)]).content) or {}
     except Exception:
@@ -399,7 +403,7 @@ def _dispatch(spec: dict, common: dict, state: VisualState, llm) -> Optional[dic
         # from the planner's visual spec); until then the config cap keeps outlines digestible.
         max_slides = common["config"].get("render.slides.max_slides", 10)
         text = R.powerpoint_points(params.get("content") or desc, llm,
-                                   language=state.get("language", "en"),
+                                   language=content_directive(state.get("language", "en")),
                                    instructions=state.get("instructions", ""),
                                    max_slides=max_slides)
         return ArtifactRef(kind="slides", text=text).model_dump(exclude_none=True)
