@@ -7,6 +7,7 @@ this module stays cheap and never requires an SDK that isn't installed.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
 from shared.metering import record_usage
@@ -18,6 +19,8 @@ from .prompts import (
     PAGE_TRANSCRIPTION_PROMPT,
 )
 from .schemas import FigureBox, FigureCaption, PageTranscription
+
+logger = logging.getLogger(__name__)
 
 # Marks stub output so it can never be mistaken for a real transcription. (used in testing only if vision API is not available)
 VISION_STUB_SENTINEL = "[[VISION_STUB]]"
