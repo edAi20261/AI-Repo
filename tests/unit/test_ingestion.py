@@ -1270,3 +1270,21 @@ def test_extract_continues_when_old_figures_cannot_be_cleared(tmp_path, caplog):
 
     assert result["stats"]["extract"]
     assert "could not be cleared" in caplog.text
+
+
+def test_a_failed_caption_is_counted_not_indexed_as_empty(tmp_path):
+    """An empty caption used to be indistinguishable from a model with nothing to
+    say — and captions are what make a figure findable."""
+    class _NoCaption(StubVisionClient):
+        def caption_figure(self, image_png, *, heading_path="", language_hint=None):
+            return None
+
+    pdf_path = tmp_path / "lesson.pdf"
+    _make_pdf(pdf_path)
+    ctx = PipelineContext.build(Config.load())
+    ctx.vision = _NoCaption()
+    st = new_state(lecture_id="l", subject_id="s", source_uri=pdf_path.resolve().as_uri())
+
+    result = run_extract(st, ctx)
+
+    assert "caption_failed" in result["stats"]["extract"]
