@@ -10,9 +10,10 @@ read, which is worse than falling back to what we already knew about them.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Optional, Sequence
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

@@ -19,6 +19,8 @@ from typing import Any, Optional, TypedDict
 
 from langchain_core.messages import HumanMessage
 
+from shared.language import language_directive, translate
+
 from ...mastery import Mastery, MasteryParams, observation, update_aggregate
 from ...models import GradeBatch, GradedItem, SubmissionItem
 from ...prompts import GRADE_BATCH_PROMPT
@@ -32,9 +34,7 @@ from ...tools import (
     update_mastery,
     write_mastery_events,
 )
-from shared.language import language_directive, translate
-
-from ...utils import degraded_message, extract_json, parse_structured
+from ...utils import extract_json, parse_structured
 
 logger = logging.getLogger(__name__)
 

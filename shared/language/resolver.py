@@ -9,7 +9,8 @@ node downstream reads the result; none of them decide again.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 from .detect import (
     DEFAULT_MIN_CHARS,

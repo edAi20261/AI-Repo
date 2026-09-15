@@ -23,8 +23,13 @@ from ..models import Style, SubjectFacts
 from ..state import MainState
 from . import nodes
 from .subgraphs import (
-    build_explain_sg, build_assessment_sg, build_grade_sg, build_report_sg,
-    build_summarize_sg, build_visual_sg)
+    build_assessment_sg,
+    build_explain_sg,
+    build_grade_sg,
+    build_report_sg,
+    build_summarize_sg,
+    build_visual_sg,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +249,6 @@ def _build_report_adapter(compiled, config: Config, client=None):
     def adapter(payload) -> dict:
         task = payload["task"]
         task_id = task.get("task_id")
-        facts = _subject_facts(client, payload.get("subject_id"))
         # Scope is forced by pathway: a student can only see their own progress. Teacher/parent
         # report scopes are shelled (Sprint 3), so no report task reaches them today.
         state = compiled.invoke({

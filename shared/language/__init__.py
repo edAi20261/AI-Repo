@@ -10,7 +10,14 @@ from .directive import content_directive, language_directive, name_of
 from .request import explicit_request
 from .resolver import DEFAULT_LANGUAGE, DEFAULT_SUPPORTED, LanguagePolicy
 from .script import arabic_ratio, classify, looks_arabizi
-from .types import ENDONYMS, ENGLISH_NAMES, Lang, LanguageDecision, LanguageSource, Script
+from .types import (
+    ENDONYMS,
+    ENGLISH_NAMES,
+    Lang,
+    LanguageDecision,
+    LanguageSource,
+    Script,
+)
 from .verify import LanguageCheck, prose_of, verify_answer
 
 __all__ = [

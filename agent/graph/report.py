@@ -14,11 +14,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from shared.backend import get_backend_client
 from shared.llm import maybe_llm
 
 from ..config import Config, get_config
-from .graph import _subject_facts
 from .subgraphs import build_report_sg
 
 
@@ -34,12 +32,6 @@ def run_report(payload: dict[str, Any], *, config: Optional[Config] = None) -> d
     invariant 3) — INSERT ``{scope, payload_json, artifact_refs, generated_at}`` so reports
     have history; the return is already payload_json-shaped."""
     config = config or get_config()
-    try:
-        client = get_backend_client(config)
-    except ValueError:
-        client = None
-    facts = _subject_facts(client, payload.get("subject_id"))
-
     sg = build_report_sg(config=config, llm=maybe_llm(config, "report"))
     state = sg.invoke({
         "scope": payload.get("scope") or "student_progress",

@@ -20,12 +20,11 @@ from typing import Any, Optional, TypedDict
 
 from langchain_core.messages import HumanMessage
 
-from ... import render, retrieval
-from ...prompts import EXPLAIN_PROMPT, SUMMARIZE_PROMPT
-from ...models import Citation, PrereqTopic, RetrievedChunk, Style
 from shared.language import language_directive, translate
 
-from ...utils import degraded_message
+from ... import render, retrieval
+from ...models import Citation, PrereqTopic, RetrievedChunk, Style
+from ...prompts import EXPLAIN_PROMPT, SUMMARIZE_PROMPT
 
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
 _MATH_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -133,7 +132,7 @@ def _build_answer(mode: str, llm, config):
             # Runtime LLM failure (key present, call failed): a friendly message, not a stub
             # or a stack trace. No citations/figure on a degraded answer.
             logger.error("answer LLM call failed", exc_info=True)
-            return {"explanation": degraded_message(state.get("language", "en")),
+            return {"explanation": translate("common.degraded", state.get("language", "en")),
                     "citations": [], "grounded": False}
         logger.info("answer finished", extra={
             "mode": mode, "duration_s": round(time.perf_counter() - started, 3)})

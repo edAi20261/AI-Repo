@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Optional
 
 from .detect import detect
 from .types import LanguageDecision
@@ -22,9 +23,9 @@ DEFAULT_MIN_ANSWER_CHARS = 40
 DEFAULT_MIN_CONFIDENCE = 0.60
 
 _CITATION = re.compile(r"\[\d+(?:,\s*\d+)*\]")
-_FENCED = re.compile(r"```.*?```", re.S)
+_FENCED = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`]*`")
-_LATEX = re.compile(r"\$[^$]*\$|\\\(.*?\\\)|\\\[.*?\\]", re.S)
+_LATEX = re.compile(r"\$[^$]*\$|\\\(.*?\\\)|\\\[.*?\\]", re.DOTALL)
 _URL = re.compile(r"https?://\S+|s3://\S+")
 
 

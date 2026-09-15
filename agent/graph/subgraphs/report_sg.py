@@ -22,11 +22,10 @@ from typing import Any, Optional, TypedDict
 
 from langchain_core.messages import HumanMessage
 
-from ...prompts import REPORT_STUDENT_PROMPT
 from shared.language import language_directive, translate
 
+from ...prompts import REPORT_STUDENT_PROMPT
 from ...tools import get_mastery, get_mastery_trend, get_topic_deps, get_topic_labels
-from ...utils import degraded_message
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +191,7 @@ def _build_narrate(llm, config):
                     raise ValueError("empty narrative")
             except Exception:
                 logger.error("report narrate failed; degrading", exc_info=True)
-                narrative = degraded_message(language)
+                narrative = translate("common.degraded", language)
                 degraded = True
 
         result = {

@@ -31,10 +31,11 @@ def language_directive(
 ) -> str:
     """The reply-language instruction appended to every user-facing prompt."""
     target = name_of(code)
-    lines = [
+    opening = (
         f"The student is writing in {target}. You MUST write your ENTIRE reply in "
-        f"{target} — every sentence, heading, label and caption.",
-    ]
+        f"{target} — every sentence, heading, label and caption."
+    )
+    lines = [opening]
     if context_may_differ:
         lines.append(CONTEXT_PULL)
     if keep_terms:
