@@ -115,7 +115,7 @@ class Dependency:
 
     topic_id: str
     prereq_topic_id: str
-    strength: str = "required"       # ai.dependency_strength: required | recommended
+    strength: str = "required"       # ai.dependency_strength: required | related
     rationale: Optional[str] = None
 
 

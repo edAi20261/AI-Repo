@@ -10,12 +10,15 @@ point.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Sequence
 
 from .config import Config
 from .state import Chunk, Dependency, Figure, Topic
+
+logger = logging.getLogger(__name__)
 
 
 # ===========================================================================
@@ -443,6 +446,10 @@ def _topic_payload(t: Any) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if v is not None}
 
 
+DEFAULT_UPSERT_BATCH = 64
+DEFAULT_QDRANT_TIMEOUT = 120
+
+
 class QdrantVectorStore(VectorStore):
     def __init__(self, config: Config, location: str) -> None:
         from qdrant_client import QdrantClient
@@ -453,12 +460,29 @@ class QdrantVectorStore(VectorStore):
         self._distance = vs.get("distance", "cosine")
         self._hnsw = vs.get("hnsw", {})
         self._indexed_fields = vs.get("indexed_payload_fields", [])
+        # A whole lesson in one request times out on a small cluster, so points
+        # go up in batches with an explicit budget per request.
+        self._batch_size = max(1, int(vs.get("upsert_batch_size", DEFAULT_UPSERT_BATCH)))
+        timeout = int(vs.get("timeout_seconds", DEFAULT_QDRANT_TIMEOUT))
         if location == ":memory:":
             self._client = QdrantClient(location=":memory:")
         else:
             self._client = QdrantClient(
-                url=location, api_key=config.secret("QDRANT_API_KEY")
+                url=location, api_key=config.secret("QDRANT_API_KEY"), timeout=timeout
             )
+
+    def _upsert_batched(self, collection: str, points: list) -> int:
+        """Upsert in bounded batches; a partial failure leaves earlier batches in place."""
+        for start in range(0, len(points), self._batch_size):
+            batch = points[start : start + self._batch_size]
+            self._client.upsert(collection_name=collection, points=batch, wait=True)
+            logger.debug(
+                "qdrant upsert batch",
+                extra={"collection": collection, "points": len(batch),
+                       "done": min(start + self._batch_size, len(points)),
+                       "total": len(points)},
+            )
+        return len(points)
 
     def ensure_collection(self, dimension: int) -> None:
         from qdrant_client import models
@@ -513,9 +537,7 @@ class QdrantVectorStore(VectorStore):
             for c in chunks
             if c.embedding is not None and c.chunk_id
         ]
-        if points:
-            self._client.upsert(collection_name=self._collection, points=points)
-        return len(points)
+        return self._upsert_batched(self._collection, points)
 
     def ensure_topics_collection(self, dimension: int) -> None:
         from qdrant_client import models
@@ -554,9 +576,7 @@ class QdrantVectorStore(VectorStore):
             for t in topics
             if t.label_embedding is not None and t.topic_id
         ]
-        if points:
-            self._client.upsert(collection_name=self._topics_collection, points=points)
-        return len(points)
+        return self._upsert_batched(self._topics_collection, points)
 
 
 class DryRunVectorStore(VectorStore):

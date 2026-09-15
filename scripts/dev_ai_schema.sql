@@ -23,7 +23,7 @@ BEGIN
         JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE t.typname = 'dependency_strength' AND n.nspname = 'ai'
     ) THEN
-        CREATE TYPE ai.dependency_strength AS ENUM ('required', 'recommended');
+        CREATE TYPE ai.dependency_strength AS ENUM ('required', 'related');
     END IF;
 END$$;
 

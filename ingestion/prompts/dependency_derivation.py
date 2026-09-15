@@ -7,7 +7,7 @@ must already have to learn the target. Pick from anywhere in the list, not just
 nearby ones. Choose none if there are no real prerequisites.
 
 Use only labels from the candidate list, verbatim. Return a JSON array of objects:
-{{"prereq": "<exact candidate label>", "strength": "required" | "recommended",
+{{"prereq": "<exact candidate label>", "strength": "required" | "related",
   "rationale": "<short reason>"}}
 
 Target skill: {topic}

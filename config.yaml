@@ -54,6 +54,8 @@ embeddings:
 
 vector_store:
   backend: qdrant                # qdrant | pgvector
+  timeout_seconds: 120
+  upsert_batch_size: 64
   collection: eduai_chunks
   topics_collection: eduai_topics  # topic-label vectors (resolve_topics ANN); populated on re-ingest
   distance: cosine

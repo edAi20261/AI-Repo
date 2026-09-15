@@ -13,7 +13,20 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 BLOOM_LEVELS = {"remember", "understand", "apply", "analyze", "evaluate", "create"}
-DEPENDENCY_STRENGTHS = {"required", "recommended"}
+# The platform owns ai.dependency_strength; these are its values. A model asked for
+# a prerequisite's strength reaches for other words, so near-synonyms are mapped
+# rather than dropped.
+DEPENDENCY_STRENGTHS = {"required", "related"}
+DEPENDENCY_STRENGTH_ALIASES = {
+    "recommended": "related",
+    "optional": "related",
+    "helpful": "related",
+    "useful": "related",
+    "supporting": "related",
+    "mandatory": "required",
+    "essential": "required",
+    "prerequisite": "required",
+}
 
 
 # --- vision ----------------------------------------------------------------
@@ -90,6 +103,7 @@ class DependencyItem(BaseModel):
     @classmethod
     def _known_strength_only(cls, v):
         s = str(v or "").strip().lower()
+        s = DEPENDENCY_STRENGTH_ALIASES.get(s, s)
         return s if s in DEPENDENCY_STRENGTHS else "required"
 
     @field_validator("rationale", mode="before")
