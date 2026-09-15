@@ -7,14 +7,20 @@ and applies it even over a stored "my native language is Spanish". OpenAI's voic
 prompt says "respond in the same language the user is speaking unless directed
 otherwise".
 
-So precedence runs from what this message says, to what it is written in, to what
-we were told about the learner beforehand:
+So precedence runs from what this message says, to what the student said earlier
+in this conversation, to what it is written in, to what we were told beforehand:
 
     explicit request in the message
+    -> a standing request from earlier in the session
     -> Arabic script
     -> confident detection
     -> the caller's parameter
     -> planner hint -> profile -> previous turn -> default
+
+The second rank is the same clause read the other way round: "unless explicitly
+requested otherwise" does not expire at the end of the turn it was said in. A
+student who asked for Arabic and then pastes an English formula has not changed
+their mind — only a newer request, or asking to be followed again, outranks it.
 
 A caller's ``language`` parameter is a default for when the message cannot decide
 — a greeting too short to detect, Arabizi, a bare equation — never an override of
@@ -90,6 +96,8 @@ class LanguagePolicy:
         message: str = "",
         *,
         api_language: Optional[str] = None,
+        session_language: Optional[str] = None,
+        session_evidence: Optional[str] = None,
         planner_hint: Optional[str] = None,
         profile_language: Optional[str] = None,
         previous_language: Optional[str] = None,
@@ -102,6 +110,16 @@ class LanguagePolicy:
         if requested and self._supported(requested[0]):
             return self._decide(
                 requested[0], "explicit", script=writing_system, evidence=requested[1]
+            )
+
+        # An instruction from an earlier turn, still an instruction. Not marked
+        # refused: these are the turns most likely to drift, because the message
+        # and the answer are in different languages and every retrieved passage
+        # pulls the model back toward the message.
+        if self._supported(session_language):
+            return self._decide(
+                session_language, "session", script=writing_system,
+                evidence=session_evidence,
             )
 
         if writing_system == "arabic" and self._supported("ar"):

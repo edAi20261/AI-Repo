@@ -389,3 +389,46 @@ def test_a_bare_clear_is_recognised(text):
 def test_a_question_carrying_an_instruction_still_needs_an_answer(text):
     """Both halves matter: the instruction is obeyed, and the question answered."""
     assert language_instruction_only(text) is None
+
+
+# --- a standing request from earlier in the session --------------------------
+
+@pytest.mark.parametrize("message", [
+    "and what about addition?",      # plain English, the common next turn
+    "explique-moi la soustraction",  # a confidently-detected other language
+    "ok",                            # too short to read
+    "2 + 2 = ?",                     # no letters at all
+])
+def test_a_standing_request_outranks_the_message(policy, message):
+    """"Reply in Arabic from now on" means from now on. Only a newer request
+    changes it — not the language of the next thing they happen to type."""
+    decision = policy.resolve(message, session_language="ar")
+    assert (decision.code, decision.source) == ("ar", "session")
+
+
+def test_a_standing_request_is_verified_not_guessed(policy):
+    """These are the turns most likely to drift: the message and the answer are
+    in different languages, so the retrieved material pulls against the answer."""
+    decision = policy.resolve("and what about addition?", session_language="ar")
+    assert decision.refused is False and decision.verifiable is True
+
+
+def test_a_new_request_replaces_the_standing_one(policy):
+    decision = policy.resolve("explain this, reply in French", session_language="ar")
+    assert (decision.code, decision.source) == ("fr", "explicit")
+
+
+def test_the_standing_request_outranks_the_caller(policy):
+    decision = policy.resolve("and what about addition?",
+                              session_language="ar", api_language="en")
+    assert decision.code == "ar"
+
+
+def test_an_unsupported_standing_value_is_ignored(policy):
+    decision = policy.resolve("explain subtraction", session_language="es")
+    assert (decision.code, decision.source) == ("en", "detected")
+
+
+def test_no_standing_request_leaves_everything_as_it_was(policy):
+    assert policy.resolve("explain subtraction").code == "en"
+    assert policy.resolve("اشرح لي عملية الطرح").code == "ar"
