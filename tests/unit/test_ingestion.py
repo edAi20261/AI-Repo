@@ -383,6 +383,18 @@ def _dep(a, b):
     return Dependency(topic_id=a, prereq_topic_id=b)
 
 
+def test_dependency_strength_matches_the_platform_enum():
+    """ai.dependency_strength is (required, related) in the platform database."""
+    from ingestion.schemas import DEPENDENCY_STRENGTHS, DependencyItem
+
+    assert DEPENDENCY_STRENGTHS == {"required", "related"}
+    # A model reaching for another word lands on the nearest real value, not a default.
+    assert DependencyItem(prereq="p", strength="recommended").strength == "related"
+    assert DependencyItem(prereq="p", strength="Optional").strength == "related"
+    assert DependencyItem(prereq="p", strength="essential").strength == "required"
+    assert DependencyItem(prereq="p", strength="banana").strength == "required"
+
+
 def test_clean_drops_self_edges_and_duplicates():
     edges = [_dep("A", "A"), _dep("A", "B"), _dep("A", "B")]
     kept = _clean(edges, drop_self=True, max_out_degree=5, break_cycles=True)
@@ -431,7 +443,7 @@ def test_dependencies_stage_writes_edges():
     deriver = _FakeDeriver(
         {"solving equations": [
             {"prereq": "adding fractions", "strength": "required"},
-            {"prereq": "multiplying fractions", "strength": "recommended"},
+            {"prereq": "multiplying fractions", "strength": "recommended"},  # alias -> related
         ]}
     )
 
@@ -631,6 +643,21 @@ def test_discipline_derivation_from_name_code():
     assert discipline_of({"discipline": "bogus"}) is Discipline.OTHER
 
 
+def test_grade_labels_normalise_to_the_platform_enum():
+    """The API serialises the enum by name, the column stores its value."""
+    from ingestion.utils.grades import to_platform_grade
+
+    assert to_platform_grade("GRADE_7") == "Grade 7"
+    assert to_platform_grade("Grade 7") == "Grade 7"
+    assert to_platform_grade("g8") == "Grade 8"
+    assert to_platform_grade("12") == "Grade 12"
+    assert to_platform_grade("year 3") == "Grade 3"
+    assert to_platform_grade(None) is None
+    assert to_platform_grade("") is None
+    assert to_platform_grade("KG1") is None
+    assert to_platform_grade("GRADE_13") is None
+
+
 def test_fixture_backend_resolves_lesson(tmp_path):
     manifest = _write_fixture(tmp_path)
     client = FixtureBackendClient(manifest)
@@ -638,7 +665,7 @@ def test_fixture_backend_resolves_lesson(tmp_path):
     assert client.list_pending_lesson_ids() == ["lesson-1"]
     src = resolve_lesson(client, "lesson-1")
     assert src.subject_id == "subj-1"
-    assert src.grade == "g8" and src.language == "en"
+    assert src.grade == "Grade 8" and src.language == "en"
     assert src.discipline is Discipline.MATH
     assert src.subject_is_math is True
     assert src.source_uri.startswith("file://") and src.source_uri.endswith("lesson.pdf")

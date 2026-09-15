@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from .config import Config
 from .state import Discipline
+from .utils.grades import to_platform_grade
 
 
 @dataclass
@@ -215,7 +216,7 @@ def resolve_lesson(client: BackendClient, lesson_id: str) -> LessonSource:
         source_uri="" if media_id is None else client.get_media_url(media_id),
         text_content=text_content,
         subject_id=lesson["subject_id"],
-        grade=subject.get("grade_level"),
+        grade=to_platform_grade(subject.get("grade_level")),
         language=subject.get("language"),
         discipline=discipline_of(subject),
         subject_name=subject.get("name"),
