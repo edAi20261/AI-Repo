@@ -494,9 +494,12 @@ def schema_hint(schema: type[BaseModel]) -> str:
         for name, field in (node.get("properties") or {}).items():
             resolved = _resolve(field, definitions)
             where = f"{path}.{name}" if path else name
+            # An Optional field carries its description on the outer node, while the
+            # type lives on the non-null branch — take each from where it is.
+            description = field.get("description") or resolved.get("description")
             lines.append(f"{'  ' * depth}- {where}: {_type_of(resolved, definitions)}"
-                         f"{_constraints_of(resolved)}"
-                         f"{' — ' + resolved['description'] if resolved.get('description') else ''}")
+                         f"{_constraints_of(resolved) or _constraints_of(field)}"
+                         f"{' — ' + description if description else ''}")
             nested = _resolve(resolved.get("items", {}), definitions) if "items" in resolved else resolved
             if nested.get("properties") and depth < 2:
                 describe(nested, where + ("[]" if "items" in resolved else ""), depth + 1)

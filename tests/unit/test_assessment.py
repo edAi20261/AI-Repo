@@ -80,12 +80,14 @@ class _BatchLLM:
 
 
 def test_batch_generate_maps_items_and_multicorrect():
+    """Questions come back carrying their block id, and mark correctness by index."""
     from agent.graph.subgraphs.assessment_sg import _batch_generate
     llm = _BatchLLM(
         '{"items": ['
-        '{"question": "Q1", "type": "mcq", "options": ["A","B","C","D"], '
-        '"answer": ["A","B"], "explanation": "e1"},'
-        '{"question": "Q2", "type": "true_false", "answer": "true", "explanation": "e2"}]}')
+        '{"id": "b1", "question": "Q1", "type": "mcq", "options": ["A","B","C","D"], '
+        '"correct_indices": [0, 1], "explanation": "e1"},'
+        '{"id": "b2", "question": "Q2", "type": "true_false", "answer": "true", '
+        '"explanation": "e2"}]}')
     c = _chunk()
     bound = [({"type": "mcq", "topic_id": "tA", "difficulty": "easy"}, c),
              ({"type": "true_false", "topic_id": "tB", "difficulty": "hard"}, c)]
@@ -106,10 +108,11 @@ def test_batch_generate_uses_structured_output():
     class _Structured:
         def invoke(self, _msgs):
             return DraftBatch(items=[
-                ItemDraft(question="Q1", type="mcq", options=["A", "B"], answer="A")])
+                ItemDraft(id="b1", question="Q1", type="mcq", options=["A", "B"],
+                          correct_indices=[0])])
 
     class _StructLLM:
-        def with_structured_output(self, model_cls):
+        def with_structured_output(self, model_cls, **kwargs):
             assert model_cls is DraftBatch
             return _Structured()
 
@@ -119,6 +122,20 @@ def test_batch_generate_uses_structured_output():
     bound = [({"type": "mcq", "topic_id": "tA", "difficulty": "easy"}, _chunk())]
     items = _batch_generate(_StructLLM(), bound, {"language": "en", "query": "x"})
     assert len(items) == 1 and items[0].type == "mcq" and items[0].topic_id == "tA"
+
+
+def test_an_mcq_answered_by_letter_is_rejected_not_saved():
+    """"answer": "A" against full-sentence options produced a question with no
+    correct option — which then passed validation and was saved."""
+    from shared.structured import StructuredOutputError
+    from agent.graph.subgraphs.assessment_sg import _batch_generate
+
+    llm = _BatchLLM(
+        '{"items": [{"id": "b1", "question": "Q1", "type": "mcq", '
+        '"options": ["Ice is less dense", "Ice is more dense"], "answer": "A"}]}')
+    bound = [({"type": "mcq", "topic_id": "tA", "difficulty": "easy"}, _chunk())]
+    with pytest.raises(StructuredOutputError):
+        _batch_generate(llm, bound, {"language": "en", "query": "x"})
 
 
 def test_batch_generate_raises_on_error():
@@ -159,12 +176,17 @@ def test_well_formed_type_rules():
     assert _well_formed(_item(type="mcq", options=[
         AssessmentOption(text="A"), AssessmentOption(text="B", is_correct=True)]))
     assert not _well_formed(_item(type="mcq", options=[AssessmentOption(text="A")]))  # <2
+    # An mcq whose options are all wrong is unanswerable, and used to pass.
+    assert not _well_formed(_item(type="mcq", options=[
+        AssessmentOption(text="A"), AssessmentOption(text="B")]))
 
 
 def test_enforce_type_mix_caps_per_type():
     items = [
-        _item(type="mcq", options=[AssessmentOption(text="A"), AssessmentOption(text="B")]),
-        _item(type="mcq", options=[AssessmentOption(text="A"), AssessmentOption(text="B")]),
+        _item(type="mcq", options=[AssessmentOption(text="A", is_correct=True),
+                                   AssessmentOption(text="B")]),
+        _item(type="mcq", options=[AssessmentOption(text="A"),
+                                   AssessmentOption(text="B", is_correct=True)]),
         _item(type="true_false", answer="true"),
         _item(type="mcq", options=[AssessmentOption(text="A")]),  # <2 options -> dropped
     ]

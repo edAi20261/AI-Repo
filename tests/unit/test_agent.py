@@ -645,3 +645,35 @@ def test_compose_suppresses_prereqs_on_decline():
         "citations": [], "language": "en",
     })
     assert "Prerequisite topics" not in out["response"] and "Fractions" not in out["response"]
+
+
+def test_an_unreadable_plan_does_not_become_an_explain_task():
+    """A parse failure used to be indistinguishable from "explain this".
+
+    A student who asked to be graded got an explanation instead, with nothing in
+    the response saying the planner never ran.
+    """
+    from agent.graph.nodes import build_plan
+    from shared.config import Config
+
+    class _Prose:
+        class _Structured:
+            def invoke(self, _msgs):
+                raise ValueError("Failed to parse PlannerOutput from completion")
+
+        def with_structured_output(self, schema, **kwargs):
+            return self._Structured()
+
+        def invoke(self, _msgs):
+            class _Reply:
+                content = "Sure, I can help with that!"
+                additional_kwargs: dict = {}
+                response_metadata: dict = {}
+            return _Reply()
+
+    config = Config.load()
+    node = build_plan(config, _Prose())
+    out = node({"pathway": "student", "message": "grade my answer: 42", "language": "en"})
+
+    assert out["tasks"] == [], "a failed plan must not invent a task"
+    assert out["response"], "the student must be told the turn degraded"

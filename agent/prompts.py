@@ -153,16 +153,15 @@ question for that item.
 For each item, match the requested type and difficulty:
 - difficulty: easy = recall a fact stated directly; medium = apply or relate concepts;
   hard = analyse, compare, or reason across the context.
-- "mcq": four options. Usually exactly one is correct. Only when more than one option is
-  genuinely correct, set "answer" to a LIST of the correct option texts AND begin the question
-  stem with "(Select all that apply) " so the student knows; otherwise "answer" is a single
-  option text and exactly one option is correct.
+- "mcq": four options, with "correct_indices" giving the 0-based positions of the correct
+  ones. Usually exactly one. When more than one is genuinely correct, list them all AND begin
+  the question stem with "(Select all that apply) " so the student knows.
 - "true_false": a statement; "answer" is "true" or "false".
 - "short_answer": answerable in a sentence or two.
 - "essay": an open prompt; "answer" is a model-answer outline.
 
 Make every item DISTINCT — never repeat or restate another item's question. Return EXACTLY {n}
-items, in the SAME ORDER as the blocks below (item i corresponds to block i).
+items, one per block, each carrying its block's id verbatim in "id".
 
 Every item MUST be SELF-CONTAINED. The student sees ONLY your question stem (and, for mcq, the
 options) — never this context. So NEVER refer to "the text", "the passage", "the provided
@@ -175,14 +174,8 @@ Quiz the SUBJECT MATTER, never the lesson's structure. Do NOT write a question a
 objectives, learning outcomes, what "students will be able to" do, the lesson title, unit/lesson
 numbers, or any instructional/meta text — ask about the concepts and facts themselves.
 
-Return JSON only, no prose:
-{{"items": [
-  {{"question": "<stem>",
-    "type": "<this item's type>",
-    "options": ["<A>", "<B>", "<C>", "<D>"]  // mcq only; omit otherwise,
-    "answer": "<correct answer / model answer; a list for a multi-correct mcq>",
-    "explanation": "<why, grounded in this item's context>"}}
-]}}
+Return JSON only, no prose. Fields:
+{schema}
 
 Overall focus: {query}
 
@@ -201,30 +194,15 @@ own knowledge — grade ONLY against what the block provides.
 
 {language}
 {instructions}
-For each answer return:
-- "correct": true only if the answer is fully correct; false otherwise.
-- "partial_score": a number in [0,1] — how much credit the answer earns (1 = fully correct,
-  0 = wrong or blank). Use it for partial credit on short_answer/essay; for mcq/true_false it is
-  1 or 0.
-- "feedback": one or two sentences to the student — briefly, what was right or wrong.
-- "explanation": the correct reasoning, grounded in the reference answer or the provided context.
-- "mistakes": for a WRONG or partial answer, 1-3 SHORT mistake labels naming the error TYPE.
-  Use GENERAL, REUSABLE categories that would apply across many answers (e.g. "sign error",
-  "missing unit", "confused cause and effect") — NOT answer-specific descriptions (not "forgot the
-  2 in step 3"). Empty list when correct.
-- "confidence": your confidence in this grade, in [0,1].
+Use "partial_score" for partial credit on short_answer/essay; for mcq/true_false it is 1 or 0.
+Mistake labels must be GENERAL and REUSABLE, naming the error TYPE so they group across many
+answers (e.g. "sign error", "missing unit", "confused cause and effect") — never answer-specific
+descriptions like "forgot the 2 in step 3".
 
-Grade EXACTLY {n} answers, in the SAME ORDER as the blocks below (item i corresponds to block i).
+Grade EXACTLY {n} answers, one per block, each carrying its block's id verbatim in "id".
 
-Return JSON only, no prose:
-{{"items": [
-  {{"correct": true,
-    "partial_score": 1,
-    "feedback": "<short feedback to the student>",
-    "explanation": "<correct reasoning>",
-    "mistakes": [],
-    "confidence": 0.9}}
-]}}
+Return JSON only, no prose. Fields:
+{schema}
 
 --- ANSWERS ---
 {items_block}"""

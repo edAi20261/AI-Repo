@@ -24,7 +24,9 @@ from ... import retrieval
 from ...models import QUESTION_TYPES, AssessmentItem, AssessmentOption, DraftBatch
 from ...prompts import ASSESSMENT_BATCH_PROMPT
 from ...tools import get_mastery, get_question_bank, resolve_topics
-from ...utils import extract_json, parse_structured
+from shared.structured import align_by_id, call_structured, schema_hint
+
+from ...utils import extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -109,20 +111,30 @@ def _assign_slots(
 
 
 def _build_item(base: dict, raw: dict) -> Optional[AssessmentItem]:
-    """Build a typed, DB-shaped item from a slot ``base`` (type/topic_id/lecture_id/
-    difficulty) and a raw generated question. MCQ ``options`` become
-    ``AssessmentOption`` with ``is_correct`` derived from the answer. Returns None when
-    the item fails validation — missing question or, per invariant 12, topic_id /
-    lecture_id — so a bad item is simply dropped."""
+    """Build a typed, DB-shaped item from a slot ``base`` and a generated question.
+
+    MCQ correctness comes from ``correct_indices`` — positions, not text. Matching
+    the answer string against the option text produced questions with no correct
+    option whenever the model answered "A" instead of repeating the sentence, and
+    those still passed the well-formed check.
+    """
     if not raw.get("question"):
         return None
     answer = raw.get("answer")
     raw_opts = raw.get("options") or []
     options = None
     if raw_opts:
-        correct = set(answer) if isinstance(answer, list) else ({answer} if answer else set())
-        options = [AssessmentOption(text=str(o), is_correct=str(o) in correct)
-                   for o in raw_opts]
+        indices = raw.get("correct_indices")
+        if indices:
+            correct_positions = {int(i) for i in indices}
+            options = [AssessmentOption(text=str(o), is_correct=i in correct_positions)
+                       for i, o in enumerate(raw_opts)]
+            answer = answer or [str(raw_opts[i]) for i in sorted(correct_positions)
+                                if 0 <= i < len(raw_opts)]
+        else:
+            correct = set(answer) if isinstance(answer, list) else ({answer} if answer else set())
+            options = [AssessmentOption(text=str(o), is_correct=str(o) in correct)
+                       for o in raw_opts]
     try:
         return AssessmentItem(
             type=base["type"],
@@ -143,7 +155,8 @@ def _well_formed(item: AssessmentItem) -> bool:
     this adds the type-specific rule: an MCQ needs >=2 options, everything else an
     answer."""
     if item.type == "mcq":
-        return bool(item.options) and len(item.options) >= 2
+        return (bool(item.options) and len(item.options) >= 2
+                and any(option.is_correct for option in item.options))
     return bool(item.answer)
 
 
@@ -300,31 +313,39 @@ def _batch_generate(
     validated into a typed ``AssessmentItem`` (invalid dropped). A real call failure
     propagates so the generate node degrades (no placeholder items)."""
     blocks = [
-        f"Block {i}: type={slot['type']}, difficulty={slot.get('difficulty', 'medium')}\n"
+        f"Block id={_block_id(i)}: type={slot['type']}, "
+        f"difficulty={slot.get('difficulty', 'medium')}\n"
         f"Context:\n{getattr(chunk, 'text', '')}"
         for i, (slot, chunk) in enumerate(bound, 1)
     ]
     prompt_text = ASSESSMENT_BATCH_PROMPT.format(
+        schema=schema_hint(DraftBatch),
         language=content_directive(state.get("language", "en")),
         instructions=state.get("instructions", ""),
         query=state.get("query", ""),
         n=len(bound),
         items_block="\n\n".join(blocks),
     )
-    messages = [HumanMessage(content=prompt_text)]
-    data = parse_structured(llm, DraftBatch, messages, config, "assessment")
-    raw_items = data.get("items") if isinstance(data, dict) else None
+    expected = [_block_id(i) for i in range(1, len(bound) + 1)]
+    batch = call_structured(
+        DraftBatch,
+        [HumanMessage(content=prompt_text)],
+        task="assessment", config=config, llm=llm, label="assessment",
+        validate=lambda b: align_by_id(expected, b.items, what="question"),
+    )
+    drafts = align_by_id(expected, batch.items, what="question")
 
-    raw_items = raw_items or []
     items: list[AssessmentItem] = []
-    for i, (slot, chunk) in enumerate(bound):
-        raw = raw_items[i] if i < len(raw_items) else None
-        if not isinstance(raw, dict):
-            continue
-        item = _build_item(_slot_base(slot, chunk), raw)
+    for (slot, chunk), draft in zip(bound, drafts):
+        item = _build_item(_slot_base(slot, chunk), draft.model_dump())
         if item is not None:
             items.append(item)
     return items
+
+
+def _block_id(index: int) -> str:
+    """The id a block is labelled with, and its question must come back carrying."""
+    return f"b{index}"
 
 
 def _stamp_topic(chunk, slot_topic: Optional[str] = None) -> Optional[str]:

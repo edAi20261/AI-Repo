@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, get_args
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel, Field, computed_field, field_validator, model_validator)
 
 # The closed vocabularies, as Literal types (one source of truth). In a pydantic model a
 # Literal becomes an enum in the JSON schema, so structured output is constrained to valid
@@ -215,15 +216,43 @@ class PlannerOutput(BaseModel):
 
 
 class ItemDraft(BaseModel):
-    """One raw question the generator returns — the LLM's wire shape, pre-validation. It
-    has no topic_id/lecture_id (those are system-stamped from the bound slot/chunk);
-    ``_build_item`` stamps them + converts options and produces the final
-    ``AssessmentItem``."""
-    question: Optional[str] = None
-    type: Optional[QuestionType] = None
-    options: Optional[list[str]] = None
-    answer: Optional[str | list[str]] = None
-    explanation: Optional[str] = None
+    """One raw question the generator returns — the LLM's wire shape, pre-validation.
+
+    ``correct_indices`` points at the right options instead of repeating their text:
+    correctness used to be derived by string-matching the answer against the option
+    list, so a model answering "A" while the options were full sentences produced a
+    question with no correct option at all — and it passed validation.
+
+    topic_id/lecture_id are system-stamped from the bound slot, never taken from
+    the model.
+    """
+    id: str = Field(default="", description="The block id this question answers, copied verbatim.")
+    question: Optional[str] = Field(default=None, description="The question text.")
+    type: Optional[QuestionType] = Field(default=None, description="The question type.")
+    options: Optional[list[str]] = Field(
+        default=None, description="For mcq only: at least two answer options.")
+    correct_indices: Optional[list[int]] = Field(
+        default=None,
+        description="For mcq only: 0-based positions in options that are correct.")
+    answer: Optional[str | list[str]] = Field(
+        default=None, description="For non-mcq types: the reference answer.")
+    explanation: Optional[str] = Field(default=None, description="Why that answer is correct.")
+
+    @model_validator(mode="after")
+    def _answerable(self) -> "ItemDraft":
+        if self.type == "mcq":
+            options = self.options or []
+            if len(options) < 2:
+                raise ValueError("an mcq needs at least two options")
+            indices = self.correct_indices or []
+            if not indices:
+                raise ValueError("an mcq needs correct_indices naming at least one option")
+            if any(i < 0 or i >= len(options) for i in indices):
+                raise ValueError(
+                    f"correct_indices must point inside options (0..{len(options) - 1})")
+        elif self.type is not None and not self.answer:
+            raise ValueError(f"a {self.type} question needs an answer")
+        return self
 
 
 class DraftBatch(BaseModel):

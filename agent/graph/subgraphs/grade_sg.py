@@ -34,7 +34,7 @@ from ...tools import (
     update_mastery,
     write_mastery_events,
 )
-from shared.structured import align_by_id, call_structured
+from shared.structured import align_by_id, call_structured, schema_hint
 
 from ...utils import extract_json
 
@@ -429,6 +429,7 @@ def _batch_grade(llm, items, state: GradeState, config=None) -> list:
     mastery moves on a grade we could not actually compute.
     """
     prompt_text = GRADE_BATCH_PROMPT.format(
+        schema=schema_hint(GradeBatch),
         language=language_directive(state.get("language", "en")),
         instructions=state.get("instructions", ""),
         n=len(items),
