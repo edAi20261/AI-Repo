@@ -33,7 +33,29 @@ TURNS = [
     ("question ar", "اشرح لي عملية الطرح", "ARABIC — this is the reported bug"),
     ("explicit language", "answer in French: what is subtraction", "French"),
     ("off-syllabus", "who won the world cup in 1998?", "declines, cites nothing"),
+
+    # --- the language rules -------------------------------------------------
+    ("request at the end", "explain subtraction, and reply in Arabic",
+     "ARABIC — the instruction outranks the English it is written in"),
+    ("request, Arabic message", "اشرح لي الدرس بالانجليزي",
+     "ENGLISH — asked for in Arabic"),
+    ("refusal is not a request", "don't answer in French",
+     "ENGLISH — must NOT come back French"),
+    ("refusal, Arabic", "بلاش ترد بالعربي", "not Arabic"),
+    ("about a language", "how do you say hello in Arabic?",
+     "ENGLISH — the question is about Arabic, not asked in it"),
+    ("bare instruction", "reply in Arabic",
+     "a short Arabic acknowledgement, tasks=[] — not a syllabus search"),
+    ("clearing", "answer in the language I write in",
+     "a short English acknowledgement, tasks=[]"),
+    ("unsupported language", "spiegami il ciclo dell'acqua per favore",
+     "ENGLISH — Italian is recognised, then declined; never German"),
 ]
+
+# Session memory is deliberately not exercised here. The store keys on a
+# session id that must exist in the platform's own sessions table, so a made-up
+# one cannot be written. Test "reply in Arabic from now on" in the browser,
+# where the backend creates a real session first.
 
 
 def ask(message: str) -> dict:
