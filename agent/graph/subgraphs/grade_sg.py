@@ -34,7 +34,8 @@ from ...tools import (
     update_mastery,
     write_mastery_events,
 )
-from ...utils import extract_json, parse_structured
+from shared.structured import align_by_id, call_structured, schema_hint
+
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,11 @@ def _ground_answers(
             item.context = "\n\n".join(grounded)
 
 
+def _block_id(index: int) -> str:
+    """The id a block is labelled with, and the grade must come back carrying."""
+    return f"b{index}"
+
+
 def _grade_blocks(items: list[SubmissionItem]) -> str:
     """One block per answer for the batch prompt (order preserved). Context is shown whenever
     grounded (keyless, or a keyed open-ended answer) so the model grades against the material."""
@@ -181,7 +187,7 @@ def _grade_blocks(items: list[SubmissionItem]) -> str:
         ref = it.correct_answer or "(none given)"
         ctx = f"\nSyllabus context: {it.context}" if it.context else ""
         blocks.append(
-            f"Block {i}: type={it.type or 'short_answer'}\n"
+            f"Block id={_block_id(i)}: type={it.type or 'short_answer'}\n"
             f"Question: {it.question}\n"
             f"Reference answer: {ref}{ctx}\n"
             f"Student answer: {it.student_answer or '(blank)'}"
@@ -414,34 +420,31 @@ def _stub_drafts(items: list[SubmissionItem]) -> list:
 
 
 def _batch_grade(llm, items, state: GradeState, config=None) -> list:
-    """Grade the whole submission in ONE LLM call (score + feedback + mistake labels). A
-    validated ``GradeBatch`` via structured output (JSON-parse fallback); drafts map back to
-    items by position. A real call failure propagates so the grade node degrades (no stub,
-    no mastery moved)."""
+    """Grade the whole submission in ONE LLM call (score + feedback + mistake labels).
+
+    Grades come back carrying their block id and are matched on it, so a reply
+    that drops or reorders an answer is corrected rather than silently attributed
+    to the wrong question. Any failure propagates: the node degrades, and no
+    mastery moves on a grade we could not actually compute.
+    """
     prompt_text = GRADE_BATCH_PROMPT.format(
+        schema=schema_hint(GradeBatch),
         language=language_directive(state.get("language", "en")),
         instructions=state.get("instructions", ""),
         n=len(items),
         items_block=_grade_blocks(items),
     )
-    messages = [HumanMessage(content=prompt_text)]
-    data = parse_structured(llm, GradeBatch, messages, config, "grade")
-    raw = data.get("items") if isinstance(data, dict) else None
-
-    raw = raw or []
-    drafts = []
-    for i, item in enumerate(items):
-        r = raw[i] if i < len(raw) else None
-        if isinstance(r, dict):
-            from ...models import GradeDraft
-            try:
-                drafts.append(GradeDraft(
-                    **{k: r[k] for k in GradeDraft.model_fields if k in r and r[k] is not None}))
-                continue
-            except Exception:
-                pass
-        drafts.append(_stub_draft(item))
-    return drafts
+    expected = [_block_id(i) for i in range(1, len(items) + 1)]
+    batch = call_structured(
+        GradeBatch,
+        [HumanMessage(content=prompt_text)],
+        task="grade",
+        config=config,
+        llm=llm,
+        label="grade",
+        validate=lambda b: align_by_id(expected, b.items, what="grade"),
+    )
+    return align_by_id(expected, batch.items, what="grade")
 
 
 def _build_write_mastery(config):

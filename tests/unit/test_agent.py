@@ -3,6 +3,8 @@ the chat model is forced off so nodes take their deterministic grounded path."""
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from agent import retrieval as rmod
@@ -20,15 +22,8 @@ from agent.graph.nodes import (
 from agent.graph.pathways import build_namespaces, resolve_style
 from agent.models import Citation, PrereqTopic, ResolvedTopic, RetrievedChunk
 from agent.tools import AuthorizationError, assert_user_type
-from agent.utils import extract_json
 
 # --- utils ------------------------------------------------------------------
-
-def test_extract_json_handles_fence_and_prose():
-    assert extract_json('```json\n{"a": 1}\n```') == {"a": 1}
-    assert extract_json('here you go: {"b": 2} thanks') == {"b": 2}
-    assert extract_json("no json here") is None
-
 
 # --- pathways ---------------------------------------------------------------
 
@@ -645,3 +640,35 @@ def test_compose_suppresses_prereqs_on_decline():
         "citations": [], "language": "en",
     })
     assert "Prerequisite topics" not in out["response"] and "Fractions" not in out["response"]
+
+
+def test_an_unreadable_plan_does_not_become_an_explain_task():
+    """A parse failure used to be indistinguishable from "explain this".
+
+    A student who asked to be graded got an explanation instead, with nothing in
+    the response saying the planner never ran.
+    """
+    from agent.graph.nodes import build_plan
+    from shared.config import Config
+
+    class _Prose:
+        class _Structured:
+            def invoke(self, _msgs):
+                raise ValueError("Failed to parse PlannerOutput from completion")
+
+        def with_structured_output(self, schema, **kwargs):
+            return self._Structured()
+
+        def invoke(self, _msgs):
+            class _Reply:
+                content = "Sure, I can help with that!"
+                additional_kwargs: ClassVar[dict] = {}
+                response_metadata: ClassVar[dict] = {}
+            return _Reply()
+
+    config = Config.load()
+    node = build_plan(config, _Prose())
+    out = node({"pathway": "student", "message": "grade my answer: 42", "language": "en"})
+
+    assert out["tasks"] == [], "a failed plan must not invent a task"
+    assert out["response"], "the student must be told the turn degraded"

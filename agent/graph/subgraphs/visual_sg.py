@@ -24,9 +24,11 @@ from langchain_core.messages import HumanMessage
 
 from ... import prompts as R_prompts
 from ... import render as R
-from ...models import ArtifactRef
+from shared.structured import StructuredOutputError, call_structured, schema_hint
+
+from ...models import (
+    ArtifactRef, FlashcardSet, MathFigureSpec, MindmapNode, PdfDocument)
 from ...tools import get_figures, rag_search
-from ...utils import extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -129,12 +131,15 @@ def _build_mindmap(desc: str, ctx: str, language: str, config, llm) -> Optional[
     if llm is None:
         return None
     prompt_text = R_prompts.MINDMAP_PROMPT.format(
-        topic=desc, context=ctx, language=content_directive(language))
+        topic=desc, context=ctx, language=content_directive(language),
+        schema=schema_hint(MindmapNode))
     try:
-        data = extract_json(llm.invoke([HumanMessage(content=prompt_text)]).content) or {}
-    except Exception:
-        logger.warning("mindmap build failed", exc_info=True)
-        data = {}
+        node = call_structured(MindmapNode, [HumanMessage(content=prompt_text)],
+                               task="visual_mindmap", config=config, llm=llm, label="mindmap")
+    except StructuredOutputError as exc:
+        logger.warning("mindmap build failed", extra=exc.log_fields())
+        return None
+    data = node.model_dump()
     return data if (data.get("label") and data.get("children")) else None
 
 
@@ -158,13 +163,16 @@ def _build_flashcards(desc: str, content: dict, spec, state, config, llm) -> lis
     n = config.get("render.flashcards.count", 8)
     prompt_text = R_prompts.FLASHCARDS_PROMPT.format(
         topic=desc, context=ctx, n=n,
-        language=content_directive(state.get("language", "en")))
+        language=content_directive(state.get("language", "en")),
+        schema=schema_hint(FlashcardSet))
     try:
-        data = extract_json(llm.invoke([HumanMessage(content=prompt_text)]).content) or {}
-    except Exception:
-        logger.warning("flashcards build failed", exc_info=True)
+        deck = call_structured(FlashcardSet, [HumanMessage(content=prompt_text)],
+                               task="visual_flashcards", config=config, llm=llm,
+                               label="flashcards")
+    except StructuredOutputError as exc:
+        logger.warning("flashcards build failed", extra=exc.log_fields())
         return []
-    return [c for c in (data.get("cards") or []) if c.get("front")]
+    return [c.model_dump() for c in deck.cards if c.front]
 
 
 def _blocks_from_content(content: dict, desc: str) -> list[dict]:
@@ -205,33 +213,37 @@ def _chart_from_content(content: dict, desc: str) -> Optional[dict]:
 def _build_math(desc: str, config, llm) -> Optional[dict]:
     if llm is None:
         return None
-    prompt_text = R_prompts.MATH_VISUAL_PROMPT.format(topic=desc)
+    prompt_text = R_prompts.MATH_VISUAL_PROMPT.format(
+        topic=desc, language=content_directive("en"), schema=schema_hint(MathFigureSpec))
     try:
-        data = extract_json(llm.invoke([HumanMessage(content=prompt_text)]).content) or {}
-    except Exception:
-        logger.warning("math-visual build failed", exc_info=True)
+        figure = call_structured(MathFigureSpec, [HumanMessage(content=prompt_text)],
+                                 task="visual_math", config=config, llm=llm, label="math figure")
+    except StructuredOutputError as exc:
+        logger.warning("math-visual build failed", extra=exc.log_fields())
         return None
+    data = figure.model_dump(exclude_none=True)
     spec = R.sample_math_spec(data, config) if data else {}
     return spec if (spec.get("series") or spec.get("geometry")) else None
 
 
-def _build_pdf(desc: str, ctx: str, language: str, llm) -> Optional[dict]:
+def _build_pdf(desc: str, ctx: str, language: str, llm, config=None) -> Optional[dict]:
     """Structure grounded content into a titled set of heading/text blocks, or None to fall
     back to a single block. Grounded ONLY in ``ctx`` — the prompt reorganises, never invents."""
     if llm is None:
         return None
     prompt_text = R_prompts.PDF_STRUCTURE_PROMPT.format(
-        topic=desc, content=ctx, language=content_directive(language))
+        topic=desc, content=ctx, language=content_directive(language),
+        schema=schema_hint(PdfDocument))
     try:
-        data = extract_json(llm.invoke([HumanMessage(content=prompt_text)]).content) or {}
-    except Exception:
-        logger.warning("pdf build failed", exc_info=True)
+        document = call_structured(PdfDocument, [HumanMessage(content=prompt_text)],
+                                   task="visual_pdf", config=config, llm=llm, label="pdf")
+    except StructuredOutputError as exc:
+        logger.warning("pdf build failed", extra=exc.log_fields())
         return None
-    blocks = [b for b in (data.get("blocks") or [])
-              if b.get("text") and b.get("type") in ("heading", "text")]
+    blocks = [b.model_dump() for b in document.blocks if b.text]
     if not blocks:
         return None
-    return {"title": data.get("title"), "blocks": blocks}
+    return {"title": document.title, "blocks": blocks}
 
 
 def _as_text(v: Any) -> str:
@@ -263,7 +275,7 @@ def _build_input(kind: str, spec: dict, params: dict, content: dict,
         if not text or text == desc:
             return None
         llm = _resolve_llm(config, "visual_pdf", llm_override)
-        built = _build_pdf(desc, text, state.get("language", "en"), llm)
+        built = _build_pdf(desc, text, state.get("language", "en"), llm, config)
         if built:
             built.setdefault("title", params.get("title") or "Document")
             return built

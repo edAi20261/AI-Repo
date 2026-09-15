@@ -7,6 +7,7 @@ this module stays cheap and never requires an SDK that isn't installed.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
 from shared.metering import record_usage
@@ -18,6 +19,8 @@ from .prompts import (
     PAGE_TRANSCRIPTION_PROMPT,
 )
 from .schemas import FigureBox, FigureCaption, PageTranscription
+
+logger = logging.getLogger(__name__)
 
 # Marks stub output so it can never be mistaken for a real transcription. (used in testing only if vision API is not available)
 VISION_STUB_SENTINEL = "[[VISION_STUB]]"
@@ -52,7 +55,7 @@ class VisionClient(ABC):
         *,
         heading_path: str = "",
         language_hint: str | None = None,
-    ) -> FigureCaption:
+    ) -> FigureCaption | None:
         """Caption + alt_text for a cropped figure."""
 
 
@@ -81,7 +84,7 @@ class StubVisionClient(VisionClient):
         *,
         heading_path: str = "",
         language_hint: str | None = None,
-    ) -> FigureCaption:
+    ) -> FigureCaption | None:
         return FigureCaption(
             caption=f"{VISION_STUB_SENTINEL} caption pending vision model",
             alt_text=f"{VISION_STUB_SENTINEL} alt_text pending vision model",
@@ -124,13 +127,16 @@ class OpenRouterVisionClient(VisionClient):
         *,
         heading_path: str = "",
         language_hint: str | None = None,
-    ) -> FigureCaption:
+    ) -> FigureCaption | None:
         prompt = FIGURE_CAPTION_PROMPT.format(
             heading_path=heading_path, language_hint=language_hint or ""
         )
         data = self._complete_json(prompt, image_png)
         if data is None:
-            return FigureCaption(caption="", alt_text="")
+            # An empty caption used to be indistinguishable from a model that had
+            # nothing to say, and captions are what make a figure findable.
+            logger.warning("figure caption failed", extra={"model": self._model})
+            return None
         return _caption_from_json(data)
 
     # -- transport -----------------------------------------------------------
