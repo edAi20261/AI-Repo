@@ -27,7 +27,7 @@ no formatting in them render as an ordinary paragraph, so nothing regresses.
 | # | Requirement | Priority | Roughly |
 |---|---|---|---|
 | 1 | Render the reply as Markdown | **Required** | 30 min |
-| 2 | Lay Arabic out right-to-left | **Required** | 15 min |
+| 2 | Arabic: answer language and layout | **Required** | 20 min |
 | 3 | Fix the typing animation | **Required** | 20 min |
 | 4 | Show sources as badges | Recommended | 1–2 h |
 | 5 | Render maths with KaTeX | Later | — |
@@ -99,7 +99,33 @@ rest of the chat.
 
 ---
 
-## 2. Lay Arabic out right-to-left — required
+## 2. Arabic: the answer language, then the layout — required
+
+### Do not send the interface language as the answer language
+
+This one is a behaviour bug, and it is mine — the seam I handed over sends
+`language: i18n.language` on every request. That is the language of the app
+chrome, chosen from the header dropdown, and the service treats the `language`
+parameter as an explicit instruction that **outranks** what the student actually
+typed. So with the interface in English, a question typed in Arabic is answered
+in English. That is the service doing as it was told.
+
+**Send `language` only when you know the student's real preference** — a setting
+they chose for the tutor, or the language of the lesson they are studying. When
+you do not know, leave it out and the service works it out from the message:
+Arabic script means Arabic, every time.
+
+```ts
+// wrong — the header dropdown is not a statement about the answer
+language: i18n.language
+
+// right — omit it and let the message decide
+// (or pass a real per-student preference, if one exists)
+```
+
+Everything below is layout, and applies regardless.
+
+### Layout
 
 Students ask in Arabic and the tutor answers in Arabic. The `language` field on
 the response tells you which language was used (`ar`, `en`, `fr`, `de`), but you
@@ -128,8 +154,9 @@ Any hardcoded `marginLeft` / `paddingRight` in the component should become
 
 ### Done when
 
-An Arabic reply reads right-to-left with the full stop on the left-hand end, and
-an English term inside it stays in the correct position.
+A question typed in Arabic comes back in Arabic while the interface is still in
+English. The reply reads right-to-left with the full stop on the left-hand end,
+and an English term inside it stays in the correct position.
 
 ---
 
