@@ -51,10 +51,53 @@ def test_explicit_request_beats_everything(policy):
     assert (decision.code, decision.source) == ("fr", "explicit")
 
 
-def test_api_language_is_honoured(policy):
-    """The parameter used to be written to state and overwritten on the next line."""
-    decision = policy.resolve("اشرح لي عملية البناء الضوئي", api_language="fr")
+@pytest.mark.parametrize("text,expected", [
+    ("explain subtraction, reply in Arabic", "ar"),
+    ("explain photosynthesis. Reply in Arabic please", "ar"),
+    ("Explain the water cycle, but in Arabic", "ar"),
+    ("summarize this lesson, and write it in Arabic", "ar"),
+    ("switch to Arabic", "ar"),
+    ("continue in Arabic", "ar"),
+    ("change to French", "fr"),
+    ("please use Arabic", "ar"),
+    ("اشرح لي الدرس بالانجليزي", "en"),
+])
+def test_a_request_at_the_end_of_a_message_is_obeyed(policy, text, expected):
+    """The shape a student actually writes: the question in one language, the
+    instruction tacked on."""
+    assert policy.resolve(text).code == expected
+
+
+@pytest.mark.parametrize("text", [
+    "how do you say hello in Arabic?",
+    "how to say thank you in French",
+])
+def test_asking_about_a_language_is_not_asking_for_it(policy, text):
+    """The question is about Arabic; the answer belongs in the asker's language."""
+    assert policy.resolve(text).code == "en"
+
+
+def test_the_message_outranks_the_caller_s_parameter(policy):
+    """The reported bug: the web app sent its interface language on every turn, so
+    Arabic and French questions were both answered in English.
+
+    Assistants people already use settle this the same way — Anthropic: "follow
+    the language of the query unless explicitly requested otherwise", applied even
+    over a stored "my native language is Spanish"."""
+    decision = policy.resolve("اشرح لي عملية البناء الضوئي", api_language="en")
+    assert (decision.code, decision.source) == ("ar", "script")
+
+
+def test_the_parameter_decides_what_the_message_cannot(policy):
+    """It is a default for an undecidable message, not an override of a clear one."""
+    decision = policy.resolve("ok", api_language="fr")
     assert (decision.code, decision.source) == ("fr", "api")
+
+
+def test_a_request_in_the_message_beats_the_parameter(policy):
+    """An English question ending in "reply in Arabic" is answered in Arabic."""
+    decision = policy.resolve("explain subtraction, reply in Arabic", api_language="en")
+    assert (decision.code, decision.source) == ("ar", "explicit")
 
 
 def test_script_beats_detection(policy):
@@ -236,3 +279,40 @@ def test_short_answers_are_not_judged():
 def test_prose_strips_what_carries_no_language():
     stripped = prose_of("The answer is $x^2 + 1$ [1] see `code` https://example.com")
     assert "$" not in stripped and "[1]" not in stripped and "http" not in stripped
+
+
+# --- languages we do not answer in ------------------------------------------
+
+@pytest.mark.parametrize("text,detected", [
+    ("explícame el ciclo del agua por favor", "es"),
+    ("spiegami il ciclo dell'acqua per favore", "it"),
+    ("bana su döngüsünü açıkla lütfen", "tr"),
+    ("leg me de waterkringloop uit alsjeblieft", "nl"),
+    ("explique-me o ciclo da água por favor", "pt"),
+])
+def test_an_unsupported_language_falls_back_instead_of_guessing(policy, text, detected):
+    """A detector built only from the languages we answer in has to pick the
+    nearest of them, and does so confidently — Turkish scored 1.00 for German,
+    Dutch 0.82. Naming the languages we merely recognise lets us decline."""
+    from shared.language.detect import detect
+
+    assert detect(text, SUPPORTED).code == detected
+    decision = policy.resolve(text)
+    assert decision.code == "en"
+    assert decision.refused is True, "a declined language must not trigger repair"
+
+
+def test_the_caller_s_language_catches_an_unsupported_message(policy):
+    """Falling back is where the parameter earns its place."""
+    decision = policy.resolve("spiegami il ciclo dell'acqua", api_language="ar")
+    assert (decision.code, decision.source) == ("ar", "api")
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("explain column subtraction", "en"),
+    ("explique-moi le cycle de l'eau s'il te plaît", "fr"),
+    ("erkläre mir bitte den Wasserkreislauf", "de"),
+    ("اشرح لي عملية الطرح", "ar"),
+])
+def test_widening_the_detector_did_not_cost_the_supported_ones(policy, text, expected):
+    assert policy.resolve(text).code == expected

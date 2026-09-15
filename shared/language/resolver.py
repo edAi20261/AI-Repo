@@ -1,9 +1,27 @@
 """The one place a turn's language is decided.
 
-Precedence runs from what the user stated to what we merely inferred: an explicit
-request beats a caller's parameter, which beats the writing system, which beats a
-confident detection, which beats anything we remember about the learner. Every
-node downstream reads the result; none of them decide again.
+The rule every assistant people already use converges on: answer in the language
+of the message, unless the message itself asks for another one. Anthropic states
+it as "follow the language of the query unless explicitly requested otherwise" —
+and applies it even over a stored "my native language is Spanish". OpenAI's voice
+prompt says "respond in the same language the user is speaking unless directed
+otherwise".
+
+So precedence runs from what this message says, to what it is written in, to what
+we were told about the learner beforehand:
+
+    explicit request in the message
+    -> Arabic script
+    -> confident detection
+    -> the caller's parameter
+    -> planner hint -> profile -> previous turn -> default
+
+A caller's ``language`` parameter is a default for when the message cannot decide
+— a greeting too short to detect, Arabizi, a bare equation — never an override of
+what the student actually typed. A stored preference is the weakest evidence
+there is about what someone wants right now.
+
+Every node downstream reads the result; none of them decide again.
 """
 
 from __future__ import annotations
@@ -86,15 +104,13 @@ class LanguagePolicy:
                 requested[0], "explicit", script=writing_system, evidence=requested[1]
             )
 
-        if self._supported(api_language):
-            return self._decide(api_language, "api", script=writing_system)
-
         if writing_system == "arabic" and self._supported("ar"):
             return self._decide("ar", "script", script=writing_system)
 
         if writing_system in ("arabizi", "mixed"):
             return self._fallback(
-                writing_system, planner_hint, profile_language, previous_language
+                writing_system, api_language, planner_hint, profile_language,
+                previous_language,
             )
 
         detection = detect(text, self.supported)
@@ -115,7 +131,8 @@ class LanguagePolicy:
             )
 
         return self._fallback(
-            writing_system, planner_hint, profile_language, previous_language, detection
+            writing_system, api_language, planner_hint, profile_language,
+            previous_language, detection,
         )
 
     def resolve_document(
@@ -149,16 +166,21 @@ class LanguagePolicy:
     def _fallback(
         self,
         writing_system: str,
+        api_language: Optional[str],
         planner_hint: Optional[str],
         profile_language: Optional[str],
         previous_language: Optional[str],
         detection=None,
     ) -> LanguageDecision:
-        """Detection declined: use what we already knew, and record that we guessed."""
+        """The message could not decide: use what we were told, and say we guessed."""
         if writing_system == "arabizi" and self.arabizi_hint:
             return self._decide(
                 self.arabizi_hint, "script", script=writing_system, refused=True
             )
+        # The caller's parameter is an instruction, not a guess, so the answer is
+        # still checked against it — unlike everything below, which is memory.
+        if self._supported(api_language):
+            return self._decide(api_language, "api", script=writing_system)
         for code, source in (
             (planner_hint, "planner"),
             (profile_language, "profile"),

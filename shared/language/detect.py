@@ -24,6 +24,20 @@ DOCUMENT_MIN_CHARS = 200
 
 _ISO_BY_NAME = {"ARABIC": "ar", "ENGLISH": "en", "FRENCH": "fr", "GERMAN": "de"}
 
+# Languages we do not answer in, but must be able to recognise. A detector built
+# only from the languages we support has no way to say "this is Italian" — it has
+# to pick the nearest of the four it knows, and does so confidently: Turkish
+# scores 1.00 for German, Dutch 0.82. Naming them lets the resolver decline and
+# fall back, instead of answering a Turkish child in German.
+_ALSO_RECOGNISED = {
+    "SPANISH": "es", "ITALIAN": "it", "PORTUGUESE": "pt", "DUTCH": "nl",
+    "TURKISH": "tr", "RUSSIAN": "ru", "PERSIAN": "fa", "URDU": "ur",
+    "HINDI": "hi", "CHINESE": "zh", "INDONESIAN": "id", "ROMANIAN": "ro",
+    "POLISH": "pl", "GREEK": "el", "HEBREW": "he",
+}
+
+_ALL_NAMES = {**_ISO_BY_NAME, **_ALSO_RECOGNISED}
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -37,12 +51,16 @@ class Detection:
 
 @lru_cache(maxsize=4)
 def _detector(languages: tuple[str, ...]):
+    """A detector over the languages we answer in, plus the ones we only need to
+    recognise. Costs about 5 MB and a fifth of a millisecond per call."""
     from lingua import Language, LanguageDetectorBuilder
 
-    wanted = {code: name for name, code in _ISO_BY_NAME.items()}
-    selected = [getattr(Language, wanted[code]) for code in languages if code in wanted]
-    if len(selected) < 2:
-        selected = [Language.ARABIC, Language.ENGLISH]
+    by_code = {code: name for name, code in _ISO_BY_NAME.items()}
+    names = [by_code[code] for code in languages if code in by_code]
+    if len(names) < 2:
+        names = ["ARABIC", "ENGLISH"]
+    names += list(_ALSO_RECOGNISED)
+    selected = [getattr(Language, name) for name in names if hasattr(Language, name)]
     return LanguageDetectorBuilder.from_languages(*selected).with_preloaded_language_models().build()
 
 
@@ -66,7 +84,9 @@ def detect(text: str, languages: Sequence[str]) -> Optional[Detection]:
 
     top = values[0]
     runner_up = values[1].value if len(values) > 1 else 0.0
-    code = _ISO_BY_NAME.get(top.language.name, "")
+    # The code may be one we do not answer in; the caller checks that and
+    # declines, rather than being handed the nearest language we do support.
+    code = _ALL_NAMES.get(top.language.name, "")
     if not code:
         return None
     return Detection(

@@ -28,8 +28,11 @@ class ChatRequest(Schema):
     )
     language: Optional[Language] = Field(
         default=None,
-        description=("Answer in this language. Outranks detection — pass it when the "
-                     "platform knows the learner's language."),
+        description=("Fallback answer language, used only when the message itself "
+                     "cannot decide — too short to detect, Arabizi, a bare equation. "
+                     "The message always wins: Arabic in, Arabic out, and an "
+                     "in-message 'reply in Arabic' wins over both. Do not send an "
+                     "interface or UI language here."),
     )
 
     def to_state(self) -> dict[str, Any]:
