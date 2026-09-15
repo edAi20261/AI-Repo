@@ -50,6 +50,38 @@ class ChatRequest(Schema):
         return {key: value for key, value in state.items() if value is not None}
 
 
+class SourceRef(Schema):
+    """One source the reply cites, as structured data.
+
+    The reply text carries ``[n]`` markers; this is what each ``n`` refers to. A
+    client that renders the markers as badges needs the label and the page, and
+    should not have to parse them back out of the prose.
+    """
+
+    n: int = Field(description="The inline marker this source is referenced by.")
+    lecture_id: Optional[str] = None
+    lesson_title: Optional[str] = None
+    lesson_order: Optional[int] = None
+    subject_name: Optional[str] = None
+    heading_path: Optional[str] = Field(
+        default=None, description="Where in the lesson, e.g. 'Unit 2 > Subtraction'."
+    )
+    page_from: Optional[int] = None
+    page_to: Optional[int] = None
+
+    @classmethod
+    def from_citation(cls, citation: Any) -> SourceRef:
+        """Project an internal citation onto the published fields.
+
+        Explicit rather than a wholesale validate: the internal record also carries
+        routing detail (which task cited it) that the contract forbids and a client
+        has no use for.
+        """
+        data = _as_dict(citation)
+        return cls(**{field: data.get(field) for field in cls.model_fields
+                      if field != "n"}, n=data.get("n", 0))
+
+
 class ChatResponse(Schema):
     request_id: str
     response: str = Field(description="The composed reply, with inline citations.")
@@ -60,6 +92,10 @@ class ChatResponse(Schema):
     assessment: dict[str, Any] = Field(default_factory=dict)
     grade_result: dict[str, Any] = Field(default_factory=dict)
     prereq_topics: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[SourceRef] = Field(
+        default_factory=list,
+        description="Sources the reply cites, numbered to match its [n] markers.",
+    )
 
     @classmethod
     def from_state(cls, state: dict[str, Any], request_id: str) -> ChatResponse:
@@ -73,6 +109,8 @@ class ChatResponse(Schema):
             assessment=state.get("assessment") or {},
             grade_result=state.get("grade_result") or {},
             prereq_topics=[_as_dict(topic) for topic in state.get("prereq_topics") or []],
+            citations=[SourceRef.from_citation(c)
+                       for c in state.get("published_citations") or []],
         )
 
 

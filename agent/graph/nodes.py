@@ -8,7 +8,6 @@ and ``load_context`` need only config.
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from typing import Any, Optional
 
@@ -17,11 +16,14 @@ from langchain_core.messages import HumanMessage
 from ..models import (
     AssessmentSpec, Citation, GradeSpec, PlannerOutput, PrereqTopic, Style, VisualSpec)
 from ..prompts import (
-    COMPOSE_PROMPT, LANGUAGE_REPAIR_PROMPT, PLAN_PROMPT, TASK_DESCRIPTIONS)
+    COMPOSE_PROMPT, FORMATTING_CONTRACT, LANGUAGE_REPAIR_PROMPT, PLAN_PROMPT,
+    TASK_DESCRIPTIONS)
 from ..tools import resolve_topics
 from shared.language import (
     LanguageDecision, LanguagePolicy, language_directive, translate)
 from shared.language.catalog import STRINGS
+from ..citations import cited_numbers, renumber
+from ..intent import IntentRouter
 from shared.language.verify import (
     DEFAULT_MIN_ANSWER_CHARS, DEFAULT_MIN_CONFIDENCE, verify_answer)
 
@@ -69,7 +71,41 @@ def build_classify(config):
 
 def _after_classify(state) -> str:
     """Halt on an unknown role (classify already set a sign-in response); else continue."""
-    return "load_context" if state.get("pathway") else "persist"
+    return "route" if state.get("pathway") else "persist"
+
+
+# --- route ------------------------------------------------------------------
+
+def build_route(config, embedder=None):
+    """Decide whether this turn needs the syllabus at all.
+
+    A greeting used to be planned as an explain task, which searched the textbook
+    for "Hi" and answered that the syllabus does not cover it. Deciding before
+    retrieval costs one embedding; deciding after costs a retrieval, a model call,
+    and a worse answer.
+    """
+    router = IntentRouter.from_config(config, embedder)
+
+    def route(state) -> dict:
+        decision = router.classify(state.get("message", ""))
+        if decision.needs_syllabus:
+            logger.info("route", extra=decision.log_fields())
+            return {"intent": decision.intent}
+
+        language = state.get("language", "en")
+        logger.info("route: answered without retrieval", extra=decision.log_fields())
+        return {
+            "intent": decision.intent,
+            "tasks": [],
+            "response": translate(f"intent.{decision.intent}", language),
+        }
+
+    return route
+
+
+def _after_route(state) -> str:
+    """A conversational turn is already answered; only a question needs context."""
+    return "load_context" if state.get("intent", "question") == "question" else "persist"
 
 
 # --- load_context -----------------------------------------------------------
@@ -508,22 +544,27 @@ def _grade_line(grade_result: dict, language: str) -> str:
     return "\n".join(lines)
 
 
-_CITE_MARKER = re.compile(r"\[(\d+)\]")
+DEFAULT_MAX_CITATIONS = 6
 
 
 def _renumber_citations(
-    answers: list[dict], citations: list[Citation]
+    answers: list[dict], citations: list[Citation], limit: int = DEFAULT_MAX_CITATIONS
 ) -> tuple[list[dict], list[Citation]]:
     """Give one global [n] numbering to a multi-task turn.
 
     Each subgraph numbers its own citations from [1], so an explain+summarize turn
-    collides. Walk answers in order, dedupe sources across tasks into a single
-    numbering, remap each task's inline [n] markers in its artifact text, and return
-    the rewritten answers plus the deduped, globally-numbered citations.
+    collides. Numbering follows the order the answers cite their sources, not the
+    order retrieval returned them, and only sources a marker actually points at are
+    numbered — an uncited chunk in the sources list is a lesson the student was
+    never sent to.
+
+    Sources beyond ``limit`` are dropped along with their markers: eight bracketed
+    numbers on one paragraph is noise, and a marker outliving its source is worse
+    than no marker.
     """
-    by_task: dict[Any, list[Citation]] = {}
+    by_task: dict[Any, dict[int, Citation]] = {}
     for c in citations:
-        by_task.setdefault(c.task_id, []).append(c)
+        by_task.setdefault(c.task_id, {}).setdefault(c.n, c)
 
     global_n: dict[tuple, int] = {}      # source key -> global number
     ordered: list[Citation] = []         # deduped citations, in global-number order
@@ -531,21 +572,21 @@ def _renumber_citations(
     for a in answers:
         tid = a.get("task_id")
         remap = remaps.setdefault(tid, {})
-        for c in sorted(by_task.get(tid, []), key=lambda x: x.n or 0):
+        available = by_task.get(tid, {})
+        for n in cited_numbers(a.get("text", "")):
+            c = available.get(n)
+            if c is None:
+                continue
             key = (c.lecture_id, c.heading_path, c.page_from)
             if key not in global_n:
+                if len(global_n) >= limit:
+                    continue
                 global_n[key] = len(global_n) + 1
                 ordered.append(c.model_copy(update={"n": global_n[key]}))
             remap[c.n] = global_n[key]
 
-    def _rewrite(text: str, remap: dict[int, int]) -> str:
-        if not remap:
-            return text
-        return _CITE_MARKER.sub(
-            lambda m: f"[{remap.get(int(m.group(1)), m.group(1))}]", text)
-
     new_answers = [
-        {**a, "text": _rewrite(a.get("text", ""), remaps.get(a.get("task_id"), {}))}
+        {**a, "text": renumber(a.get("text", ""), remaps.get(a.get("task_id"), {}))}
         for a in answers
     ]
     return new_answers, ordered
@@ -577,7 +618,7 @@ def _compose_llm(llm, answers, prereqs, language, tone) -> str:
     prereq_str = ", ".join(p.label for p in prereqs) or "(none)"
     prompt_text = COMPOSE_PROMPT.format(
         language=language_directive(language), tone=tone, answers=joined,
-        prereq_topics=prereq_str)
+        formatting=FORMATTING_CONTRACT, prereq_topics=prereq_str)
     return llm.invoke([HumanMessage(content=prompt_text)]).content
 
 
@@ -610,7 +651,9 @@ def build_compose(config, llm):
             return {"response": msg}
 
         # One global [n] numbering across tasks before merging (each subgraph numbered from [1]).
-        answers, citations = _renumber_citations(answers, state.get("citations", []))
+        answers, citations = _renumber_citations(
+            answers, state.get("citations", []),
+            config.get("agent.max_citations", DEFAULT_MAX_CITATIONS))
 
         # Blend multiple task answers into one reply via the LLM; a single answer (or no LLM,
         # or an LLM failure) is just its text concatenated — real content, never a stub.
@@ -645,8 +688,11 @@ def build_compose(config, llm):
             parts.append(_visual_line(visuals, language))
         elif state.get("visual_error"):
             parts.append(translate("visual.render_error", language))
-        logger.info("compose", extra={"answers": len(answers), "prereqs": len(prereqs)})
-        return {"response": "\n\n".join(p for p in parts if p)}
+        logger.info("compose", extra={
+            "answers": len(answers), "prereqs": len(prereqs),
+            "citations": len(citations)})
+        return {"response": "\n\n".join(p for p in parts if p),
+                "published_citations": citations}
 
     return compose
 

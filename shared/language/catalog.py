@@ -26,6 +26,30 @@ STRINGS: dict[str, dict[str, str]] = {
         "fr": "Désolé — veuillez vous connecter avec un compte valide (élève, enseignant ou parent).",
         "de": "Entschuldigung — bitte melden Sie sich mit einem gültigen Konto an (Schüler, Lehrer oder Elternteil).",
     },
+    "intent.greeting": {
+        "ar": "أهلًا بك! أنا مساعدك في مذاكرة منهجك. اسألني عن أي درس أو فكرة لم تتضح لك.",
+        "en": "Hello! I'm your study assistant for your syllabus. Ask me about any lesson or idea you'd like explained.",
+        "fr": "Bonjour ! Je suis ton assistant d'étude pour ton programme. Pose-moi une question sur n'importe quelle leçon.",
+        "de": "Hallo! Ich bin deine Lernhilfe für deinen Lehrplan. Frag mich zu jeder Lektion oder Idee.",
+    },
+    "intent.thanks": {
+        "ar": "العفو! إن احتجت شرحًا آخر أو تمارين على الدرس، أنا هنا.",
+        "en": "You're welcome! If you'd like another explanation or some practice questions, just ask.",
+        "fr": "Avec plaisir ! Si tu veux une autre explication ou des exercices, demande-moi.",
+        "de": "Gern geschehen! Wenn du noch eine Erklärung oder Übungen möchtest, sag Bescheid.",
+    },
+    "intent.meta": {
+        "ar": "أستطيع أن أشرح دروس منهجك، وألخّصها، وأضع لك أسئلة تدريبية، وأصحّح إجابتك، وأرسم لك خرائط ذهنية أو رسومًا توضيحية. اسألني عن أي درس.",
+        "en": "I can explain lessons from your syllabus, summarise them, set practice questions, mark your answers, and draw mind maps or diagrams. Ask me about any lesson.",
+        "fr": "Je peux expliquer les leçons de ton programme, les résumer, créer des exercices, corriger tes réponses et dessiner des cartes mentales. Pose-moi une question sur une leçon.",
+        "de": "Ich kann Lektionen aus deinem Lehrplan erklären, zusammenfassen, Übungsfragen stellen, deine Antworten bewerten und Mindmaps zeichnen. Frag mich zu einer Lektion.",
+    },
+    "intent.chitchat": {
+        "ar": "بخير، شكرًا لسؤالك! هيّا نذاكر — عن أي درس تحب أن تسأل؟",
+        "en": "I'm well, thank you for asking! Let's get to studying — which lesson would you like to ask about?",
+        "fr": "Je vais bien, merci ! Passons à l'étude — sur quelle leçon veux-tu travailler ?",
+        "de": "Mir geht es gut, danke der Nachfrage! Lass uns lernen — zu welcher Lektion hast du eine Frage?",
+    },
     "compose.prereq_head": {
         "ar": "مواضيع تمهيدية", "en": "Prerequisite topics",
         "fr": "Sujets prérequis", "de": "Voraussetzungen",

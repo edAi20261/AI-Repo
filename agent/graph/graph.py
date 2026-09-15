@@ -16,8 +16,10 @@ import logging
 from typing import Optional
 
 from shared.backend import get_backend_client
+from shared.embeddings import get_embedder
 from shared.llm import llm_key_available, maybe_llm
 
+from .. import retrieval
 from ..config import Config, get_config
 from ..models import Style, SubjectFacts
 from ..state import MainState
@@ -60,6 +62,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
     # Read the config knobs once, at build time (not per turn).
     k = config.get("agent.k", 8)
     depth = config.get("agent.prereq_depth", 2)
+    prereq_limit = config.get("agent.max_prereqs", retrieval.DEFAULT_MAX_PREREQS)
     min_score = config.get("agent.min_score", 0.0)
     topic_filter = config.get("agent.topic_filter", "hard")
     with_figure = config.get("agent.explain_figures", True)
@@ -85,6 +88,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
             "grade": payload.get("grade"),
             "k": k,
             "prereq_depth": depth,
+            "prereq_limit": prereq_limit,
             "min_score": min_score,
             "topic_filter": topic_filter,
         })
@@ -333,6 +337,7 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
     # Parent nodes run on MainState directly; each subgraph is wrapped in one adapter node.
     graph = StateGraph(MainState)
     graph.add_node("classify", nodes.build_classify(config))
+    graph.add_node("route", nodes.build_route(config, get_embedder(config)))
     graph.add_node("load_context", nodes.build_load_context(config))
     graph.add_node("plan", nodes.build_plan(config, maybe_llm(config, "plan"), backend_client))
     graph.add_node("explain_adapter", _build_explain_summarize_adapter(explain_sg, "explain", config, backend_client))
@@ -351,7 +356,8 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
     # those adapters fire), then every adapter fans back in to render_visuals -> compose.
     graph.add_edge(START, "classify")
     # Unknown role -> classify set a sign-in response; skip straight to the end.
-    graph.add_conditional_edges("classify", nodes._after_classify, ["load_context", "persist"])
+    graph.add_conditional_edges("classify", nodes._after_classify, ["route", "persist"])
+    graph.add_conditional_edges("route", nodes._after_route, ["load_context", "persist"])
     graph.add_edge("load_context", "plan")
     graph.add_conditional_edges(
         "plan", nodes.dispatch,

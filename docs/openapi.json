@@ -811,7 +811,7 @@
                             }
                         ],
                         "title": "Language",
-                        "description": "Overrides the language detected from the message."
+                        "description": "Answer in this language. Outranks detection — pass it when the platform knows the learner's language."
                     }
                 },
                 "additionalProperties": false,
@@ -836,6 +836,12 @@
                     },
                     "language": {
                         "type": "string",
+                        "enum": [
+                            "ar",
+                            "en",
+                            "fr",
+                            "de"
+                        ],
                         "title": "Language"
                     },
                     "pathway": {
@@ -881,6 +887,14 @@
                         },
                         "type": "array",
                         "title": "Prereq Topics"
+                    },
+                    "citations": {
+                        "items": {
+                            "$ref": "#/components/schemas/SourceRef"
+                        },
+                        "type": "array",
+                        "title": "Citations",
+                        "description": "Sources the reply cites, numbered to match its [n] markers."
                     }
                 },
                 "additionalProperties": false,
@@ -1398,6 +1412,100 @@
                     "available"
                 ],
                 "title": "ReportResponse"
+            },
+            "SourceRef": {
+                "properties": {
+                    "n": {
+                        "type": "integer",
+                        "title": "N",
+                        "description": "The inline marker this source is referenced by."
+                    },
+                    "lecture_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Lecture Id"
+                    },
+                    "lesson_title": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Lesson Title"
+                    },
+                    "lesson_order": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Lesson Order"
+                    },
+                    "subject_name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Subject Name"
+                    },
+                    "heading_path": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Heading Path",
+                        "description": "Where in the lesson, e.g. 'Unit 2 > Subtraction'."
+                    },
+                    "page_from": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Page From"
+                    },
+                    "page_to": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Page To"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                    "n"
+                ],
+                "title": "SourceRef",
+                "description": "One source the reply cites, as structured data.\n\nThe reply text carries ``[n]`` markers; this is what each ``n`` refers to. A\nclient that renders the markers as badges needs the label and the page, and\nshould not have to parse them back out of the prose."
             },
             "Submission": {
                 "properties": {
