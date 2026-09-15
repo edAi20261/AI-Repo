@@ -135,7 +135,9 @@ ingestion:
     enabled: false
 
 language:
-  supported: [ar, en, fr, de]
+  supported: [ar, en, fr, de]   # answered in. Others are recognised and fall back —
+                                # see _ALSO_RECOGNISED in shared/language/detect.py.
+                                # Adding one here also needs its strings in catalog.py
   default: en
   arabic_ratio: 0.30           # >= this share of Arabic-script letters -> the turn is Arabic
   # Detection decides a turn only with enough evidence: below any of these it

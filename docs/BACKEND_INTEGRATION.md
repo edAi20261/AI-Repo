@@ -42,7 +42,7 @@ caller is allowed to do, so a wrong role grants the wrong capabilities.
 | `lecture_ids` | no | narrows to specific lessons |
 | `session_id` | no | conversation id |
 | `grade` | no | academic year, e.g. `g8` |
-| `language` | no | overrides the language detected from the message |
+| `language` | no | Fallback only — the message decides. Never send the UI language |
 
 Unknown fields are rejected with `422` — deliberate, so a typo surfaces instead
 of being silently ignored.

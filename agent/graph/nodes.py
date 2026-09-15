@@ -45,8 +45,8 @@ def build_classify(config):
     known_pathways = set((config.get("agent.pathways", {}) or {}).keys())
 
     def classify(state) -> dict:
-        # A caller that knows the learner outranks anything inferred from a
-        # sentence: the language parameter is a statement, not a hint.
+        # The message decides. The caller's parameter is the fallback for a
+        # message that cannot — see shared/language/resolver.py.
         decision = policy.resolve(
             state.get("message", ""),
             api_language=state.get("language"),
