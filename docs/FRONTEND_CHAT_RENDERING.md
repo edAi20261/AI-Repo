@@ -12,7 +12,8 @@ generated spec.
 1. **Replies are Markdown now.** Short paragraphs, `-` and `1.` lists for steps,
    `**bold**` on the term being taught, `###` headings in long answers, LaTeX for
    maths.
-2. **Replies come back in the student's language.** Arabic in, Arabic out.
+2. **Replies come back in the student's language.** Arabic in, Arabic out — and
+   "reply in Arabic from now on" is remembered for the rest of the conversation.
 3. **Greetings and thanks are answered as conversation**, not looked up in the
    syllabus.
 4. **The sources are structured data**, not only a list at the end of the text.
@@ -27,7 +28,7 @@ the wrong side.
 
 | # | Change | Where | Priority |
 |---|---|---|---|
-| 1 | Stop sending the interface language | Frontend | **Bug — do first** |
+| 1 | Answer language: stop sending it, keep the session id | Frontend | **Bug — do first** |
 | 2 | Render the reply as Markdown | Frontend | **Required** |
 | 3 | Right-to-left layout | Frontend | **Required** |
 | 4 | Fix the typing animation | Frontend | **Required** |
@@ -45,31 +46,37 @@ exists with the same meaning; `citations` is added, not swapped in.
 
 ---
 
-## 1. Stop sending the interface language — bug, do first
+## 1. The answer language — stop sending it, and keep the session id — do first
 
 **Symptom:** a student writes in Arabic, the tutor answers in English. Same for
 French.
 
 **Cause:** the request was filling the `language` field from `i18n.language` —
-the header dropdown that switches the app's buttons and menus.
+the header dropdown that switches the app's buttons and menus. The service
+treated that as the student's own instruction and honoured it over what they
+actually typed.
 
-**This is now fixed on my side.** The service works the language out from the
-message itself, the way ChatGPT and Claude do:
+**This is now fixed and extended on my side.** The tutor works the language out
+by itself, the way ChatGPT and Claude do — no dropdown, no setting, nothing for
+the student to configure:
 
 | The student writes | The tutor answers |
 |---|---|
 | Arabic | Arabic |
 | French | French |
-| English, ending "reply in Arabic" | Arabic |
+| English ending "reply in Arabic from now on" | Arabic — **and stays Arabic for the rest of the conversation** |
+| plain English, later in that same conversation | still Arabic |
+| "answer in the language I write in" | back to matching each message |
+| "reply in Arabic" on its own | a short acknowledgement, in Arabic |
 | `اشرح لي الدرس بالانجليزي` | English |
 | "ok" — too short to tell | falls back |
 
-No dropdown, no setting, nothing for the student to configure.
+### What you need to do
 
-**What is left for you:** do not send `language` at all. It still exists, but
-only as a fallback for a message that cannot decide on its own — a greeting too
-short to detect, Arabizi, a bare equation. An interface language is not that, and
-sending it will make short messages answer in the wrong language.
+**(a) Do not send `language`.** It still exists, but only as a fallback for a
+message that cannot decide on its own — a greeting too short to read, Arabizi, a
+bare equation. An interface language is not that, and sending it will make short
+messages answer in the wrong language.
 
 ```ts
 // remove this — the header dropdown is not a statement about the answer
@@ -79,12 +86,30 @@ language: i18n.language
 If a real per-student tutor preference ever exists, that is what belongs in the
 field. Until then, leave it out.
 
-Once it is out, the **Learning language** label in the Lesson Context panel is
-also wrong — it reads `i18n.language`. Show the `language` field from the
-response instead, which is the language the answer was actually written in.
+**(b) Keep `session_id` stable for a conversation, and change it for a new one.**
+This is new. `session_id` used to be little more than a namespace for uploaded
+files; it now carries the standing language instruction, so its lifecycle is
+what makes "from now on" mean anything.
+
+- **Same conversation → same id.** Opening the session once and reusing it is
+  already what the seam does. Do not create one per message, or every turn
+  starts fresh and the instruction never applies to anything.
+- **"New chat" → a new id.** Already handled by `reset()`, and it is what makes
+  a new conversation start clean. Worth a comment so it is not "tidied away"
+  later.
+- **Do not throw the id away on a failed send.** The seam currently clears
+  `sessionId` in the `catch` block, so one network blip silently forgets the
+  language the student asked for. Clear it only when the session itself is the
+  problem — a `404` or `410` — and keep it on a timeout or a `5xx`.
+
+**(c) Show the answer's real language.** The response carries `language` (`ar`,
+`en`, `fr`, `de`) — the language the reply was actually written in. The **Learning
+language** label in the Lesson Context panel currently reads `i18n.language`;
+show this instead, so it reflects the tutor rather than the app chrome.
 
 **Done when:** a question typed in Arabic comes back in Arabic while the
-interface is still set to English.
+interface is still in English; "reply in Arabic from now on" is still being
+honoured three messages later; and "New chat" starts back in English.
 
 ---
 
