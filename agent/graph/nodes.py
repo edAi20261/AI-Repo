@@ -20,6 +20,9 @@ from ..prompts import (
     TASK_DESCRIPTIONS)
 from ..tools import resolve_topics
 from shared.language import (
+    clear_request,
+    explicit_request,
+    language_instruction_only,
     LanguageDecision, LanguagePolicy, language_directive, translate)
 from shared.language.catalog import STRINGS
 from ..citations import cited_numbers, renumber
@@ -40,20 +43,41 @@ logger = logging.getLogger(__name__)
 # guessing a persona (en is the fallback for any unlisted language).
 
 
-def build_classify(config):
+def build_classify(config, sticky=None):
     policy = LanguagePolicy.from_config(config)
     known_pathways = set((config.get("agent.pathways", {}) or {}).keys())
 
     def classify(state) -> dict:
-        # The message decides. The caller's parameter is the fallback for a
-        # message that cannot — see shared/language/resolver.py.
+        message = state.get("message", "")
+
+        # Both are pure regex. A message that gives or revokes an instruction
+        # settles the question by itself, so those turns never read the store.
+        cleared = clear_request(message)
+        requested = None if cleared else explicit_request(message)
+
+        session_language = None
+        if sticky is not None and not requested and not cleared:
+            session_language = sticky.get(
+                state.get("user_id"), state.get("session_id"))
+
+        # The message decides. A standing instruction from earlier in the
+        # session comes next; the caller's parameter is the fallback for a
+        # message that cannot decide — see shared/language/resolver.py.
         decision = policy.resolve(
-            state.get("message", ""),
+            message,
             api_language=state.get("language"),
+            session_language=session_language,
             profile_language=state.get("profile_language"),
             previous_language=state.get("previous_language"),
         )
         language = decision.code
+
+        write = None
+        if cleared:
+            write = {"op": "clear", "evidence": cleared}
+        elif decision.source == "explicit":
+            write = {"op": "set", "code": decision.code,
+                     "evidence": decision.evidence}
         user_type = state.get("user_type")
         pathway = user_type if user_type in known_pathways else None
         if pathway is None:
@@ -64,7 +88,9 @@ def build_classify(config):
                     "response": translate("classify.sign_in", language)}
         logger.info("classify", extra={"pathway": pathway, **decision.log_fields()})
         return {"pathway": pathway, "language": language,
-                "language_decision": decision.model_dump()}
+                "language_decision": decision.model_dump(),
+                "session_language": session_language,
+                "session_language_write": write}
 
     return classify
 
@@ -93,11 +119,19 @@ def build_route(config, embedder=None):
             return {"intent": decision.intent}
 
         language = state.get("language", "en")
+        key = f"intent.{decision.intent}"
+        if decision.intent == "language":
+            # Setting a language and revoking one are different answers. classify
+            # already resolved `language`, so the acknowledgement arrives in the
+            # language just asked for without any further plumbing.
+            instruction = language_instruction_only(state.get("message", ""))
+            if instruction and instruction[1] is None:
+                key = "intent.language_cleared"
         logger.info("route: answered without retrieval", extra=decision.log_fields())
         return {
             "intent": decision.intent,
             "tasks": [],
-            "response": translate(f"intent.{decision.intent}", language),
+            "response": translate(key, language),
         }
 
     return route
@@ -385,6 +419,9 @@ def build_plan(config, llm, client=None):
             decision = policy.resolve(
                 state.get("message", ""),
                 api_language=prior.get("code") if prior.get("source") == "api" else None,
+                # Without this a planner hint would outrank the standing
+                # instruction it sits five places below.
+                session_language=state.get("session_language"),
                 planner_hint=req_lang,
                 profile_language=state.get("profile_language"),
                 previous_language=state.get("previous_language"),
@@ -699,12 +736,24 @@ def build_compose(config, llm):
 
 # --- persist ----------------------------------------------------------------
 
-def build_persist(config):
+def build_persist(config, sticky=None):
     def persist(state) -> dict:
-        # TODO (deferred): the checkpointer holds session memory for now; adaptive_profile /
-        # dashboard writes and the ephemeral-namespace drop are not implemented yet. Short-term
-        # memory (a messages list via add_messages, or Redis) also lands here.
-        logger.info("persist", extra={"pathway": state.get("pathway")})
+        # TODO (deferred): adaptive_profile / dashboard writes, the
+        # ephemeral-namespace drop, and message history are not implemented yet.
+        write = state.get("session_language_write") or {}
+        session_id = state.get("session_id")
+        if sticky is not None and write and session_id:
+            user_id = state.get("user_id")
+            if write.get("op") == "clear":
+                sticky.clear(user_id, session_id)
+            elif write.get("code"):
+                sticky.set(user_id, session_id, code=write["code"],
+                           user_type=state.get("user_type"),
+                           evidence=write.get("evidence"))
+        logger.info("persist", extra={"pathway": state.get("pathway"),
+                                      "session_language_op": write.get("op")})
+        # Must stay empty: the streaming path merges every node's delta into the
+        # response, so anything returned here would show on one endpoint only.
         return {}
 
     return persist
