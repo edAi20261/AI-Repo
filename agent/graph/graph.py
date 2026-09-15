@@ -339,6 +339,8 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
     graph.add_node("visual_adapter", _build_visual_adapter(config, backend_client))
     graph.add_node("render_visuals", _build_render_visuals(visual_sg, config, backend_client))
     graph.add_node("compose", nodes.build_compose(config, maybe_llm(config, "compose")))
+    graph.add_node("verify_language", nodes.build_verify_language(
+        config, maybe_llm(config, "compose")))
     graph.add_node("persist", nodes.build_persist(config))
 
     # Linear front, then plan fans out (dispatch returns one Send per planned task — only
@@ -357,7 +359,8 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
                     "grade_adapter", "report_adapter", "visual_adapter"):
         graph.add_edge(adapter, "render_visuals")
     graph.add_edge("render_visuals", "compose")
-    graph.add_edge("compose", "persist")
+    graph.add_edge("compose", "verify_language")
+    graph.add_edge("verify_language", "persist")
     graph.add_edge("persist", END)
 
     compiled = graph.compile(checkpointer=checkpointer)

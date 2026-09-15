@@ -16,10 +16,14 @@ from langchain_core.messages import HumanMessage
 
 from ..models import (
     AssessmentSpec, Citation, GradeSpec, PlannerOutput, PrereqTopic, Style, VisualSpec)
-from ..prompts import COMPOSE_PROMPT, PLAN_PROMPT, TASK_DESCRIPTIONS
+from ..prompts import (
+    COMPOSE_PROMPT, LANGUAGE_REPAIR_PROMPT, PLAN_PROMPT, TASK_DESCRIPTIONS)
 from ..tools import resolve_topics
-from shared.language import LanguagePolicy, language_directive, translate
+from shared.language import (
+    LanguageDecision, LanguagePolicy, language_directive, translate)
 from shared.language.catalog import STRINGS
+from shared.language.verify import (
+    DEFAULT_MIN_ANSWER_CHARS, DEFAULT_MIN_CONFIDENCE, verify_answer)
 
 from ..utils import extract_json, parse_structured
 from .pathways import build_namespaces, resolve_style
@@ -652,3 +656,67 @@ def build_persist(config):
         return {}
 
     return persist
+
+
+# --- verify_language --------------------------------------------------------
+
+def build_verify_language(config, llm=None):
+    """Check the finished answer is in the language the turn resolved to.
+
+    A directive in the prompt is an instruction, not a guarantee: grounded
+    material in another language pulls the model across, and the student is the
+    one who finds out. Detection on the answer costs microseconds; a repair costs
+    one call and only runs when the mismatch is confident and the language was
+    something we actually knew rather than guessed.
+    """
+    enabled = config.get("language.verify.enabled", True)
+    languages = tuple(config.get("language.supported", ["ar", "en", "fr", "de"]))
+    min_chars = config.get("language.verify.answer_min_chars", DEFAULT_MIN_ANSWER_CHARS)
+    min_confidence = config.get("language.verify.min_confidence", DEFAULT_MIN_CONFIDENCE)
+
+    def verify_language(state) -> dict:
+        answer = state.get("response") or ""
+        raw_decision = state.get("language_decision")
+        if not enabled or not answer or not raw_decision:
+            return {}
+
+        decision = LanguageDecision(**raw_decision)
+        check = verify_answer(
+            answer, decision, languages=languages,
+            min_chars=min_chars, min_confidence=min_confidence,
+        )
+        if not check.needs_repair:
+            return {}
+
+        if llm is None:
+            logger.warning("language mismatch, no model to repair with",
+                           extra={"expected": decision.code, "detected": check.detected})
+            return {"language_repair": "failed"}
+
+        try:
+            rewritten = (llm.invoke([HumanMessage(content=LANGUAGE_REPAIR_PROMPT.format(
+                language=language_directive(decision.code, context_may_differ=False),
+                answer=answer))]).content or "").strip()
+        except Exception:
+            logger.exception("language repair call failed")
+            return {"language_repair": "failed"}
+
+        # A rewrite that is still wrong, or that came back empty, is worse than the
+        # original: the student gets a coherent answer in the wrong language rather
+        # than a mangled one in no language at all.
+        if not rewritten:
+            return {"language_repair": "failed"}
+        recheck = verify_answer(
+            rewritten, decision, languages=languages,
+            min_chars=min_chars, min_confidence=min_confidence,
+        )
+        if recheck.needs_repair:
+            logger.warning("language repair did not take",
+                           extra={"expected": decision.code, "detected": recheck.detected})
+            return {"language_repair": "failed"}
+
+        logger.info("language repaired", extra={"expected": decision.code,
+                                                "was": check.detected})
+        return {"response": rewritten, "language_repair": "repaired"}
+
+    return verify_language

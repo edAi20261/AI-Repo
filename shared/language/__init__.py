@@ -11,7 +11,7 @@ from .request import explicit_request
 from .resolver import DEFAULT_LANGUAGE, DEFAULT_SUPPORTED, LanguagePolicy
 from .script import arabic_ratio, classify, looks_arabizi
 from .types import ENDONYMS, ENGLISH_NAMES, Lang, LanguageDecision, LanguageSource, Script
-from .verify import LanguageCheck, prose_of, verify
+from .verify import LanguageCheck, prose_of, verify_answer
 
 __all__ = [
     "DEFAULT_LANGUAGE",
@@ -36,5 +36,5 @@ __all__ = [
     "name_of",
     "prose_of",
     "translate",
-    "verify",
+    "verify_answer",
 ]

@@ -52,7 +52,7 @@ def prose_of(answer: str) -> str:
     return text.strip()
 
 
-def verify(
+def verify_answer(
     answer: str,
     decision: LanguageDecision,
     *,

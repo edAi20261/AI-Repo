@@ -307,3 +307,16 @@ content. If prerequisite topics are listed, end with a short line pointing the s
 
 --- PREREQUISITE TOPICS ---
 {prereq_topics}"""
+
+
+# Used only when the finished answer came back in a language the student did not
+# write in. A rewrite, never a re-answer: the content was already grounded.
+LANGUAGE_REPAIR_PROMPT = """The reply below was written in the wrong language.
+{language}
+Rewrite it, changing NOTHING else: keep every fact, the structure, the order, the
+markdown, any LaTeX, and every inline citation marker [n] exactly as they are.
+Keep technical terms, formulas, numbers and proper nouns in their source form.
+Return only the rewritten reply.
+
+--- REPLY ---
+{answer}"""
