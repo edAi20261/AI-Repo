@@ -22,15 +22,8 @@ from agent.graph.nodes import (
 from agent.graph.pathways import build_namespaces, resolve_style
 from agent.models import Citation, PrereqTopic, ResolvedTopic, RetrievedChunk
 from agent.tools import AuthorizationError, assert_user_type
-from agent.utils import extract_json
 
 # --- utils ------------------------------------------------------------------
-
-def test_extract_json_handles_fence_and_prose():
-    assert extract_json('```json\n{"a": 1}\n```') == {"a": 1}
-    assert extract_json('here you go: {"b": 2} thanks') == {"b": 2}
-    assert extract_json("no json here") is None
-
 
 # --- pathways ---------------------------------------------------------------
 

@@ -16,24 +16,11 @@ from shared.structured import call_structured, schema_hint
 from .config import Config
 from .llm_provider import get_llm, llm_key_available
 from .prompts import DERIVE_DEPS_PROMPT, TOPIC_EXTRACTION_PROMPT
-from .schemas import DependencyItem, DependencyList, TopicItem, TopicList
+from .schemas import DependencyList, TopicList
 from .utils.tokens import count_tokens
 
 
 # --- shared helpers --------------------------------------------------------
-
-def _message_content(message) -> str:
-    """Text of a LangChain message or a plain string."""
-    if isinstance(message, str):
-        return message
-    content = getattr(message, "content", message)
-    if isinstance(content, list):  # some providers return content parts
-        return "".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
-        )
-    return str(content)
-
 
 class TopicExtractor(ABC):
     """Extract 3-8 topics (skills) from a lesson's chunk texts."""

@@ -26,7 +26,6 @@ from ...prompts import ASSESSMENT_BATCH_PROMPT
 from ...tools import get_mastery, get_question_bank, resolve_topics
 from shared.structured import align_by_id, call_structured, schema_hint
 
-from ...utils import extract_json
 
 logger = logging.getLogger(__name__)
 

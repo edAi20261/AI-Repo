@@ -36,7 +36,6 @@ from ...tools import (
 )
 from shared.structured import align_by_id, call_structured, schema_hint
 
-from ...utils import extract_json
 
 logger = logging.getLogger(__name__)
 

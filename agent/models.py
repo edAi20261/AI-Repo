@@ -340,6 +340,57 @@ class Flashcard(BaseModel):
     back: str = ""
 
 
+class MindmapNode(BaseModel):
+    """One node of a mind map. Children recurse to the depth the prompt asks for."""
+    label: str = Field(description="Short node label, a few words.")
+    children: list[MindmapNode] = Field(
+        default_factory=list, description="Sub-branches of this node.")
+
+
+class FlashcardSet(BaseModel):
+    """The flashcard builder's reply."""
+    cards: list[Flashcard] = Field(default_factory=list, description="The cards, front and back.")
+
+
+class MathFunction(BaseModel):
+    """One curve to plot. The expression is sampled by us, never evaluated by the model."""
+    name: Optional[str] = Field(default=None, description="Legend label for the curve.")
+    expr: str = Field(description="Formula in x, Python arithmetic (** for powers).")
+    domain: Optional[list[float]] = Field(
+        default=None, description="[min, max] range of x to plot over.")
+
+
+class MathGeometry(BaseModel):
+    """A geometry figure given as labelled points and the segments between them."""
+    points: dict[str, list[float]] = Field(
+        default_factory=dict, description="Label -> [x, y] coordinates.")
+    segments: list[list[Any]] = Field(
+        default_factory=list, description="Pairs of point labels to join.")
+
+
+class MathFigureSpec(BaseModel):
+    """A plot or figure a model asked for, before we sample it.
+
+    Modelling this is what keeps an expression the student's own message can
+    steer from reaching the renderer as an unchecked string.
+    """
+    title: Optional[str] = Field(default=None, description="Figure title.")
+    functions: list[MathFunction] = Field(default_factory=list)
+    geometry: Optional[MathGeometry] = None
+
+
+class PdfBlock(BaseModel):
+    """One block of a generated document."""
+    type: Literal["heading", "text"] = Field(description="heading or text.")
+    text: str = Field(description="The block's content.")
+
+
+class PdfDocument(BaseModel):
+    """A document structured into a title and ordered blocks."""
+    title: Optional[str] = Field(default=None, description="Short document title.")
+    blocks: list[PdfBlock] = Field(default_factory=list)
+
+
 class ArtifactRef(BaseModel):
     """A rendered visual handed to the UI (the ``/ai/chat`` ``visuals`` list). ``s3_uri``
     for an image/chart/mindmap/pdf; ``cards`` for a flashcard flip UI; ``text`` for a slide

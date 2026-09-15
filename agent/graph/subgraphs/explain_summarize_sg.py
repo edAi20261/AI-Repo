@@ -12,18 +12,18 @@ step and the explain/summarize prompts.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
 from typing import Any, Optional, TypedDict
 
 from langchain_core.messages import HumanMessage
+from pydantic import ValidationError
 
 from shared.language import language_directive, translate
 
 from ... import render, retrieval
-from ...models import Citation, PrereqTopic, RetrievedChunk, Style
+from ...models import MathFigureSpec, Citation, PrereqTopic, RetrievedChunk, Style
 from ...prompts import EXPLAIN_PROMPT, SUMMARIZE_PROMPT
 
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
@@ -180,12 +180,17 @@ def _math_figure_from_answer(text, config) -> tuple[str, Optional[dict]]:
     if not matches:
         return text, None
     m = matches[-1]
+    # This block is the one piece of model output a student's own message can
+    # steer into the renderer, so it is validated like any other reply rather
+    # than taken as whatever JSON happens to parse.
     try:
-        data = json.loads(m.group(1))
-    except Exception:
+        figure = MathFigureSpec.model_validate_json(m.group(1))
+    except ValidationError:
+        logger.warning("discarding a malformed math figure block")
         return text, None
-    if not (data.get("functions") or data.get("geometry")):
+    if not (figure.functions or figure.geometry):
         return text, None
+    data = figure.model_dump(exclude_none=True)
     spec = render.sample_math_spec(data, config)
     if not (spec.get("series") or spec.get("geometry")):
         return text, None

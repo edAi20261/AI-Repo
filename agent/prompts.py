@@ -230,9 +230,10 @@ Slide 2: <title>
 # --- visual builders: turn a topic + grounded context into a render tool's input -------
 
 MINDMAP_PROMPT = """Build a concise mind map of the topic below, grounded ONLY in the context.
-Return JSON only — a tree of nodes, each {{"label": "<short>", "children": [ ...same shape... ]}}.
-The root is the topic; 2-5 top branches; each branch 0-4 leaves. Labels <= 6 words. Write labels
+The root is the topic; 2-5 top branches; each branch 0-4 leaves. Labels <= 6 words.
 Do NOT add anything the context does not support.
+Return JSON only, no prose. Fields:
+{schema}
 {language}
 
 Topic: {topic}
@@ -241,8 +242,9 @@ Topic: {topic}
 {context}"""
 
 FLASHCARDS_PROMPT = """Create study flashcards from the material below, grounded ONLY in the context.
-Return JSON only: {{"cards": [{{"front": "<question or term>", "back": "<answer or definition>"}}]}}.
 Make up to {n} cards, each side short. Do NOT invent facts beyond the context.
+Return JSON only, no prose. Fields:
+{schema}
 {language}
 
 Topic: {topic}
@@ -251,23 +253,20 @@ Topic: {topic}
 {context}"""
 
 MATH_VISUAL_PROMPT = """{language}
-Extract a precise, plottable spec for the math/geometry request below.
-Commit to ONE concrete spec: if the request can be shown as a function of x, plot it; otherwise
-draw it as geometry. Return JSON only. Use Python arithmetic (** for powers) — do NOT list sample points.
-For a function plot:
-{{"functions": [{{"name": "<label>", "expr": "x**2", "domain": [-5, 5]}}], "title": ""}}.
-For geometry, give exact coordinates in "points", and list each segment as a PAIR OF POINT LABELS
-from that map:
-{{"geometry": {{"points": {{"A": [0, 0], "B": [4, 0], "C": [0, 3]}},
-  "segments": [["A", "B"], ["B", "C"], ["C", "A"]]}}, "title": ""}}.
-No prose.
+Describe the plot or figure that best illustrates the request below.
+Use Python arithmetic in expressions (** for powers) and give a domain for each function.
+For geometry, give exact coordinates in "points" and list each segment as a pair of point
+labels from that map. No prose.
+Return JSON only. Fields:
+{schema}
 
 Request: {topic}"""
 
 PDF_STRUCTURE_PROMPT = """Turn the material below into a structured document, grounded ONLY in it.
-Return JSON only: {{"title": "<short title>", "blocks": [{{"type": "heading|text", "text": "<...>"}}]}}.
 Organise it into a few sections — each a short "heading" block followed by one or more "text"
 blocks (a concise paragraph each). Be faithful: do not add anything the material does not contain.
+Return JSON only, no prose. Fields:
+{schema}
 {language}
 
 Topic: {topic}

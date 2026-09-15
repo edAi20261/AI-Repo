@@ -27,7 +27,6 @@ from shared.language.verify import (
 
 from shared.structured import call_structured
 
-from ..utils import extract_json
 from .pathways import build_namespaces, resolve_style
 
 logger = logging.getLogger(__name__)
