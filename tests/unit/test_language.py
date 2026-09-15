@@ -51,10 +51,53 @@ def test_explicit_request_beats_everything(policy):
     assert (decision.code, decision.source) == ("fr", "explicit")
 
 
-def test_api_language_is_honoured(policy):
-    """The parameter used to be written to state and overwritten on the next line."""
-    decision = policy.resolve("اشرح لي عملية البناء الضوئي", api_language="fr")
+@pytest.mark.parametrize("text,expected", [
+    ("explain subtraction, reply in Arabic", "ar"),
+    ("explain photosynthesis. Reply in Arabic please", "ar"),
+    ("Explain the water cycle, but in Arabic", "ar"),
+    ("summarize this lesson, and write it in Arabic", "ar"),
+    ("switch to Arabic", "ar"),
+    ("continue in Arabic", "ar"),
+    ("change to French", "fr"),
+    ("please use Arabic", "ar"),
+    ("اشرح لي الدرس بالانجليزي", "en"),
+])
+def test_a_request_at_the_end_of_a_message_is_obeyed(policy, text, expected):
+    """The shape a student actually writes: the question in one language, the
+    instruction tacked on."""
+    assert policy.resolve(text).code == expected
+
+
+@pytest.mark.parametrize("text", [
+    "how do you say hello in Arabic?",
+    "how to say thank you in French",
+])
+def test_asking_about_a_language_is_not_asking_for_it(policy, text):
+    """The question is about Arabic; the answer belongs in the asker's language."""
+    assert policy.resolve(text).code == "en"
+
+
+def test_the_message_outranks_the_caller_s_parameter(policy):
+    """The reported bug: the web app sent its interface language on every turn, so
+    Arabic and French questions were both answered in English.
+
+    Assistants people already use settle this the same way — Anthropic: "follow
+    the language of the query unless explicitly requested otherwise", applied even
+    over a stored "my native language is Spanish"."""
+    decision = policy.resolve("اشرح لي عملية البناء الضوئي", api_language="en")
+    assert (decision.code, decision.source) == ("ar", "script")
+
+
+def test_the_parameter_decides_what_the_message_cannot(policy):
+    """It is a default for an undecidable message, not an override of a clear one."""
+    decision = policy.resolve("ok", api_language="fr")
     assert (decision.code, decision.source) == ("fr", "api")
+
+
+def test_a_request_in_the_message_beats_the_parameter(policy):
+    """An English question ending in "reply in Arabic" is answered in Arabic."""
+    decision = policy.resolve("explain subtraction, reply in Arabic", api_language="en")
+    assert (decision.code, decision.source) == ("ar", "explicit")
 
 
 def test_script_beats_detection(policy):

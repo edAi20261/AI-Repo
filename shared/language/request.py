@@ -35,7 +35,8 @@ _LATIN_NAMES = {
 # "English literature" and "the French Revolution" are subjects, not requests.
 _LATIN_ANCHOR = (
     r"(?:in|into|en|auf|reply|respond|answer|write|explain|translate|speak|say|use"
-    r"|réponds|repond|reponds|écris|ecris|antworte|schreibe|erkläre|erklare)"
+    r"|switch|change|continue|réponds|repond|reponds|écris|ecris|antworte|schreibe"
+    r"|erkläre|erklare)"
 )
 
 for _code, _names in _LATIN_NAMES.items():
@@ -54,11 +55,20 @@ _SUBJECT_NOUNS = frozenset({
 })
 
 _DETERMINERS = re.compile(r"\b(?:the|la|le|les|der|die|das)\s+\S+$", re.IGNORECASE)
+
+# "how do you say X in Arabic" asks *about* Arabic; the answer belongs in the
+# language the student asked the question in.
+_ABOUT_THE_LANGUAGE = re.compile(
+    r"\b(?:how (?:do|would) (?:you|i) say|how to say|what(?:'s| is) .{0,24} called)\b",
+    re.IGNORECASE,
+)
 _NEXT_WORD = re.compile(r"[^\w]*([A-Za-zÀ-ɏ']+)")
 
 
 def _is_request(text: str, match: re.Match[str]) -> bool:
     """Whether a matched language name is an instruction rather than a topic."""
+    if _ABOUT_THE_LANGUAGE.search(text):
+        return False
     following = _NEXT_WORD.match(text[match.end():])
     if following is None:
         return True

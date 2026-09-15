@@ -27,7 +27,7 @@ the wrong side.
 
 | # | Change | Where | Priority |
 |---|---|---|---|
-| 1 | Add an answer-language control | Frontend | **Bug — do first** |
+| 1 | Stop sending the interface language | Frontend | **Bug — do first** |
 | 2 | Render the reply as Markdown | Frontend | **Required** |
 | 3 | Right-to-left layout | Frontend | **Required** |
 | 4 | Fix the typing animation | Frontend | **Required** |
@@ -45,58 +45,46 @@ exists with the same meaning; `citations` is added, not swapped in.
 
 ---
 
-## 1. Give the student a real answer-language control — bug, do first
+## 1. Stop sending the interface language — bug, do first
 
 **Symptom:** a student writes in Arabic, the tutor answers in English. Same for
-French. Every reply comes back English.
+French.
 
-**Cause:** the request carries a `language` field, and it is being filled from
-`i18n.language` — the header dropdown that switches the app's buttons and menus.
-The service treats `language` as the student's explicit choice and honours it
-over everything else, including the language they typed in:
+**Cause:** the request was filling the `language` field from `i18n.language` —
+the header dropdown that switches the app's buttons and menus.
 
-```
-Arabic question + language: "en"   ->  answered in English   (decided by: api)
-Arabic question, no language sent  ->  answered in Arabic    (decided by: script)
-```
+**This is now fixed on my side.** The service works the language out from the
+message itself, the way ChatGPT and Claude do:
 
-The service is doing as it was told. The problem is what it is being told: an
-interface preference is not the student saying "answer me in English". A student
-reading an English UI in Cairo and typing Arabic wants Arabic back.
-
-The Lesson Context panel already shows **Learning language**, but that is a label
-derived from `i18n.language` too — there is no control behind it.
-
-### What to build
-
-A language selector for the tutor, separate from the header one. Three or five
-options:
-
-| Option | What to send |
+| The student writes | The tutor answers |
 |---|---|
-| **Match my question** (default) | omit `language` |
-| العربية | `language: "ar"` |
-| English | `language: "en"` |
-| Français | `language: "fr"` |
-| Deutsch | `language: "de"` |
+| Arabic | Arabic |
+| French | French |
+| English, ending "reply in Arabic" | Arabic |
+| `اشرح لي الدرس بالانجليزي` | English |
+| "ok" — too short to tell | falls back |
 
-**"Match my question" must be the default**, and it means leaving the field out
-entirely — then the service reads the message and answers in the same language,
-which is what a student expects without touching anything.
+No dropdown, no setting, nothing for the student to configure.
 
-When the student picks a specific language, send it. The service will then answer
-in that language whatever they type — which is the point: a student practising
-English can ask in Arabic and be answered in English.
+**What is left for you:** do not send `language` at all. It still exists, but
+only as a fallback for a message that cannot decide on its own — a greeting too
+short to detect, Arabizi, a bare equation. An interface language is not that, and
+sending it will make short messages answer in the wrong language.
 
-One exception the service handles on its own: if a student writes "answer in
-French" inside their message, that wins over the dropdown for that turn.
+```ts
+// remove this — the header dropdown is not a statement about the answer
+language: i18n.language
+```
 
-Once the control exists, the **Learning language** label in the Lesson Context
-panel should show the tutor's answer language, not the interface language.
+If a real per-student tutor preference ever exists, that is what belongs in the
+field. Until then, leave it out.
 
-**Done when:** with the control on "Match my question" and the interface in
-English, a question typed in Arabic comes back in Arabic — and switching the
-control to English makes the same Arabic question come back in English.
+Once it is out, the **Learning language** label in the Lesson Context panel is
+also wrong — it reads `i18n.language`. Show the `language` field from the
+response instead, which is the language the answer was actually written in.
+
+**Done when:** a question typed in Arabic comes back in Arabic while the
+interface is still set to English.
 
 ---
 
