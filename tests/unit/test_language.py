@@ -12,9 +12,11 @@ from shared.language import (
     LanguageDecision,
     LanguagePolicy,
     classify,
+    clear_request,
     content_directive,
     explicit_request,
     language_directive,
+    language_instruction_only,
     looks_arabizi,
     translate,
     verify_answer,
@@ -316,3 +318,74 @@ def test_the_caller_s_language_catches_an_unsupported_message(policy):
 ])
 def test_widening_the_detector_did_not_cost_the_supported_ones(policy, text, expected):
     assert policy.resolve(text).code == expected
+
+
+# --- refusing a language ----------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "stop replying in Arabic",
+    "don't answer in French",
+    "do not reply in Arabic",
+    "no longer answer in German",
+    "بلاش ترد بالعربي",
+])
+def test_refusing_a_language_is_not_requesting_it(text):
+    """The anchors include reply/respond/answer, so without a negation guard the
+    escape hatch reads as a request for the very language being refused — and
+    once an override sticks, the student trying to get out locks themselves in."""
+    assert explicit_request(text) is None
+    assert clear_request(text) is not None
+
+
+def test_a_negation_does_not_reach_across_a_clause(policy):
+    """"I don't like maths" must not cancel the request that follows it."""
+    assert policy.resolve("I don't like maths, explain in Arabic").code == "ar"
+
+
+@pytest.mark.parametrize("text", [
+    "answer in the language I write in",
+    "reply in my own language please",
+    "match my language",
+    "رد بنفس لغتي",
+    "réponds dans ma langue",
+])
+def test_asking_to_be_followed_is_a_clear(text):
+    assert clear_request(text) is not None
+
+
+@pytest.mark.parametrize("text", ["reply in Arabic", "explain subtraction", ""])
+def test_an_ordinary_message_clears_nothing(text):
+    assert clear_request(text) is None
+
+
+# --- a message that is only an instruction ----------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("reply in Arabic", "ar"),
+    ("reply in Arabic please", "ar"),
+    ("switch to Arabic", "ar"),
+    ("من فضلك رد بالعربي", "ar"),
+])
+def test_a_bare_instruction_is_recognised(text, expected):
+    found = language_instruction_only(text)
+    assert found is not None and found[1] == expected
+
+
+@pytest.mark.parametrize("text", [
+    "stop replying in Arabic",
+    "answer in the language I write in",
+])
+def test_a_bare_clear_is_recognised(text):
+    found = language_instruction_only(text)
+    assert found is not None and found[1] is None
+
+
+@pytest.mark.parametrize("text", [
+    "explain subtraction, reply in Arabic",
+    "explain subtraction. reply in Arabic",
+    "اشرح لي الدرس بالعربي",
+    "explain subtraction",
+])
+def test_a_question_carrying_an_instruction_still_needs_an_answer(text):
+    """Both halves matter: the instruction is obeyed, and the question answered."""
+    assert language_instruction_only(text) is None
