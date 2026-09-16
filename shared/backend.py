@@ -9,20 +9,25 @@ client and a fixture client backed by a local YAML manifest, so the whole agent
 runs offline. The factory picks HTTP when ``BACKEND_API_BASE_URL`` is set, else the
 fixtures manifest at ``agent.backend.fixtures_path``.
 
-Transport mirrors ``ingestion/backend.py`` (lazy httpx, one shared-secret header);
-the two clients stay separate because their method sets differ. Converging the
-transport is a later cleanup.
+The transport is ``shared/service_http.py``, shared with ``ingestion/backend.py``.
+The two clients stay separate because their method sets differ — the agent reads
+subjects and question banks, the pipeline reads lessons and media — but there is
+one GET underneath both.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from .config import Config
+from .service_http import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_TIMEOUT,
+    BackendTransport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,57 +66,21 @@ class BackendClient(Protocol):
 # ===========================================================================
 
 class HttpBackendClient:
-    """Calls the platform's ``/api/ai-integration`` endpoints. httpx is imported
-    lazily so importing this module never requires it."""
+    """Calls the platform's ``/api/ai-integration`` endpoints."""
 
     def __init__(
         self,
         base_url: str,
         service_token: str | None = None,
         *,
-        timeout: float = 30,
-        max_retries: int = 3,
+        timeout: float = DEFAULT_TIMEOUT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
-        # base_url points at the service-to-service prefix (…/api/ai-integration).
-        self._base = base_url.rstrip("/")
-        # Service-to-service auth: one shared secret, same header both directions.
-        self._headers = {"x-service-token": service_token} if service_token else {}
-        self._timeout = timeout
-        self._max_retries = max(1, max_retries)
+        self._http = BackendTransport(
+            base_url, service_token, timeout=timeout, max_retries=max_retries)
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        import httpx  # lazy
-
-        # Drop None params so optional query args (topic_ids, count) stay absent.
-        clean = {k: v for k, v in (params or {}).items() if v is not None}
-        last_exc: Exception | None = None
-        for attempt in range(1, self._max_retries + 1):
-            try:
-                resp = httpx.get(
-                    f"{self._base}{path}",
-                    params=clean or None,
-                    headers=self._headers,
-                    timeout=self._timeout,
-                )
-                # Retry only transient server errors; 4xx is a caller bug — raise.
-                if resp.status_code >= 500:
-                    resp.raise_for_status()
-                resp.raise_for_status()
-                return resp.json()
-            except httpx.HTTPStatusError as exc:
-                if exc.response is not None and exc.response.status_code < 500:
-                    raise
-                last_exc = exc
-            except httpx.TransportError as exc:
-                last_exc = exc
-            if attempt < self._max_retries:
-                backoff = 0.2 * (2 ** (attempt - 1))
-                logger.warning("backend GET retry", extra={
-                    "path": path, "attempt": attempt, "backoff": backoff})
-                time.sleep(backoff)
-        logger.error("backend GET failed", extra={"path": path}, exc_info=last_exc)
-        assert last_exc is not None
-        raise last_exc
+        return self._http.get(path, params)
 
     def get_student_subjects(self, user_id: str) -> list[dict[str, Any]]:
         return self._get(f"/students/{user_id}/subjects")

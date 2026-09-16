@@ -56,11 +56,6 @@ class LanguageDecision(BaseModel):
     evidence: Optional[str] = None
 
     @property
-    def is_explicit(self) -> bool:
-        """True when the user or caller named the language outright."""
-        return self.source in ("explicit", "api")
-
-    @property
     def verifiable(self) -> bool:
         """Whether the produced answer may be checked against this decision.
 

@@ -23,7 +23,7 @@ from agent.graph.report import run_report
 from agent.graph.subgraphs import build_visual_sg
 from shared.config import Config
 
-from .errors import ServiceUnavailableError, TimeoutError_
+from .errors import ServiceUnavailableError, UpstreamTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,6 @@ class AgentRuntime:
             # A thread cannot be killed: the work runs to completion and holds its slot.
             # The caller is released rather than left hanging.
             logger.warning("turn exceeded %ss", self._timeout)
-            raise TimeoutError_("The request took too long to complete.") from exc
+            raise UpstreamTimeoutError("The request took too long to complete.") from exc
         except MemoryError as exc:
             raise ServiceUnavailableError("The service is out of capacity.") from exc

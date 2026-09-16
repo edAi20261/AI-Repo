@@ -11,11 +11,10 @@
 Every statement below was checked against that code. Where something does not
 exist, it says so and gives the file it belongs in. Nothing here is assumed.
 
-The AI-Repo commit above is a branch that is not merged yet. **Nothing in this
-document depends on it.** The response contract this describes — `citations`,
-`assessment`, `visuals`, `prereq_topics`, and the six task types — is identical
-on `staging` and in the deployed service, so you can build and test against what
-is running today.
+**Nothing here depends on an unreleased AI-service change.** The response
+contract it describes — `citations`, `assessment`, `visuals`, `prereq_topics`
+and the six task types — is the same on `main`, on `staging` and in the deployed
+service, so you can build and test against what is running today.
 
 ---
 

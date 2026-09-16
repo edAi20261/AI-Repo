@@ -9,8 +9,9 @@ but is not part of it — the provider layer stays free of pipeline knowledge.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from collections.abc import Sequence
 
+from shared.language import written_in
 from shared.structured import call_structured, schema_hint
 
 from .config import Config
@@ -18,7 +19,6 @@ from .llm_provider import get_llm, llm_key_available
 from .prompts import DERIVE_DEPS_PROMPT, TOPIC_EXTRACTION_PROMPT
 from .schemas import DependencyList, TopicList
 from .utils.tokens import count_tokens
-
 
 # --- shared helpers --------------------------------------------------------
 
@@ -28,7 +28,7 @@ class TopicExtractor(ABC):
     is_stub: bool = False
 
     @abstractmethod
-    def extract(self, chunk_texts: Sequence[str]) -> list[dict]:
+    def extract(self, chunk_texts: Sequence[str], language: str = "en") -> list[dict]:
         """Return ``{label, description, bloom_level}`` dicts."""
 
 
@@ -38,7 +38,7 @@ class StubTopicExtractor(TopicExtractor):
 
     is_stub = True
 
-    def extract(self, chunk_texts: Sequence[str]) -> list[dict]:
+    def extract(self, chunk_texts: Sequence[str], language: str = "en") -> list[dict]:
         return []
 
 
@@ -58,12 +58,12 @@ class LLMTopicExtractor(TopicExtractor):
         self._max_input_tokens = max_input_tokens
         self._config = config
 
-    def extract(self, chunk_texts: Sequence[str]) -> list[dict]:
+    def extract(self, chunk_texts: Sequence[str], language: str = "en") -> list[dict]:
         if not chunk_texts:
             return []
         seen: dict[str, dict] = {}
         for batch in self._batches(chunk_texts):
-            for topic in self._extract_batch(batch):
+            for topic in self._extract_batch(batch, language):
                 seen.setdefault(topic["label"].lower(), topic)
         return list(seen.values())[: self._max]
 
@@ -85,8 +85,12 @@ class LLMTopicExtractor(TopicExtractor):
             batches.append(current)
         return batches or [list(chunk_texts)]
 
-    def _extract_batch(self, batch: Sequence[str]) -> list[dict]:
-        prompt = TOPIC_EXTRACTION_PROMPT.format(
+    def _extract_batch(self, batch: Sequence[str], language: str = "en") -> list[dict]:
+        # A label is shown to the student, so it follows the lesson's language.
+        # Without this the model defaults to English and an Arabic poetry lesson
+        # comes back tagged "Evaluate poetic structure".
+        prompt = TOPIC_EXTRACTION_PROMPT.render(
+            language=language,
             min_topics=self._min,
             max_topics=self._max,
             chunks="\n\n---\n\n".join(batch),
@@ -95,8 +99,29 @@ class LLMTopicExtractor(TopicExtractor):
         result = call_structured(
             TopicList, prompt, task="extract_topics", config=self._config,
             llm=self._llm, label="topics",
+            validate=lambda batch: _labels_in(batch, language),
         )
         return [t.model_dump() for t in result.topics if t.label]
+
+
+def _labels_in(batch: TopicList, language: str) -> None:
+    """A topic label is shown to the student under their answer, so it has to be
+    in the lesson's language.
+
+    The schema said so all along — "the skill, 2-6 words, in the lesson's main
+    language" — but a description is only a hint, and pydantic checks that a
+    label is a string, never which language it is in. So Arabic lessons came back
+    tagged "Evaluate poetic structure" and the rows were written.
+
+    Failing here hands the model the same feedback any other validation failure
+    gets: what it sent, and what was required. It corrects itself, and nothing
+    wrong reaches the table.
+    """
+    wrong = [t.label for t in batch.topics if t.label and not written_in(t.label, language)]
+    if wrong:
+        raise ValueError(
+            f"every label must be written in {language!r}, the language of this "
+            f"lesson. These are not: {wrong}")
 
 
 def get_topic_extractor(config: Config) -> TopicExtractor:
@@ -124,7 +149,7 @@ class DependencyDeriver(ABC):
 
     @abstractmethod
     def derive(self, topic_label: str, candidate_labels: Sequence[str]) -> list[dict]:
-        """Return ``{prereq, strength, rationale}`` dicts (prereq is a candidate label)."""
+        """Return ``{prereq, strength}`` dicts (prereq is a candidate label)."""
 
 
 class StubDependencyDeriver(DependencyDeriver):
@@ -147,7 +172,7 @@ class LLMDependencyDeriver(DependencyDeriver):
         if not candidate_labels:
             return []
         candidates = set(candidate_labels)
-        prompt = DERIVE_DEPS_PROMPT.format(
+        prompt = DERIVE_DEPS_PROMPT.render(
             topic=topic_label,
             candidates="\n".join(f"- {c}" for c in candidate_labels),
             schema=schema_hint(DependencyList),

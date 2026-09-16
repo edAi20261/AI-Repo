@@ -17,17 +17,22 @@ never goes through an image model.
 from __future__ import annotations
 
 import logging
-from shared.language import content_directive
-from typing import Any, Optional, TypedDict
+from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 
-from ... import prompts as R_prompts
-from ... import render as R
 from shared.structured import StructuredOutputError, call_structured, schema_hint
 
+from ... import prompts as R_prompts
+from ... import render as R
 from ...models import (
-    ArtifactRef, FlashcardSet, MathFigureSpec, MindmapNode, PdfDocument)
+    ArtifactRef,
+    FlashcardSet,
+    MathFigureSpec,
+    MindmapNode,
+    PdfDocument,
+)
+from ...retrieval import DEFAULT_MIN_SCORE
 from ...tools import get_figures, rag_search
 
 logger = logging.getLogger(__name__)
@@ -36,10 +41,10 @@ logger = logging.getLogger(__name__)
 class VisualState(TypedDict, total=False):
     # inputs
     specs: list[dict[str, Any]]      # VisualSpec dicts
-    subject_id: Optional[str]
-    lecture_ids: Optional[list[str]]  # optional lecture scope for grounding RAG; None -> whole subject
-    user_id: Optional[str]
-    conversation_id: Optional[str]
+    subject_id: str | None
+    lecture_ids: list[str] | None  # optional lecture scope for grounding RAG; None -> whole subject
+    user_id: str | None
+    conversation_id: str | None
     language: str
     max_per_turn: int
     namespaces: list[str]            # for standalone-visual grounding RAG
@@ -113,7 +118,7 @@ def _context_text(spec: dict, content: dict, state: VisualState, config) -> str:
     namespaces = state.get("namespaces")
     if namespaces and query:
         try:
-            floor = config.get("agent.min_score", 0.0)
+            floor = config.get("agent.min_score", DEFAULT_MIN_SCORE)
             chunks = rag_search(query, namespaces, subject_id=state.get("subject_id"),
                                 topic_ids=spec.get("topic_ids"),
                                 lecture_ids=state.get("lecture_ids") or None, config=config)
@@ -125,13 +130,13 @@ def _context_text(spec: dict, content: dict, state: VisualState, config) -> str:
     return query
 
 
-def _build_mindmap(desc: str, ctx: str, language: str, config, llm) -> Optional[dict]:
+def _build_mindmap(desc: str, ctx: str, language: str, config, llm) -> dict | None:
     """A mind-map outline, or None to skip. A map with no branches is meaningless, so a
     failed/degenerate build renders nothing rather than a lone box (no visual > a wrong one)."""
     if llm is None:
         return None
-    prompt_text = R_prompts.MINDMAP_PROMPT.format(
-        topic=desc, context=ctx, language=content_directive(language),
+    prompt_text = R_prompts.MINDMAP_PROMPT.render(
+        topic=desc, context=ctx, language=language,
         schema=schema_hint(MindmapNode))
     try:
         node = call_structured(MindmapNode, [HumanMessage(content=prompt_text)],
@@ -161,9 +166,9 @@ def _build_flashcards(desc: str, content: dict, spec, state, config, llm) -> lis
         return cards
     ctx = _context_text(spec, content, state, config)
     n = config.get("render.flashcards.count", 8)
-    prompt_text = R_prompts.FLASHCARDS_PROMPT.format(
+    prompt_text = R_prompts.FLASHCARDS_PROMPT.render(
         topic=desc, context=ctx, n=n,
-        language=content_directive(state.get("language", "en")),
+        language=state.get("language", "en"),
         schema=schema_hint(FlashcardSet))
     try:
         deck = call_structured(FlashcardSet, [HumanMessage(content=prompt_text)],
@@ -193,7 +198,7 @@ def _blocks_from_content(content: dict, desc: str) -> list[dict]:
     return [{"type": "text", "text": desc}] if desc else []
 
 
-def _chart_from_content(content: dict, desc: str) -> Optional[dict]:
+def _chart_from_content(content: dict, desc: str) -> dict | None:
     """Chart data from the turn's grade result (per-question scores). None when there is no
     data to plot — the spec is then skipped rather than drawing an empty axis.
 
@@ -210,11 +215,11 @@ def _chart_from_content(content: dict, desc: str) -> Optional[dict]:
     return None
 
 
-def _build_math(desc: str, config, llm) -> Optional[dict]:
+def _build_math(desc: str, language: str, config, llm) -> dict | None:
     if llm is None:
         return None
-    prompt_text = R_prompts.MATH_VISUAL_PROMPT.format(
-        topic=desc, language=content_directive("en"), schema=schema_hint(MathFigureSpec))
+    prompt_text = R_prompts.MATH_VISUAL_PROMPT.render(
+        topic=desc, language=language, schema=schema_hint(MathFigureSpec))
     try:
         figure = call_structured(MathFigureSpec, [HumanMessage(content=prompt_text)],
                                  task="visual_math", config=config, llm=llm, label="math figure")
@@ -226,13 +231,13 @@ def _build_math(desc: str, config, llm) -> Optional[dict]:
     return spec if (spec.get("series") or spec.get("geometry")) else None
 
 
-def _build_pdf(desc: str, ctx: str, language: str, llm, config=None) -> Optional[dict]:
+def _build_pdf(desc: str, ctx: str, language: str, llm, config=None) -> dict | None:
     """Structure grounded content into a titled set of heading/text blocks, or None to fall
     back to a single block. Grounded ONLY in ``ctx`` — the prompt reorganises, never invents."""
     if llm is None:
         return None
-    prompt_text = R_prompts.PDF_STRUCTURE_PROMPT.format(
-        topic=desc, content=ctx, language=content_directive(language),
+    prompt_text = R_prompts.PDF_STRUCTURE_PROMPT.render(
+        topic=desc, content=ctx, language=language,
         schema=schema_hint(PdfDocument))
     try:
         document = call_structured(PdfDocument, [HumanMessage(content=prompt_text)],
@@ -251,7 +256,7 @@ def _as_text(v: Any) -> str:
 
 
 def _build_input(kind: str, spec: dict, params: dict, content: dict,
-                 state: VisualState, config, llm_override) -> Optional[dict]:
+                 state: VisualState, config, llm_override) -> dict | None:
     """Produce the render input for one spec, or None to skip it."""
     desc = spec.get("description") or ""
     lang = state.get("language", "en")
@@ -285,7 +290,7 @@ def _build_input(kind: str, spec: dict, params: dict, content: dict,
         return _chart_from_content(content, desc)
     if kind in ("math", "geometry"):
         llm = _resolve_llm(config, "visual_math", llm_override)
-        return _build_math(desc, config, llm)
+        return _build_math(desc, state.get("language", "en"), config, llm)
     if kind == "slides":
         # Slides are built from grounded CONTENT (the turn's explanation, else a RAG on the
         # topic), not the bare topic — powerpoint_points then outlines that content.
@@ -315,7 +320,7 @@ def _build_prepare(config, llm_override):
     return prepare
 
 
-def _reuse_figure(spec: dict, config) -> Optional[dict]:
+def _reuse_figure(spec: dict, config) -> dict | None:
     """A syllabus figure for a grounded spec, or None. Reuse beats generation. When several
     figures match, prefer the one on the page nearest the spec's reference ``page`` (the
     grounding chunk's page) — a cheap, deterministic relevance proxy. (Caption-embedding
@@ -337,7 +342,7 @@ def _reuse_figure(spec: dict, config) -> Optional[dict]:
     ).model_dump(exclude_none=True)
 
 
-def _nearest_page(figs: list[dict], page: Optional[int]) -> dict:
+def _nearest_page(figs: list[dict], page: int | None) -> dict:
     """The figure on the page closest to ``page``; the first figure when no page hint (or
     no figure carries a page)."""
     if page is None:
@@ -383,7 +388,7 @@ def _build_render(config, llm):
     return _render
 
 
-def _safe_render(spec, common, state, llm) -> tuple[Optional[dict], int]:
+def _safe_render(spec, common, state, llm) -> tuple[dict | None, int]:
     """(ref, errored) — errored is 1 when the render RAISED, so the caller can tell a real
     failure apart from a spec that simply produced nothing."""
     try:
@@ -393,7 +398,7 @@ def _safe_render(spec, common, state, llm) -> tuple[Optional[dict], int]:
         return None, 1
 
 
-def _dispatch(spec: dict, common: dict, state: VisualState, llm) -> Optional[dict]:
+def _dispatch(spec: dict, common: dict, state: VisualState, llm) -> dict | None:
     """Route one spec's ``kind`` to its render tool."""
     kind = spec.get("kind")
     params = spec.get("params") or {}
@@ -415,7 +420,7 @@ def _dispatch(spec: dict, common: dict, state: VisualState, llm) -> Optional[dic
         # from the planner's visual spec); until then the config cap keeps outlines digestible.
         max_slides = common["config"].get("render.slides.max_slides", 10)
         text = R.powerpoint_points(params.get("content") or desc, llm,
-                                   language=content_directive(state.get("language", "en")),
+                                   language=state.get("language", "en"),
                                    instructions=state.get("instructions", ""),
                                    max_slides=max_slides)
         return ArtifactRef(kind="slides", text=text).model_dump(exclude_none=True)

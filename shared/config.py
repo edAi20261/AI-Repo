@@ -71,7 +71,8 @@ class Config:
             raw = yaml.safe_load(fh) or {}
 
         overlays = raw.pop("environments", {}) or {}
-        overlay = overlays.get(app_env, {})
+        # An overlay named with nothing under it parses as None, not {}.
+        overlay = overlays.get(app_env) or {}
         merged = _deep_merge(raw, overlay)
         return cls(merged, app_env)
 

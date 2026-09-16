@@ -133,7 +133,7 @@ def test_http_sends_token_and_drops_none_params(monkeypatch):
 
 
 def test_http_retries_transient_then_succeeds(monkeypatch):
-    monkeypatch.setattr("shared.backend.time.sleep", lambda *_: None)
+    monkeypatch.setattr("shared.service_http.time.sleep", lambda *_: None)
     attempts = {"n": 0}
 
     def flaky_get(url, params=None, headers=None, timeout=None):
@@ -149,7 +149,7 @@ def test_http_retries_transient_then_succeeds(monkeypatch):
 
 
 def test_http_does_not_retry_4xx(monkeypatch):
-    monkeypatch.setattr("shared.backend.time.sleep", lambda *_: None)
+    monkeypatch.setattr("shared.service_http.time.sleep", lambda *_: None)
     attempts = {"n": 0}
 
     def not_found(url, params=None, headers=None, timeout=None):
@@ -161,3 +161,25 @@ def test_http_does_not_retry_4xx(monkeypatch):
     with pytest.raises(httpx.HTTPStatusError):
         client.get_subject("missing")
     assert attempts["n"] == 1  # 4xx raised immediately, no retry
+
+
+def test_the_pipeline_client_retries_the_same_way_the_agent_one_does(monkeypatch):
+    """The two clients read different endpoints of the same API through two
+    hand-written copies of one GET, and the copies had drifted: the agent's
+    retried a 502, the pipeline's abandoned a lesson mid-ingest because a deploy
+    restarted the backend for two seconds."""
+    from ingestion.backend import HttpBackendClient as PipelineClient
+
+    monkeypatch.setattr("shared.service_http.time.sleep", lambda *_: None)
+    attempts = {"n": 0}
+
+    def flaky_get(url, params=None, headers=None, timeout=None):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise httpx.TransportError("boom")
+        return _Resp(200, {"id": "subjA"})
+
+    monkeypatch.setattr(httpx, "get", flaky_get)
+    assert PipelineClient("https://api/api/ai-integration", "tok").get_subject("subjA") \
+        == {"id": "subjA"}
+    assert attempts["n"] == 3

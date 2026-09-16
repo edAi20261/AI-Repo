@@ -44,7 +44,7 @@ from .detect import (
     detect,
     is_trustworthy,
 )
-from .request import explicit_request
+from .request import about_a_language, explicit_request
 from .script import MIN_MIXED_SHARE, classify
 from .types import LanguageDecision
 
@@ -99,12 +99,16 @@ class LanguagePolicy:
         session_language: Optional[str] = None,
         session_evidence: Optional[str] = None,
         planner_hint: Optional[str] = None,
-        profile_language: Optional[str] = None,
-        previous_language: Optional[str] = None,
     ) -> LanguageDecision:
         """The language this turn is answered in, and the rule that decided it."""
         text = message or ""
         writing_system = classify(text, arabic_threshold=self.arabic_ratio)
+
+        # A message that names a language is evidence about the topic, not about
+        # the language to answer in. explicit_request has always known that; the
+        # planner's hint reached the fallback tiers without the same test.
+        if planner_hint and about_a_language(text):
+            planner_hint = None
 
         requested = explicit_request(text)
         if requested and self._supported(requested[0]):
@@ -126,10 +130,7 @@ class LanguagePolicy:
             return self._decide("ar", "script", script=writing_system)
 
         if writing_system in ("arabizi", "mixed"):
-            return self._fallback(
-                writing_system, api_language, planner_hint, profile_language,
-                previous_language,
-            )
+            return self._fallback(writing_system, api_language, planner_hint)
 
         detection = detect(text, self.supported)
         trustworthy = is_trustworthy(
@@ -148,10 +149,7 @@ class LanguagePolicy:
                 detector=detection.detector,
             )
 
-        return self._fallback(
-            writing_system, api_language, planner_hint, profile_language,
-            previous_language, detection,
-        )
+        return self._fallback(writing_system, api_language, planner_hint, detection)
 
     def resolve_document(
         self, text: str, *, hint: Optional[str] = None
@@ -186,8 +184,6 @@ class LanguagePolicy:
         writing_system: str,
         api_language: Optional[str],
         planner_hint: Optional[str],
-        profile_language: Optional[str],
-        previous_language: Optional[str],
         detection=None,
     ) -> LanguageDecision:
         """The message could not decide: use what we were told, and say we guessed."""
@@ -199,13 +195,13 @@ class LanguagePolicy:
         # still checked against it — unlike everything below, which is memory.
         if self._supported(api_language):
             return self._decide(api_language, "api", script=writing_system)
-        for code, source in (
-            (planner_hint, "planner"),
-            (profile_language, "profile"),
-            (previous_language, "previous"),
-        ):
-            if self._supported(code):
-                return self._decide(code, source, script=writing_system, refused=True)
+        # There were two more tiers here — a stored profile preference and the
+        # language the previous turn was answered in. Nothing ever put either into
+        # the graph state, so both arrived None on every call in the service's
+        # life. The session store is what actually carries a language between
+        # turns now; when a profile preference exists, it goes in beside it.
+        if self._supported(planner_hint):
+            return self._decide(planner_hint, "planner", script=writing_system, refused=True)
 
         confidence = detection.confidence if detection else 0.0
         return self._decide(

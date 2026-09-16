@@ -9,29 +9,46 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-from ..models import (
-    AssessmentSpec, Citation, GradeSpec, PlannerOutput, PrereqTopic, Style, VisualSpec)
-from ..prompts import (
-    COMPOSE_PROMPT, FORMATTING_CONTRACT, LANGUAGE_REPAIR_PROMPT, PLAN_PROMPT,
-    TASK_DESCRIPTIONS)
-from ..tools import resolve_topics
 from shared.language import (
+    LanguageDecision,
+    LanguagePolicy,
     clear_request,
     explicit_request,
     language_instruction_only,
-    LanguageDecision, LanguagePolicy, language_directive, translate)
+    translate,
+)
 from shared.language.catalog import STRINGS
-from ..citations import cited_numbers, renumber
-from ..intent import IntentRouter
 from shared.language.verify import (
-    DEFAULT_MIN_ANSWER_CHARS, DEFAULT_MIN_CONFIDENCE, verify_answer)
-
+    DEFAULT_MIN_ANSWER_CHARS,
+    DEFAULT_MIN_CONFIDENCE,
+    verify_answer,
+)
+from shared.logging import clip
 from shared.structured import call_structured
 
+from ..citations import cited_numbers, renumber
+from ..intent import IntentRouter
+from ..models import (
+    AssessmentSpec,
+    Citation,
+    GradeSpec,
+    PlannerOutput,
+    PrereqTopic,
+    Style,
+    VisualSpec,
+)
+from ..prompts import (
+    COMPOSE_PROMPT,
+    FORMATTING_CONTRACT,
+    LANGUAGE_REPAIR_PROMPT,
+    PLAN_PROMPT,
+    TASK_DESCRIPTIONS,
+)
+from ..tools import resolve_topics
 from .pathways import build_namespaces, resolve_style
 
 logger = logging.getLogger(__name__)
@@ -67,8 +84,6 @@ def build_classify(config, sticky=None):
             message,
             api_language=state.get("language"),
             session_language=session_language,
-            profile_language=state.get("profile_language"),
-            previous_language=state.get("previous_language"),
         )
         language = decision.code
 
@@ -189,7 +204,7 @@ def _plan_tasks(
     nothing to do — and still falls back to a single explain task.
     """
     if llm is not None:
-        prompt_text = PLAN_PROMPT.format(
+        prompt_text = PLAN_PROMPT.render(
             allowed=", ".join(allowed), task_descriptions=_allowed_descriptions(allowed),
             role=role, languages=languages, message=message)
         plan = call_structured(
@@ -264,7 +279,7 @@ def _infer_subject(message: str, config, enrolled_ids: set | None = None) -> str
     return (hits[0].subject_id or None) if hits else None
 
 
-def _validate_assessment_spec(raw: Any) -> Optional[AssessmentSpec]:
+def _validate_assessment_spec(raw: Any) -> AssessmentSpec | None:
     """An AssessmentSpec from raw planner output, or None when absent/empty/invalid."""
     if not isinstance(raw, dict):
         return None
@@ -275,7 +290,7 @@ def _validate_assessment_spec(raw: Any) -> Optional[AssessmentSpec]:
     return spec if (spec.count is not None or spec.types or spec.difficulty) else None
 
 
-def _validate_grade_spec(raw: Any) -> Optional[GradeSpec]:
+def _validate_grade_spec(raw: Any) -> GradeSpec | None:
     """A GradeSpec (assessment_id/kind) from raw planner output, or None when absent."""
     if not isinstance(raw, dict):
         return None
@@ -286,7 +301,7 @@ def _validate_grade_spec(raw: Any) -> Optional[GradeSpec]:
     return spec if (spec.assessment_id or spec.kind) else None
 
 
-def _validate_visual_spec(raw: Any) -> Optional[VisualSpec]:
+def _validate_visual_spec(raw: Any) -> VisualSpec | None:
     """A VisualSpec (kind/params/description) from raw planner output, or None when absent."""
     if not isinstance(raw, dict):
         return None
@@ -423,8 +438,6 @@ def build_plan(config, llm, client=None):
                 # instruction it sits five places below.
                 session_language=state.get("session_language"),
                 planner_hint=req_lang,
-                profile_language=state.get("profile_language"),
-                previous_language=state.get("previous_language"),
             )
             if decision.code != state.get("language"):
                 out["language"] = decision.code
@@ -501,9 +514,19 @@ def _citation_where(c: Citation, language: str) -> str:
 
 
 def _prereq_line(prereqs: list[PrereqTopic], language: str) -> str:
-    labels = ", ".join(p.label for p in prereqs)
+    """"You should know X first", from the lesson's own topic graph.
+
+    There used to be a filter here dropping labels whose script did not match the
+    reply, because the extractor had produced English labels for Arabic lessons.
+    That hid the rows rather than fixing them, only ever worked for Arabic, and
+    left the same labels going out on the API. The labels are validated where
+    they are written now, so there is nothing left to hide.
+    """
+    labels = [p.label for p in prereqs if p.label]
+    if not labels:
+        return ""
     head = translate("compose.prereq_head", language)
-    return f"{head}: {labels}"
+    return f"{head}: {', '.join(labels)}"
 
 
 def _assessment_line(assessment: dict, language: str) -> str:
@@ -653,8 +676,7 @@ def _sources_block(citations: list[Citation], language: str) -> str:
 def _compose_llm(llm, answers, prereqs, language, tone) -> str:
     joined = "\n\n".join(a.get("text", "") for a in answers)
     prereq_str = ", ".join(p.label for p in prereqs) or "(none)"
-    prompt_text = COMPOSE_PROMPT.format(
-        language=language_directive(language), tone=tone, answers=joined,
+    prompt_text = COMPOSE_PROMPT.render(language=language, tone=tone, answers=joined,
         formatting=FORMATTING_CONTRACT, prereq_topics=prereq_str)
     return llm.invoke([HumanMessage(content=prompt_text)]).content
 
@@ -708,7 +730,7 @@ def build_compose(config, llm):
         # must not trail "Prerequisite topics: …" as if it had answered.
         any_grounded = any(a.get("grounded", True) for a in answers)
         parts = [body]
-        if prereqs and any_grounded:
+        if prereqs and any_grounded and config.get("agent.show_prereqs", True):
             parts.append(_prereq_line(prereqs, language))
         sources = _sources_block(citations, language)
         if sources:
@@ -750,8 +772,28 @@ def build_persist(config, sticky=None):
                 sticky.set(user_id, session_id, code=write["code"],
                            user_type=state.get("user_type"),
                            evidence=write.get("evidence"))
-        logger.info("persist", extra={"pathway": state.get("pathway"),
-                                      "session_language_op": write.get("op")})
+        # One line per turn, carrying everything needed to explain the answer
+        # without re-reading five others: what was asked, in what language and
+        # why, what it matched, and what came back. Correlated by request_id.
+        decision = state.get("language_decision") or {}
+        answers = state.get("answers") or []
+        logger.info("turn", extra={
+            "pathway": state.get("pathway"),
+            "intent": state.get("intent"),
+            "question": clip(state.get("message", "")),
+            "language": state.get("language"),
+            "language_source": decision.get("source"),
+            "subject_id": state.get("subject_id"),
+            "tasks": [t.get("type") for t in (state.get("tasks") or [])],
+            "grounded": any(a.get("grounded", False) for a in answers),
+            "citations": len(state.get("published_citations") or []),
+            "cited": [
+                f"{c.lesson_title or c.lecture_id}" for c in
+                (state.get("published_citations") or [])[:5]
+            ],
+            "answer_chars": len(state.get("response") or ""),
+            "session_language_op": write.get("op"),
+        })
         # Must stay empty: the streaming path merges every node's delta into the
         # response, so anything returned here would show on one endpoint only.
         return {}
@@ -795,8 +837,7 @@ def build_verify_language(config, llm=None):
             return {"language_repair": "failed"}
 
         try:
-            rewritten = (llm.invoke([HumanMessage(content=LANGUAGE_REPAIR_PROMPT.format(
-                language=language_directive(decision.code, context_may_differ=False),
+            rewritten = (llm.invoke([HumanMessage(content=LANGUAGE_REPAIR_PROMPT.render(language=decision.code, context_may_differ=False,
                 answer=answer))]).content or "").strip()
         except Exception:
             logger.exception("language repair call failed")

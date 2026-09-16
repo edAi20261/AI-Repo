@@ -59,3 +59,16 @@ def classify(text: str, *, arabic_threshold: float = MIN_MIXED_SHARE) -> Script:
     if not has_latin:
         return "none"
     return "arabizi" if looks_arabizi(text) else "latin"
+
+
+def written_in(text: str, language: str) -> bool:
+    """Whether ``text`` is written in the script ``language`` uses.
+
+    Coarse on purpose — it separates Arabic from Latin and nothing finer, which
+    is all that can be told from characters alone. It is a guard against a model
+    answering in the wrong language entirely, not a language detector.
+    """
+    if not text or not text.strip():
+        return False
+    arabic = bool(ARABIC.search(text))
+    return arabic if language == "ar" else not arabic

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ..models import AdaptiveProfile, Style
+from ..models import Style
 
 _SYLLABUS = "syllabus"
 
@@ -40,18 +40,11 @@ def build_namespaces(*, session_id: Optional[str] = None) -> list[str]:
     return namespaces
 
 
-def resolve_style(
-    pathway: str,
-    *,
-    profile: Optional[AdaptiveProfile] = None,
-) -> Style:
-    """Voice/style descriptor for a pathway. Neutral defaults now; the adaptive_profile source
-    wires in later (the parameter is accepted now so callers don't change)."""
-    # TODO (deferred): source `profile` from a per-user adaptive_profile (student/teacher/parent).
-    # When answering a teacher's own subject, use THAT teacher's profile (their teaching style),
-    # not only the current user's.
-    # The pathway sets the default tone; a profile (any pathway) overrides it -> adaptive.
-    if profile and profile.style:
-        return Style(tone=profile.style.tone, voice="adaptive")
-    default_tone = "professional" if pathway == "teacher" else "friendly"
-    return Style(tone=default_tone, voice="neutral")
+def resolve_style(pathway: str) -> Style:
+    """The tone a pathway is answered in.
+
+    There was an ``AdaptiveProfile`` parameter here, accepted "so callers don't
+    change" when the per-user profile landed. No caller ever passed it, so the
+    branch behind it could not run, and the model it took was unreachable from
+    anywhere in the service."""
+    return Style(tone="professional" if pathway == "teacher" else "friendly")

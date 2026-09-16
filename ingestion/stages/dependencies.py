@@ -56,7 +56,6 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
                         topic_id=t["topic_id"],
                         prereq_topic_id=prereq_id,
                         strength=proposed.get("strength", "required"),
-                        rationale=proposed.get("rationale"),
                     )
                 )
 

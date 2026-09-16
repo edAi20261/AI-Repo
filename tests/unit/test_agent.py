@@ -34,7 +34,6 @@ def test_build_namespaces():
 
 def test_resolve_style_teacher_vs_student():
     assert resolve_style("teacher").tone == "professional"
-    assert resolve_style("student").voice == "neutral"
 
 
 # --- load_context -----------------------------------------------------------
@@ -45,7 +44,6 @@ def test_load_context_builds_namespaces_and_style():
                         "user_type": "student", "subject_id": "sub1"})
     assert out["namespaces"] == ["syllabus"]
     assert out["subject_id"] == "sub1"
-    assert out["style"].voice == "neutral"
 
 
 def test_load_context_teacher_style():
@@ -334,7 +332,17 @@ def _pt(topic_id="t0", label="Cells", strength="weak", depth=1):
 def test_prereq_line_bilingual():
     prereqs = [_pt()]
     assert _prereq_line(prereqs, "en") == "Prerequisite topics: Cells"
-    assert _prereq_line(prereqs, "ar").startswith("مواضيع تمهيدية")
+
+
+def test_an_empty_prereq_list_renders_no_heading():
+    """A bare "Prerequisite topics:" with nothing after it reads as a bug."""
+    assert _prereq_line([], "ar") == ""
+
+
+def test_an_arabic_prereq_is_shown_under_an_arabic_answer():
+    arabic = PrereqTopic(topic_id="t2", label="تحليل النص الشعري",
+                         strength="required", depth=1)
+    assert _prereq_line([arabic], "ar").startswith("مواضيع تمهيدية")
 
 
 def test_prereq_and_sources_headers_fr_de():

@@ -12,11 +12,14 @@ live in ``agent/models.py``.
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
-from typing import Any, Iterator, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from shared.backend import get_backend_client
 from shared.config import Config
+from shared.lexical import bm25_scores, ranks_from_scores, reciprocal_rank_fusion
+from shared.postgres import connect
+from shared.vector_store import query_client
 from shared.embeddings import get_embedder
 
 logger = logging.getLogger(__name__)
@@ -25,44 +28,23 @@ from .mastery import Mastery, MasteryParams, status
 from .models import PrereqTopic, ResolvedTopic, RetrievedChunk
 
 __all__ = [
-    "rag_search",
-    "resolve_topics",
-    "get_topic_deps",
-    "get_topic_chunks",
-    "get_figures",
-    "get_question_bank",
-    "get_item",
-    "fetch_rubric",
-    "list_mistake_tags",
+    "AuthorizationError",
+    "assert_user_type",
     "create_mistake_tag",
+    "fetch_rubric",
+    "get_figures",
+    "get_item",
     "get_mastery",
     "get_mastery_rollup",
-    "write_mastery_events",
+    "get_question_bank",
+    "get_topic_chunks",
+    "get_topic_deps",
+    "list_mistake_tags",
+    "rag_search",
+    "resolve_topics",
     "update_mastery",
-    "assert_user_type",
-    "AuthorizationError",
+    "write_mastery_events",
 ]
-
-
-# --- Postgres helper --------------------------------------------------------
-
-def pg_url(raw: str) -> str:
-    """Strip the SQLAlchemy driver suffix so psycopg accepts the URL."""
-    return raw.replace("+asyncpg", "").replace("+psycopg", "")
-
-
-@contextmanager
-def connect(config: Optional[Config] = None) -> Iterator["object"]:
-    """A psycopg connection scoped to ``ai.*``. Read tools use ``with connect(config)
-    as conn``; write tools call ``conn.commit()`` before the block exits."""
-    import psycopg
-
-    config = config or Config.load()
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 
 # --- authorization ----------------------------------------------------------
@@ -93,13 +75,13 @@ def rag_search(
     namespaces: Sequence[str],
     *,
     k: int = 8,
-    subject_id: Optional[str] = None,
-    grade: Optional[str] = None,
-    language: Optional[str] = None,
-    topic_ids: Optional[Sequence[str]] = None,
-    lecture_ids: Optional[Sequence[str]] = None,
+    subject_id: str | None = None,
+    grade: str | None = None,
+    language: str | None = None,
+    topic_ids: Sequence[str] | None = None,
+    lecture_ids: Sequence[str] | None = None,
     ready_only: bool = True,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> list[RetrievedChunk]:
     """Return the top-``k`` chunks most similar to ``query`` within ``namespaces``.
 
@@ -114,7 +96,7 @@ def rag_search(
         raise ValueError("rag_search requires at least one namespace (invariant 1).")
     config = config or Config.load()
 
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
 
     vector = get_embedder(config).embed_query(query)
 
@@ -141,13 +123,21 @@ def rag_search(
     # `classroom_id` payload fields so retrieval is limited to the
     # student's general + school + joined-classroom content once the model is confirmed.
 
+    # A contents page lists every lesson title, so it beats the lessons
+    # themselves whenever a student names one. It can never be an answer.
+    must_not = [models.FieldCondition(
+        key="chunk_kind", match=models.MatchValue(value="contents"))]
+
     collection = config.vector_store.get("collection", "eduai_chunks")
-    client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                          api_key=config.secret("QDRANT_API_KEY"))
-    # Over-fetch when ready_only may drop hits, so we still return up to k.
+    client = query_client(config)
+    # Over-fetch for two reasons: ready_only may drop hits, and the lexical
+    # stage can only reorder what the dense stage brought back.
     fetch = k * 3 if ready_only else k
+    if config.get("agent.hybrid.enabled"):
+        fetch = max(fetch, config.get("agent.hybrid.candidates"))
     hits = client.query_points(
-        collection, query=vector, query_filter=models.Filter(must=must),
+        collection, query=vector,
+        query_filter=models.Filter(must=must, must_not=must_not),
         limit=fetch, with_payload=True,
     ).points
     if not hits:
@@ -166,15 +156,9 @@ def rag_search(
         "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
     )
 
-    import psycopg
-
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (list(scores),))
-            rows = cur.fetchall()
-    finally:
-        conn.close()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (list(scores),))
+        rows = cur.fetchall()
 
     out = [
         RetrievedChunk(
@@ -189,7 +173,32 @@ def rag_search(
         for r in rows
     ]
     out.sort(key=lambda c: c.score, reverse=True)
+    if config.get("agent.hybrid.enabled"):
+        out = _fuse_lexically(query, out, config)
     return out[:k]
+
+
+def _fuse_lexically(
+    query: str, candidates: list[RetrievedChunk], config: Config,
+) -> list[RetrievedChunk]:
+    """Reorder dense candidates by fusing their rank with a BM25 rank.
+
+    ``score`` is deliberately left as the dense cosine. It is what
+    ``agent.min_score`` is measured against, and a fused rank-based score is not
+    comparable to a similarity — swapping it in would silently disable the floor
+    that stops the tutor answering questions the syllabus cannot answer.
+    """
+    if len(candidates) < 2:
+        return candidates
+    dense_ranks = list(range(1, len(candidates) + 1))   # already sorted by score
+    lexical = bm25_scores(query, [c.text or "" for c in candidates])
+    # A document that matches none of the query's words should not be pushed up
+    # merely for being in the pool, so it places in the dense ranking only.
+    lexical_ranks = ranks_from_scores(lexical, skip_zero=True)
+    fused = reciprocal_rank_fusion(
+        dense_ranks, lexical_ranks, k=config.get("agent.hybrid.rrf_k"))
+    order = sorted(range(len(candidates)), key=lambda i: -fused[i])
+    return [candidates[i] for i in order]
 
 
 # --- resolve_topics: free-text -> topic_ids ---------------------------------
@@ -200,12 +209,12 @@ def _dot(a, b) -> float:
 
 def resolve_topics(
     query: str,
-    subject_id: Optional[str] = None,
+    subject_id: str | None = None,
     *,
-    lecture_ids: Optional[Sequence[str]] = None,
+    lecture_ids: Sequence[str] | None = None,
     k: int = 5,
     threshold: float = 0.40,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> list[ResolvedTopic]:
     """Top-``k`` topics whose label is closest to ``query`` (cosine >= ``threshold``).
 
@@ -219,7 +228,7 @@ def resolve_topics(
     vector = get_embedder(config).embed_query(query)
     # TODO: once the topics collection is populated and validated, delete the brute-force
     # `_resolve_topics_pg` and this gate so the indexed path is the only one.
-    if config.get("agent.resolve_topics_qdrant", False):
+    if config.get("agent.resolve_topics_qdrant", True):
         return _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config)
     return _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config)
 
@@ -227,7 +236,7 @@ def resolve_topics(
 def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config):
     """Indexed top-k over the Qdrant topics collection (label vectors + subject/lecture
     payload). Scalable — no full-catalog scan."""
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
 
     must = []
     if subject_id:
@@ -236,8 +245,7 @@ def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config
     if lecture_ids:
         must.append(models.FieldCondition(
             key="lecture_id", match=models.MatchAny(any=list(lecture_ids))))
-    client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                          api_key=config.secret("QDRANT_API_KEY"))
+    client = query_client(config)
     hits = client.query_points(
         config.vector_store.get("topics_collection", "eduai_topics"),
         query=vector, query_filter=models.Filter(must=must) if must else None,
@@ -267,15 +275,9 @@ def _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config):
         sql += " AND lecture_id::text = ANY(%s)"
         params.append([str(x) for x in lecture_ids])
 
-    import psycopg
-
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-    finally:
-        conn.close()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
 
     scored, mismatched = [], 0
     for tid, label, sid, emb in rows:
@@ -300,7 +302,7 @@ def get_topic_deps(
     topic_ids: Sequence[str],
     *,
     depth: int = 2,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> list[PrereqTopic]:
     """Prerequisite topics reachable from ``topic_ids`` within ``depth`` hops.
 
@@ -312,37 +314,31 @@ def get_topic_deps(
         return []
     config = config or Config.load()
 
-    import psycopg
-
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
     found: dict[str, PrereqTopic] = {}
-    try:
-        with conn.cursor() as cur:
-            seen: set[str] = {str(t) for t in topic_ids}
-            frontier: list[str] = list(seen)
-            for level in range(1, depth + 1):
-                if not frontier:
-                    break
-                cur.execute(
-                    "SELECT d.prereq_topic_id::text, d.strength::text, t.label "
-                    "FROM ai.topic_dependencies d "
-                    "LEFT JOIN ai.topics t ON t.topic_id = d.prereq_topic_id "
-                    "WHERE d.topic_id::text = ANY(%s)",
-                    (frontier,),
+    with connect(config) as conn, conn.cursor() as cur:
+        seen: set[str] = {str(t) for t in topic_ids}
+        frontier: list[str] = list(seen)
+        for level in range(1, depth + 1):
+            if not frontier:
+                break
+            cur.execute(
+                "SELECT d.prereq_topic_id::text, d.strength::text, t.label "
+                "FROM ai.topic_dependencies d "
+                "LEFT JOIN ai.topics t ON t.topic_id = d.prereq_topic_id "
+                "WHERE d.topic_id::text = ANY(%s)",
+                (frontier,),
+            )
+            next_frontier: list[str] = []
+            for prereq_id, strength, label in cur.fetchall():
+                if prereq_id in seen:
+                    continue
+                seen.add(prereq_id)
+                next_frontier.append(prereq_id)
+                found[prereq_id] = PrereqTopic(
+                    topic_id=prereq_id, label=label or "", strength=strength,
+                    depth=level,
                 )
-                next_frontier: list[str] = []
-                for prereq_id, strength, label in cur.fetchall():
-                    if prereq_id in seen:
-                        continue
-                    seen.add(prereq_id)
-                    next_frontier.append(prereq_id)
-                    found[prereq_id] = PrereqTopic(
-                        topic_id=prereq_id, label=label or "", strength=strength,
-                        depth=level,
-                    )
-                frontier = next_frontier
-    finally:
-        conn.close()
+            frontier = next_frontier
 
     return sorted(found.values(), key=lambda p: (p.depth, p.label))
 
@@ -350,7 +346,7 @@ def get_topic_deps(
 def get_topic_labels(
     topic_ids: Sequence[str],
     *,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> dict[str, str]:
     """``{topic_id: label}`` for the given ids, from ``ai.topics``. Missing ids are
     absent from the result. For hydrating labels onto id-only rows (e.g. mastery)."""
@@ -368,7 +364,7 @@ def get_topic_labels(
 def get_topic_lectures(
     topic_ids: Sequence[str],
     *,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> dict[str, str]:
     """``{topic_id: lecture_id}`` for the given ids, from ``ai.topics`` (a topic belongs to a
     lecture). Used to backfill an item's lecture_id from its resolved topic so a graded answer
@@ -376,12 +372,11 @@ def get_topic_lectures(
     if not topic_ids:
         return {}
     config = config or Config.load()
-    with connect(config) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT topic_id::text, lecture_id::text FROM ai.topics "
-                "WHERE topic_id::text = ANY(%s)", ([str(t) for t in topic_ids],))
-            return {r[0]: r[1] for r in cur.fetchall() if r[1]}
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT topic_id::text, lecture_id::text FROM ai.topics "
+            "WHERE topic_id::text = ANY(%s)", ([str(t) for t in topic_ids],))
+        return {r[0]: r[1] for r in cur.fetchall() if r[1]}
 
 
 # --- get_topic_chunks: representative chunks for topics ----------------------
@@ -400,12 +395,10 @@ def _citation_labels(
     """
     if not chunk_ids:
         return {}
-    from qdrant_client import QdrantClient
 
     collection = config.vector_store.get("collection", "eduai_chunks")
     try:
-        client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                              api_key=config.secret("QDRANT_API_KEY"))
+        client = query_client(config)
         points = client.retrieve(collection, ids=list(chunk_ids), with_payload=True,
                                  with_vectors=False)
     except Exception:
@@ -433,7 +426,7 @@ def get_topic_chunks(
     *,
     per_topic: int = 2,
     ready_only: bool = True,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> list[RetrievedChunk]:
     """Up to ``per_topic`` chunks for each of ``topic_ids``, within ``namespaces``.
 
@@ -463,15 +456,9 @@ def get_topic_chunks(
     )
     wanted = [str(t) for t in topic_ids]
 
-    import psycopg
-
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (wanted, list(namespaces)))
-            rows = cur.fetchall()
-    finally:
-        conn.close()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (wanted, list(namespaces)))
+        rows = cur.fetchall()
 
     # Cap to ``per_topic`` chunks per requested topic.
     counts: dict[str, int] = {}
@@ -496,9 +483,9 @@ def get_topic_chunks(
 
 def get_figures(
     *,
-    topic_ids: Optional[Sequence[str]] = None,
-    lecture_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    topic_ids: Sequence[str] | None = None,
+    lecture_id: str | None = None,
+    config: Config | None = None,
 ) -> list[dict[str, Any]]:
     """Figures matching ``topic_ids`` (overlap) and/or ``lecture_id``.
 
@@ -522,10 +509,9 @@ def get_figures(
         "f.alt_text, f.page, f.topic_ids FROM ai.figures f WHERE "
         + " AND ".join(clauses)
     )
-    with connect(config) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, tuple(params))
-            rows = cur.fetchall()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
     return [
         {
             "figure_id": r[0],
@@ -544,11 +530,11 @@ def get_figures(
 
 def get_question_bank(
     subject_id: str,
-    topic_ids: Optional[Sequence[str]] = None,
+    topic_ids: Sequence[str] | None = None,
     *,
     count: int = 10,
-    type_mix: Optional[dict[str, int]] = None,
-    config: Optional[Config] = None,
+    type_mix: dict[str, int] | None = None,
+    config: Config | None = None,
 ) -> list[dict[str, Any]]:
     """Bank questions for ``subject_id``/``topic_ids`` (up to ``count``). Feeds the
     BANK/HYBRID assessment sources (off by default; GENERATED is the default)."""
@@ -573,7 +559,7 @@ def get_item(
     kind: str,
     assessment_id: str,
     *,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> list[dict[str, Any]]:
     """All questions of an assessment. ``kind`` is ``homework`` or ``quiz``. The AI
     never reads the student's submission from the DB (invariant 4) — these fetch the
@@ -587,7 +573,7 @@ def fetch_rubric(
     kind: str,
     assessment_id: str,
     *,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> list[dict[str, Any]]:
     """The answer key for grading: each question projected to its rubric fields."""
     questions = get_item(kind, assessment_id, config=config)
@@ -597,7 +583,7 @@ def fetch_rubric(
 # --- mistake_tags: shared vocabulary of mistake categories -------------------
 
 def list_mistake_tags(
-    subject_id: Optional[str] = None, config: Optional[Config] = None
+    subject_id: str | None = None, config: Config | None = None
 ) -> list[dict[str, Any]]:
     """All mistake tags: ``[{tag_id, label, description}]``.
 
@@ -608,22 +594,21 @@ def list_mistake_tags(
     if subject_id is not None:
         where = " WHERE subject_id = %s OR subject_id IS NULL"
         params = (subject_id,)
-    with connect(config) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT tag_id::text, label, description FROM ai.mistake_tags"
-                + where + " ORDER BY label", params)
-            rows = cur.fetchall()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT tag_id::text, label, description FROM ai.mistake_tags"
+            + where + " ORDER BY label", params)
+        rows = cur.fetchall()
     return [{"tag_id": r[0], "label": r[1], "description": r[2]} for r in rows]
 
 
 def create_mistake_tag(
     label: str,
     *,
-    description: Optional[str] = None,
-    subject_id: Optional[str] = None,
+    description: str | None = None,
+    subject_id: str | None = None,
     created_by: str = "agent",
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> str:
     """Return the id of the tag named ``label``, creating it if absent.
 
@@ -682,11 +667,11 @@ _EVENT_COLS = (
 
 def get_mastery(
     user_id: str,
-    topic_ids: Optional[Sequence[str]] = None,
+    topic_ids: Sequence[str] | None = None,
     *,
-    subject_id: Optional[str] = None,
-    lecture_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    subject_id: str | None = None,
+    lecture_id: str | None = None,
+    config: Config | None = None,
 ) -> list[dict[str, Any]]:
     """Per-topic mastery rows for ``user_id``, each with a derived ``status``
     (strong|weak|developing|unknown). Optionally restricted to ``topic_ids`` and/or scoped
@@ -707,10 +692,9 @@ def get_mastery(
     if lecture_id:
         sql += " AND t.lecture_id = %s"
         args.append(str(lecture_id))
-    with connect(config) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, tuple(args))
-            rows = cur.fetchall()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(args))
+        rows = cur.fetchall()
     out = []
     for r in rows:
         m = Mastery(score=r[1], attempts=r[2], trend=r[4], confidence=r[5])
@@ -729,7 +713,7 @@ def get_mastery_rollup(
     user_id: str,
     group_by: str = "subject",
     *,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> list[dict[str, Any]]:
     """Mastery rolled up per subject or per lecture — for the teacher/parent views, which
     want a subject-level number, not per-topic. Derived by joining ``ai.topics`` (no
@@ -744,10 +728,9 @@ def get_mastery_rollup(
     sql = (f"SELECT t.{col}::text, m.score, m.attempts, m.trend, m.confidence "
            "FROM ai.mastery m JOIN ai.topics t ON t.topic_id = m.topic_id "
            f"WHERE m.user_id = %s AND t.{col} IS NOT NULL")
-    with connect(config) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (str(user_id),))
-            rows = cur.fetchall()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (str(user_id),))
+        rows = cur.fetchall()
     groups: dict[str, dict] = {}
     for gid, score, attempts, trend, confidence in rows:
         g = groups.setdefault(gid, {"num": 0.0, "den": 0, "topics": 0,
@@ -774,9 +757,9 @@ def get_mastery_rollup(
 def get_mastery_trend(
     user_id: str,
     *,
-    topic_id: Optional[str] = None,
-    subject_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    topic_id: str | None = None,
+    subject_id: str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """Performance over time for ``user_id`` from ``ai.mastery_events`` (ordered by
     ``created_at``). Optionally narrowed to one ``topic_id`` or a ``subject_id`` (joined
@@ -804,10 +787,9 @@ def get_mastery_trend(
     # Take the newest `window` rows, then present oldest-first for a left-to-right series.
     sql += " ORDER BY e.created_at DESC LIMIT %s"
     args.append(int(window))
-    with connect(config) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, tuple(args))
-            rows = cur.fetchall()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(args))
+        rows = cur.fetchall()
     rows = list(reversed(rows))
     events = []
     for created_at, correct, partial, difficulty, source, tid in rows:
@@ -838,7 +820,7 @@ def _trend_direction(scores: list[float], min_events: int, flat_band: float) -> 
 def write_mastery_events(
     events: Sequence[Mapping[str, Any]],
     *,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> list[str]:
     """Append graded events to ``ai.mastery_events`` (immutable). Returns the new
     ``event_id``s. A teacher correction is just another event with ``original_score``
@@ -865,7 +847,7 @@ def update_mastery(
     topic_id: str,
     mastery: Mastery,
     *,
-    config: Optional[Config] = None,
+    config: Config | None = None,
 ) -> None:
     """Upsert the rolled-up aggregate for one (user, topic). Writes absolute values
     from ``mastery`` (the model already incremented attempts); ``last_seen`` = now."""

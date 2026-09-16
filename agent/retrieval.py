@@ -8,7 +8,9 @@ module rather than another subgraph, keeping subgraphs independent.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from collections.abc import Sequence
+
+from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
 from .tools import get_topic_chunks, get_topic_deps, rag_search
@@ -20,9 +22,9 @@ def retrieve(
     query: str,
     namespaces: list[str],
     *,
-    subject_id: Optional[str] = None,
-    topic_ids: Optional[list[str]] = None,
-    lecture_ids: Optional[list[str]] = None,
+    subject_id: str | None = None,
+    topic_ids: list[str] | None = None,
+    lecture_ids: list[str] | None = None,
     k: int = 8,
     min_score: float = 0.0,
     topic_filter: str = "hard",
@@ -47,15 +49,41 @@ def retrieve(
     if topic_filter == "soft" and topic_ids and not kept:
         kept = _search(None)
         logger.info("retrieve soft-fallback: topic filter dropped", extra={"kept": len(kept)})
-    logger.info("retrieve", extra={"kept": len(kept), "min_score": min_score})
+    # "kept: 8" cannot explain an answer about the wrong lesson. The query and
+    # what it actually matched, with scores, is the line you read when a student
+    # says the tutor answered about history.
+    logger.info("retrieve", extra={
+        "query": clip(query),
+        "kept": len(kept),
+        "min_score": min_score,
+        "subject_scoped": bool(subject_id),
+        "matched": describe(kept),
+    })
     return kept
 
+
+def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
+    """``"Subtraction Part 2 0.715"`` per chunk — what matched, and how well."""
+    return [
+        f"{c.lesson_title or c.lecture_id or '?'} {c.score:.3f}"
+        for c in chunks[:limit]
+    ]
+
+
+# The shipped floor, repeated here so a subgraph reached without one does not
+# silently fall back to "keep everything". config.yaml agent.min_score is the
+# source; this is the safety net when a payload omits it.
+DEFAULT_MIN_SCORE = 0.44
 
 DEFAULT_MAX_PREREQS = 5
 
 # Nearest first, and a required prerequisite before a merely recommended one: the
 # topic you must know to follow this lesson outranks one that would help.
-_STRENGTH_RANK = {"required": 0, "recommended": 1}
+# Ingestion writes exactly these two (ingestion/schemas.py DEPENDENCY_STRENGTHS),
+# folding "recommended", "optional" and "helpful" into "related" on the way in.
+# This ranked "recommended", which ingestion never writes, so every non-required
+# edge fell to the unknown sentinel and the ordering worked by accident.
+_STRENGTH_RANK = {"required": 0, "related": 1}
 
 
 def resolve_prereqs(

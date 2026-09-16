@@ -15,17 +15,17 @@ runs first (invariant 8). BANK/HYBRID are built but config-off. ``validate`` enf
 from __future__ import annotations
 
 import logging
-from shared.language import content_directive
-from typing import Any, Optional, TypedDict
+from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
+
+from shared.structured import align_by_id, call_structured, schema_hint
 
 from ... import retrieval
 from ...models import QUESTION_TYPES, AssessmentItem, AssessmentOption, DraftBatch
 from ...prompts import ASSESSMENT_BATCH_PROMPT
+from ...retrieval import DEFAULT_MIN_SCORE
 from ...tools import get_mastery, get_question_bank, resolve_topics
-from shared.structured import align_by_id, call_structured, schema_hint
-
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +36,16 @@ _WEAKNESS_RANK = {"weak": 0, "unknown": 1, "developing": 2, "strong": 3}
 class AssessmentState(TypedDict, total=False):
     # inputs
     query: str
-    subject_id: Optional[str]
-    lecture_ids: Optional[list[str]]  # optional lecture scope; None -> whole subject
+    subject_id: str | None
+    lecture_ids: list[str] | None  # optional lecture scope; None -> whole subject
     topic_ids: list[str]
     namespaces: list[str]
     # language is the SUBJECT's language when known (set by the assessment adapter),
     # else the turn language.
     language: str
     instructions: str                # subject-specific prompt addendum (e.g. math), or ""
-    grade: Optional[str]
-    user_id: Optional[str]
+    grade: str | None
+    user_id: str | None
     item_source: str                 # generated | bank | hybrid
     type_mix: dict[str, int]
     difficulty: str
@@ -109,7 +109,7 @@ def _assign_slots(
     ]
 
 
-def _build_item(base: dict, raw: dict) -> Optional[AssessmentItem]:
+def _build_item(base: dict, raw: dict) -> AssessmentItem | None:
     """Build a typed, DB-shaped item from a slot ``base`` and a generated question.
 
     MCQ correctness comes from ``correct_indices`` — positions, not text. Matching
@@ -219,7 +219,7 @@ def _retrieve_batch(state: AssessmentState) -> dict:
             topic_ids=[topic] if topic else None,
             lecture_ids=state.get("lecture_ids") or None,
             k=k,
-            min_score=state.get("min_score", 0.0),
+            min_score=state.get("min_score", DEFAULT_MIN_SCORE),
         )
         by_topic[topic or ""] = chunks
     logger.info("retrieve_batch", extra={
@@ -317,9 +317,9 @@ def _batch_generate(
         f"Context:\n{getattr(chunk, 'text', '')}"
         for i, (slot, chunk) in enumerate(bound, 1)
     ]
-    prompt_text = ASSESSMENT_BATCH_PROMPT.format(
+    prompt_text = ASSESSMENT_BATCH_PROMPT.render(
         schema=schema_hint(DraftBatch),
-        language=content_directive(state.get("language", "en")),
+        language=state.get("language", "en"),
         instructions=state.get("instructions", ""),
         query=state.get("query", ""),
         n=len(bound),
@@ -347,7 +347,7 @@ def _block_id(index: int) -> str:
     return f"b{index}"
 
 
-def _stamp_topic(chunk, slot_topic: Optional[str] = None) -> Optional[str]:
+def _stamp_topic(chunk, slot_topic: str | None = None) -> str | None:
     """Prefer the slot's covered topic (so items spread across the matched topics);
     fall back to the chunk's own topic (invariant 12)."""
     if slot_topic:
