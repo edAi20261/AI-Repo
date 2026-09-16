@@ -35,8 +35,6 @@ class MainState(TypedDict, total=False):
     intent: str                     # greeting | thanks | meta | chitchat | question
     language: str                   # ar | en | fr | de — the reply language for the turn
     language_decision: dict[str, Any]   # which rule chose it (shared.language.LanguageDecision)
-    profile_language: Optional[str]     # the learner's stored preference, when known
-    previous_language: Optional[str]    # what the previous turn was answered in
 
     # -- load_context --
     namespaces: list[str]

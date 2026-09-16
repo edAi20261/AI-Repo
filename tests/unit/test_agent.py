@@ -34,7 +34,6 @@ def test_build_namespaces():
 
 def test_resolve_style_teacher_vs_student():
     assert resolve_style("teacher").tone == "professional"
-    assert resolve_style("student").voice == "neutral"
 
 
 # --- load_context -----------------------------------------------------------
@@ -45,7 +44,6 @@ def test_load_context_builds_namespaces_and_style():
                         "user_type": "student", "subject_id": "sub1"})
     assert out["namespaces"] == ["syllabus"]
     assert out["subject_id"] == "sub1"
-    assert out["style"].voice == "neutral"
 
 
 def test_load_context_teacher_style():

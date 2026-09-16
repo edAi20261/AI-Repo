@@ -24,7 +24,6 @@ from typing import Literal
 
 from shared.language.request import language_instruction_only
 from shared.matching import fold_for_match
-from shared.language.script import ARABIC
 
 logger = logging.getLogger(__name__)
 
@@ -240,5 +239,3 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def is_arabic_script(text: str) -> bool:
-    return bool(ARABIC.search(text or ""))

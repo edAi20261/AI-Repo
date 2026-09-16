@@ -203,6 +203,3 @@ def translate(
     return text.format(**values) if values else text
 
 
-def languages_of(key: str) -> set[str]:
-    """Which languages ``key`` is translated into — used by the coverage test."""
-    return set(STRINGS.get(key, {}))

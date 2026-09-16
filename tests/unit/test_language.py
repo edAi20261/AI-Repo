@@ -48,7 +48,7 @@ def test_single_word_greeting_is_not_finnish(policy):
 def test_explicit_request_beats_everything(policy):
     decision = policy.resolve(
         "explain photosynthesis, answer in French",
-        api_language="ar", profile_language="de", previous_language="en",
+        api_language="ar", session_language="de", planner_hint="en",
     )
     assert (decision.code, decision.source) == ("fr", "explicit")
 
@@ -115,9 +115,10 @@ def test_planner_hint_only_fills_what_detection_declined(policy):
     assert (declined.code, declined.source) == ("ar", "planner")
 
 
-def test_profile_then_previous_then_default(policy):
-    assert policy.resolve("ok", profile_language="fr").source == "profile"
-    assert policy.resolve("ok", previous_language="de").source == "previous"
+def test_the_last_resort_is_the_default(policy):
+    """There were two tiers between the planner hint and the default — a stored
+    profile preference and the previous turn's language. Nothing ever supplied
+    either, so both arrived None on every call the service ever made."""
     assert policy.resolve("ok").source == "default"
 
 
@@ -135,10 +136,9 @@ def test_unsupported_values_are_ignored(policy):
 ])
 def test_arabizi_is_refused_not_guessed(policy, text):
     """Every detector measured returned a European language for these."""
-    decision = policy.resolve(text, profile_language="ar")
+    decision = policy.resolve(text)
     assert decision.refused is True
     assert decision.script == "arabizi"
-    assert decision.code == "ar"
 
 
 def test_arabizi_can_be_routed_to_arabic_by_config():
@@ -153,7 +153,10 @@ def test_a_refused_decision_is_not_verified(policy):
 
 
 def test_text_without_letters_keeps_continuity(policy):
-    assert policy.resolve("2 + 2 = ?", previous_language="ar").code == "ar"
+    """"2 + 2 = ?" says nothing about a language, so the conversation's own
+    answer has to carry — which is the session store's job, not a tier nothing
+    populated."""
+    assert policy.resolve("2 + 2 = ?", session_language="ar").code == "ar"
 
 
 # --- the explicit-request matcher -------------------------------------------

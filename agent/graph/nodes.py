@@ -84,8 +84,6 @@ def build_classify(config, sticky=None):
             message,
             api_language=state.get("language"),
             session_language=session_language,
-            profile_language=state.get("profile_language"),
-            previous_language=state.get("previous_language"),
         )
         language = decision.code
 
@@ -440,8 +438,6 @@ def build_plan(config, llm, client=None):
                 # instruction it sits five places below.
                 session_language=state.get("session_language"),
                 planner_hint=req_lang,
-                profile_language=state.get("profile_language"),
-                previous_language=state.get("previous_language"),
             )
             if decision.code != state.get("language"):
                 out["language"] = decision.code

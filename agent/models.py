@@ -73,20 +73,11 @@ class SubjectFacts(BaseModel):
 
 
 class Style(BaseModel):
-    """Voice/style descriptor for a turn (from ``resolve_style``)."""
+    """The tone a turn is written in (from ``resolve_style``).
+
+    There was a ``voice`` beside it, set to "neutral" on every path and read by
+    nothing but its own test."""
     tone: str = "neutral"
-    voice: str = "neutral"
-
-
-class AdaptiveProfile(BaseModel):
-    """Per-user learned preferences, applied to personalize a turn. One per user across every
-    persona (student/teacher/parent), adapted per user. NOT yet wired — see the adaptive-profile
-    TODO. A teacher's profile also informs how the agent answers a student's question in that
-    teacher's subject (the teacher's teaching style)."""
-    user_id: Optional[str] = None
-    pathway: Optional[str] = None            # student | teacher | parent
-    style: Optional[Style] = None            # preferred tone/voice
-    teaching_notes: Optional[str] = None     # how a teacher likes material taught (teacher persona)
 
 
 class Citation(BaseModel):

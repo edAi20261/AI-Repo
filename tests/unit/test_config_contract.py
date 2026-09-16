@@ -125,3 +125,23 @@ def test_the_settings_that_change_behaviour_are_declared(key):
     inverted it — retrieval that stopped declining, topic scoping that dropped
     the right material, the slow path, half the languages, the bucket root."""
     assert key in _declared()
+
+
+def test_an_environment_with_no_overrides_still_loads():
+    """`staging:` was a name with nothing under it once every setting beneath it
+    was deleted. YAML parses that as None, and the overlay merge asked None for
+    its items — every config load in that environment raised AttributeError."""
+    import os
+
+    from shared.config import Config
+
+    previous = os.environ.get("APP_ENV")
+    try:
+        for env in ("local", "staging", "production"):
+            os.environ["APP_ENV"] = env
+            assert Config.load().get("language.default")
+    finally:
+        if previous is None:
+            os.environ.pop("APP_ENV", None)
+        else:
+            os.environ["APP_ENV"] = previous

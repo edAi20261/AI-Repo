@@ -62,7 +62,6 @@ embeddings:
   normalize: true
 
 vector_store:
-  backend: qdrant                # qdrant | pgvector
   timeout_seconds: 120         # the write path: a lesson's points go up in batches
   # The read path sits between a student's question and every word of the
   # answer, so it gets its own, far smaller budget. Measured against the
@@ -87,7 +86,6 @@ vector_store:
   hnsw:
     m: 16
     ef_construct: 128
-    ef_search: 128
 
 ingestion:
   source:
@@ -116,11 +114,10 @@ ingestion:
     strip_tatweel: true
     collapse_whitespace: true
   ocr:
-    enabled: true
-    languages: [eng, ara, fra, deu]
     min_chars_per_page: 40       # fewer characters than this: treat page as scanned
     render_dpi: 300
-    engine: vision               # vision | tesseract
+    engine: vision               # the only one implemented; any other value turns
+                                 # page vision off and leaves the text layer alone
     garbage:                     # legibility gate: glyph-noise digital pages -> vision
       symbol_ratio: 0.45         # non-alphanumeric share above this: symbol-junk (any length)
       word_check_min_chars: 80   # run the word check only past this length
@@ -140,9 +137,6 @@ ingestion:
     vision_fill_math: true       # math pages: add vision-detected figures get_images missed
                                  # (vector geometry diagrams); deduped against get_images
     generate_alt_text: true
-    capture_caption: true
-  review_gate:
-    enabled: false
 
 language:
   supported: [ar, en, fr, de]   # answered in. Others are recognised and fall back —
@@ -179,7 +173,6 @@ language:
     failure_threshold: 3       # consecutive failures before the store is paused
     breaker_seconds: 30
   quiz_single_language: true   # questions follow the subject; prose follows the student
-  keep_technical_terms_in_source_language: true
 
 database:
   # Postgres has no default timeout of its own: an unresponsive host holds the
@@ -263,7 +256,6 @@ grade:
   # mastery_event. `source` maps the grading context to the mastery_event_source enum.
   source: practice             # practice | quiz | homework — default for a chat grade turn
   pass_threshold: 0.5          # partial_score >= this counts as 'correct' for mastery
-  max_items: 200               # cap on answers graded in one turn
   # Grounding priority: a key/rubric is used FIRST; RAG grounds ONLY a keyless answer (fallback).
 
 render:
@@ -338,25 +330,17 @@ logging:
   third_party_level: WARNING   # cap HTTP/LLM client loggers so a DEBUG app level
                                # never logs request/response bodies (prompts, PII)
 
-tracing:
-  enabled: false
-  project: eduai
-
 # Overlays merged over the base, selected by APP_ENV.
 environments:
   local:
     logging: { level: DEBUG, format: console }
-    tracing: { enabled: true }
     vector_store: { collection: eduai_chunks_dev, topics_collection: eduai_topics_dev }   # keep dev index off prod
     # Local talks to the real backend when BACKEND_API_BASE_URL is set. For offline
     # work, point fixtures_path at a manifest and flip prefer_fixtures.
     agent: { backend: { fixtures_path: null, prefer_fixtures: false } }
 
-  staging:
-    tracing: { enabled: true }
 
   production:
     api: { docs_enabled: false }
     logging: { level: WARNING }
-    tracing: { enabled: true }
     llm: { max_retries: 5 }
