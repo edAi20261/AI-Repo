@@ -32,6 +32,7 @@ from qdrant_client import QdrantClient, models
 
 from agent.config import Config
 from shared.postgres import connect
+from shared.vector_store import upsert_client
 from shared.matching import looks_like_contents
 
 PAYLOAD_ONLY_FIELDS = ("subject_name", "lesson_title", "lesson_order")
@@ -80,8 +81,7 @@ def main() -> int:
 
     config = Config.load()
     collection = config.vector_store.get("collection", "eduai_chunks")
-    client = QdrantClient(url=config.secret("QDRANT_URL"),
-                          api_key=config.secret("QDRANT_API_KEY"), timeout=120)
+    client = upsert_client(config, config.secret("QDRANT_URL"))
 
     payloads = _existing_points(client, collection)
     print(f"collection {collection}: {len(payloads)} points")

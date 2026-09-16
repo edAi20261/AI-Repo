@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ingestion.config import Config
 from ingestion.llm_provider import VISION_STUB_SENTINEL
 from shared.postgres import connect
+from shared.vector_store import query_client
 
 
 def _lectures(cur, lecture_id: str | None) -> list[str]:
@@ -38,11 +39,10 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = Config.load()
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
 
     collection = cfg.vector_store.get("collection", "eduai_chunks")
-    qc = QdrantClient(url=cfg.secret("QDRANT_URL", "http://localhost:6333"),
-                      api_key=cfg.secret("QDRANT_API_KEY"))
+    qc = query_client(cfg, timeout=30)
     with connect(cfg, connect_timeout=15, statement_timeout_ms=0) as conn:
         return _verify(cfg, conn, qc, collection, models, args)
 

@@ -1,5 +1,7 @@
 """Every connection this service opens is bounded on both ends.
 
+Postgres and Qdrant both, because the failure is the same one twice.
+
 psycopg has no default timeout. A host that hangs rather than refuses holds the
 connection open until the caller gives up, which for a student's turn means
 whatever the HTTP client allows — the turn does not fail, it stalls.
@@ -18,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import shared.postgres as postgres
+import shared.vector_store as vector_store
 from shared.config import Config
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -90,3 +93,41 @@ def test_a_caller_can_ask_for_a_tighter_bound(monkeypatch):
 
     assert seen["connect_timeout"] == 2
     assert seen["options"] == "-c statement_timeout=500"
+
+
+# --- Qdrant -----------------------------------------------------------------
+
+def _qdrant_constructions(tree: ast.AST) -> list[ast.Call]:
+    return [n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == "QdrantClient"]
+
+
+@pytest.mark.parametrize("path", _runtime_modules(), ids=lambda p: p.name)
+def test_nothing_on_a_turn_builds_its_own_qdrant_client(path: Path):
+    """Three of the eight constructions were on the read path and none of the
+    three passed a timeout, so a hung cluster hung the turn — retrieval sits
+    between the question and every word of the answer."""
+    if path == Path(vector_store.__file__):
+        return
+    calls = _qdrant_constructions(ast.parse(path.read_text()))
+    assert not calls, (
+        f"{path.relative_to(ROOT)}:{calls[0].lineno} builds a QdrantClient "
+        "directly — use shared.vector_store, which carries the budgets")
+
+
+def test_the_read_path_is_bounded_far_tighter_than_the_write_path():
+    """One number could not serve both: a lesson's upsert is allowed minutes,
+    a student's search is not."""
+    config = Config.load()
+    assert config.get("vector_store.query_timeout_seconds") < \
+        config.get("vector_store.timeout_seconds")
+
+
+def test_the_query_client_carries_the_query_budget(monkeypatch):
+    seen = {}
+    import qdrant_client
+    monkeypatch.setattr(qdrant_client, "QdrantClient",
+                        lambda **kwargs: seen.update(kwargs) or object())
+    vector_store.query_client(Config.load())
+    assert seen["timeout"] == Config.load().get("vector_store.query_timeout_seconds")

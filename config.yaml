@@ -63,7 +63,13 @@ embeddings:
 
 vector_store:
   backend: qdrant                # qdrant | pgvector
-  timeout_seconds: 120
+  timeout_seconds: 120         # the write path: a lesson's points go up in batches
+  # The read path sits between a student's question and every word of the
+  # answer, so it gets its own, far smaller budget. Measured against the
+  # production cluster from outside it: a k=8 search over eduai_chunks runs
+  # 99-100ms, k=24 the same, topics the same, with one 273ms cold outlier.
+  # 5s is ~18x the worst measured call: a search that slow is broken, not busy.
+  query_timeout_seconds: 5
   upsert_batch_size: 64
   collection: eduai_chunks
   topics_collection: eduai_topics  # topic-label vectors (resolve_topics ANN); populated on re-ingest

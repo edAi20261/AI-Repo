@@ -18,6 +18,7 @@ from typing import Any
 from shared.backend import get_backend_client
 from shared.config import Config
 from shared.postgres import connect
+from shared.vector_store import query_client
 from shared.embeddings import get_embedder
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,7 @@ def rag_search(
         raise ValueError("rag_search requires at least one namespace (invariant 1).")
     config = config or Config.load()
 
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
 
     vector = get_embedder(config).embed_query(query)
 
@@ -127,8 +128,7 @@ def rag_search(
         key="chunk_kind", match=models.MatchValue(value="contents"))]
 
     collection = config.vector_store.get("collection", "eduai_chunks")
-    client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                          api_key=config.secret("QDRANT_API_KEY"))
+    client = query_client(config)
     # Over-fetch when ready_only may drop hits, so we still return up to k.
     fetch = k * 3 if ready_only else k
     hits = client.query_points(
@@ -207,7 +207,7 @@ def resolve_topics(
 def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config):
     """Indexed top-k over the Qdrant topics collection (label vectors + subject/lecture
     payload). Scalable — no full-catalog scan."""
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
 
     must = []
     if subject_id:
@@ -216,8 +216,7 @@ def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config
     if lecture_ids:
         must.append(models.FieldCondition(
             key="lecture_id", match=models.MatchAny(any=list(lecture_ids))))
-    client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                          api_key=config.secret("QDRANT_API_KEY"))
+    client = query_client(config)
     hits = client.query_points(
         config.vector_store.get("topics_collection", "eduai_topics"),
         query=vector, query_filter=models.Filter(must=must) if must else None,
@@ -367,12 +366,10 @@ def _citation_labels(
     """
     if not chunk_ids:
         return {}
-    from qdrant_client import QdrantClient
 
     collection = config.vector_store.get("collection", "eduai_chunks")
     try:
-        client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                              api_key=config.secret("QDRANT_API_KEY"))
+        client = query_client(config)
         points = client.retrieve(collection, ids=list(chunk_ids), with_payload=True,
                                  with_vectors=False)
     except Exception:

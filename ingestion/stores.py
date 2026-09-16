@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from shared.matching import looks_like_contents
+from shared.vector_store import upsert_client
 
 from .config import Config
 from .state import Chunk, Dependency, Figure, Topic
@@ -453,13 +454,10 @@ def _topic_payload(t: Any) -> dict[str, Any]:
 
 
 DEFAULT_UPSERT_BATCH = 64
-DEFAULT_QDRANT_TIMEOUT = 120
 
 
 class QdrantVectorStore(VectorStore):
     def __init__(self, config: Config, location: str) -> None:
-        from qdrant_client import QdrantClient
-
         vs = config.vector_store
         self._collection = vs.get("collection", "eduai_chunks")
         self._topics_collection = vs.get("topics_collection", "eduai_topics")
@@ -469,13 +467,7 @@ class QdrantVectorStore(VectorStore):
         # A whole lesson in one request times out on a small cluster, so points
         # go up in batches with an explicit budget per request.
         self._batch_size = max(1, int(vs.get("upsert_batch_size", DEFAULT_UPSERT_BATCH)))
-        timeout = int(vs.get("timeout_seconds", DEFAULT_QDRANT_TIMEOUT))
-        if location == ":memory:":
-            self._client = QdrantClient(location=":memory:")
-        else:
-            self._client = QdrantClient(
-                url=location, api_key=config.secret("QDRANT_API_KEY"), timeout=timeout
-            )
+        self._client = upsert_client(config, location)
 
     def _upsert_batched(self, collection: str, points: list) -> int:
         """Upsert in bounded batches; a partial failure leaves earlier batches in place."""
