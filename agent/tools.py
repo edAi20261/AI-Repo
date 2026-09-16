@@ -17,6 +17,7 @@ from typing import Any
 
 from shared.backend import get_backend_client
 from shared.config import Config
+from shared.lexical import bm25_scores, ranks_from_scores, reciprocal_rank_fusion
 from shared.postgres import connect
 from shared.vector_store import query_client
 from shared.embeddings import get_embedder
@@ -129,8 +130,11 @@ def rag_search(
 
     collection = config.vector_store.get("collection", "eduai_chunks")
     client = query_client(config)
-    # Over-fetch when ready_only may drop hits, so we still return up to k.
+    # Over-fetch for two reasons: ready_only may drop hits, and the lexical
+    # stage can only reorder what the dense stage brought back.
     fetch = k * 3 if ready_only else k
+    if config.get("agent.hybrid.enabled"):
+        fetch = max(fetch, config.get("agent.hybrid.candidates"))
     hits = client.query_points(
         collection, query=vector,
         query_filter=models.Filter(must=must, must_not=must_not),
@@ -169,7 +173,32 @@ def rag_search(
         for r in rows
     ]
     out.sort(key=lambda c: c.score, reverse=True)
+    if config.get("agent.hybrid.enabled"):
+        out = _fuse_lexically(query, out, config)
     return out[:k]
+
+
+def _fuse_lexically(
+    query: str, candidates: list[RetrievedChunk], config: Config,
+) -> list[RetrievedChunk]:
+    """Reorder dense candidates by fusing their rank with a BM25 rank.
+
+    ``score`` is deliberately left as the dense cosine. It is what
+    ``agent.min_score`` is measured against, and a fused rank-based score is not
+    comparable to a similarity — swapping it in would silently disable the floor
+    that stops the tutor answering questions the syllabus cannot answer.
+    """
+    if len(candidates) < 2:
+        return candidates
+    dense_ranks = list(range(1, len(candidates) + 1))   # already sorted by score
+    lexical = bm25_scores(query, [c.text or "" for c in candidates])
+    # A document that matches none of the query's words should not be pushed up
+    # merely for being in the pool, so it places in the dense ranking only.
+    lexical_ranks = ranks_from_scores(lexical, skip_zero=True)
+    fused = reciprocal_rank_fusion(
+        dense_ranks, lexical_ranks, k=config.get("agent.hybrid.rrf_k"))
+    order = sorted(range(len(candidates)), key=lambda i: -fused[i])
+    return [candidates[i] for i in order]
 
 
 # --- resolve_topics: free-text -> topic_ids ---------------------------------

@@ -37,6 +37,14 @@ llm:
     assessment:      { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     grade:           { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     report:          { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 2000 }
+    # scripts/eval_answers.py only. Deliberately a different model family from
+    # the one that writes the answers: a model asked to mark its own output
+    # scores it higher than a reader would, so Gemini writes and Claude marks.
+    # Anthropic models served through OpenRouter reject a schema-bound request
+    # in a way the OpenAI client reads as a content filter, with or without
+    # json_schema — so the judge is an OpenAI model, which is a different family
+    # from the Gemini that writes the answers, which is the point.
+    judge:           { provider: openrouter, model: openai/gpt-4.1, temperature: 0.0, max_tokens: 1200 }
     slides:          { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 3000 }
     visual_mindmap:  { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
     visual_flashcards: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
@@ -186,6 +194,25 @@ database:
   statement_timeout_ms: 5000
 
 agent:
+  # Retrieval is two-stage. A dense search finds candidates; BM25 over those same
+  # candidates reorders them, and the two rankings are fused by reciprocal rank.
+  #
+  # A single dense vector summarises a chunk's meaning, and a summary loses the
+  # name a question often turns on. Five Grade 7 lessons about success and youth
+  # sit almost on top of each other in the embedding space — their top scores for
+  # "قصيدة الشباب لإيليا أبو ماضي" were within 0.04 — so the right lesson came
+  # second or third. Measured on the 14-query golden set: dense alone 10/14 at
+  # precision@1, hybrid 13/14, and the three it fixes are exactly the title and
+  # proper-name queries. A BAAI/bge-reranker-v2-m3 cross-encoder was measured on
+  # the same set for comparison: 11/14, for 1.8s a query. This costs ~1ms and no
+  # model. Declines are unaffected: min_score is still applied to the dense
+  # cosine, which the fusion does not touch.
+  hybrid:
+    enabled: true
+    candidates: 50             # dense hits reordered; the lexical stage cannot
+                               # recover what the dense stage never returned
+    rrf_k: 60                  # Cormack et al.'s published constant
+
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
   min_score: 0.50            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.

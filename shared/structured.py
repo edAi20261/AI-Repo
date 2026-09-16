@@ -19,6 +19,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any, Optional, TypeVar
 
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ValidationError
 
 from .config import Config
@@ -74,9 +75,25 @@ class StructuredTruncation(StructuredOutputError):
     """The reply was cut off by the token limit. A retry produces the same cut."""
 
 
+def _as_conversation(messages: Any) -> list[Any]:
+    """One prompt or a list of them, as a list of messages.
+
+    A bare string is a prompt, not a sequence of characters — but it satisfies
+    ``Sequence[Any]``, so ``list(messages)`` quietly turned a 4,000 character
+    prompt into 4,000 single-character messages. Two ingestion call sites passed
+    a string, and it looked like it worked: Gemini merges consecutive user turns
+    back into one, so the model saw something close to the prompt. Moving the
+    same call to a provider that does not merge produced an answer about
+    nothing, with no error anywhere.
+    """
+    if isinstance(messages, str):
+        return [HumanMessage(content=messages)]
+    return list(messages)
+
+
 def call_structured(
     schema: type[M],
-    messages: Sequence[Any],
+    messages: Sequence[Any] | str,
     *,
     task: str,
     config: Config,
@@ -97,7 +114,7 @@ def call_structured(
     client = llm if llm is not None else get_llm(config, task)
     runnable = _bind(client, schema, settings)
 
-    conversation = list(messages)
+    conversation = _as_conversation(messages)
     failures: list[str] = []
     raw_replies: list[str] = []
 
@@ -150,9 +167,9 @@ def call_structured(
     )
 
 
-def _with_feedback(messages: Sequence[Any], raw_text: str, feedback: str) -> list[Any]:
+def _with_feedback(messages: Sequence[Any] | str, raw_text: str, feedback: str) -> list[Any]:
     """The original request, the model's failed reply, and what to fix."""
-    return list(messages) + [
+    return _as_conversation(messages) + [
         {"role": "assistant", "content": raw_text or ""},
         {"role": "user", "content": feedback},
     ]
