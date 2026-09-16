@@ -141,6 +141,20 @@ FORMATTING_CONTRACT = """Write in Markdown:
 - Do not open with a heading that restates the question, and do not close with a
   summary of what you just said."""
 
+# A stronger grounding contract was written for these two prompts and measured
+# against it: an explicit "the context is the only thing you know", a ban on
+# adding facts, examples or quotations from the model's own knowledge, and one
+# exact token for the model to emit when the passages cannot answer the
+# question, mapped to the decline. It was worse. Over the same 32 cases, judged
+# by a model from another family: 25 of 32 scored 4 or better with the wording
+# below (twice, identically), 22 of 32 with the contract, and answers the judge
+# called unsupported went from 6 to 9. It changed no decline decision at all.
+#
+# The failure it was written for is real — one explanation of perseverance
+# quoted Thomas Edison, and one of the path to success was a self-help listicle
+# with a citation attached — so the problem is still open. Emphasis is not the
+# fix; the measurement is in git, so the next attempt can start from something
+# other than a longer instruction.
 EXPLAIN_PROMPT = Prompt(
     name="EXPLAIN_PROMPT",
     audience=Audience.STUDENT,
