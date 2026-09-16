@@ -15,10 +15,11 @@ from __future__ import annotations
 import io
 import logging
 import uuid
-from shared.language import content_directive
-from typing import Any, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import matplotlib
+
 matplotlib.use("Agg")   # headless: no display needed
 import matplotlib.pyplot as plt
 from langchain_core.messages import HumanMessage
@@ -47,7 +48,7 @@ _MEDIA = {
 
 # Register one generated artifact in ai.artifacts — the durable record/index; the bytes
 # themselves live in object storage. No user -> nothing to own, so no row is written.
-def _record_artifact(user_id, kind, s3_uri, conversation_id, config) -> Optional[str]:
+def _record_artifact(user_id, kind, s3_uri, conversation_id, config) -> str | None:
     """INSERT the ``ai.artifacts`` row; returns the id, or None when there is no user to
     own it (an anonymous/demo turn still uploads the file, just records no row). A DB failure
     (e.g. the table absent on a partial dev DB) is non-fatal: the bytes are already stored, so
@@ -69,7 +70,7 @@ def _record_artifact(user_id, kind, s3_uri, conversation_id, config) -> Optional
         return None
 
 
-def _artifact_key(user_id: Optional[str], kind: str, ext: str) -> str:
+def _artifact_key(user_id: str | None, kind: str, ext: str) -> str:
     return f"artifacts/{user_id or 'anon'}/{kind}/{uuid.uuid4().hex}.{ext}"
 
 
@@ -100,8 +101,8 @@ def _fig_bytes(fig, config) -> bytes:
 
 def gen_chart(
     spec: Mapping[str, Any], *,
-    user_id: Optional[str] = None, conversation_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    user_id: str | None = None, conversation_id: str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """A bar / line / pie chart from ``spec`` — for analytics, progress, any data.
 
@@ -147,8 +148,8 @@ def gen_chart(
 
 def gen_math_visual(
     spec: Mapping[str, Any], *,
-    user_id: Optional[str] = None, conversation_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    user_id: str | None = None, conversation_id: str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """A precise math figure. ``spec`` either plots functions
     (``{series: [{name, x: [...], y: [...]}], title?, x_label?, y_label?}`` — axes through
@@ -200,7 +201,7 @@ def _sample_expr(expr: str, domain, n: int) -> tuple[list[float], list[float]]:
     for i in range(n):
         x = a + i * step
         try:
-            y = eval(expr, {"__builtins__": {}}, {**_SAFE_MATH, "x": x})  # noqa: S307 (sandboxed)
+            y = eval(expr, {"__builtins__": {}}, {**_SAFE_MATH, "x": x})
         except Exception:
             continue
         if isinstance(y, (int, float)) and _math.isfinite(y):
@@ -209,7 +210,7 @@ def _sample_expr(expr: str, domain, n: int) -> tuple[list[float], list[float]]:
     return xs, ys
 
 
-def sample_math_spec(spec: Mapping[str, Any], config: Optional[Config] = None) -> dict[str, Any]:
+def sample_math_spec(spec: Mapping[str, Any], config: Config | None = None) -> dict[str, Any]:
     """Normalize a math figure spec into what ``gen_math_visual`` renders: geometry and
     pre-sampled ``series`` pass through; ``functions`` (expr + domain) are sampled here.
     Returns ``{}`` when nothing plottable can be built."""
@@ -270,8 +271,8 @@ def _geometry_png(geo: Mapping[str, Any], title, config) -> bytes:
 
 def gen_mindmap(
     outline: Mapping[str, Any], *,
-    user_id: Optional[str] = None, conversation_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    user_id: str | None = None, conversation_id: str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """A left-to-right mind-map tree as SVG. ``outline``: ``{label, children: [{label,
     children: [...]}, ...]}`` (any depth). Deterministic layout — no image model."""
@@ -342,8 +343,8 @@ def _depth(node: Mapping[str, Any]) -> int:
 def gen_flashcards(
     cards: Sequence[Mapping[str, str]], *,
     title: str = "Flashcards",
-    user_id: Optional[str] = None, conversation_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    user_id: str | None = None, conversation_id: str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """A flashcards PDF (one Q/A per card) plus the structured cards echoed back for a
     flip UI. ``cards``: ``[{front, back}]``. Deterministic."""
@@ -363,8 +364,8 @@ def gen_flashcards(
 
 def gen_pdf(
     title: str, blocks: Sequence[Mapping[str, str]], *,
-    user_id: Optional[str] = None, conversation_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    user_id: str | None = None, conversation_id: str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """A PDF from ``blocks`` (each ``{type: heading|text, text}``). For a quiz, summary or
     report. Deterministic (reportlab)."""
@@ -397,8 +398,8 @@ def _pdf_bytes(blocks: Sequence[tuple[str, str]], config) -> bytes:
 
 def gen_image(
     prompt: str, *,
-    user_id: Optional[str] = None, conversation_id: Optional[str] = None,
-    config: Optional[Config] = None,
+    user_id: str | None = None, conversation_id: str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """An illustrative picture from a text prompt via the configured image provider
     (``image_gen`` in config; a stub placeholder when no key). NOT for precise math
@@ -419,8 +420,8 @@ def powerpoint_points(
     ``max_slides`` caps the outline so it stays digestible (config render.slides.max_slides)."""
     if llm is None:
         return content
-    prompt_text = POWERPOINT_POINTS_PROMPT.format(
-        language=content_directive(language), instructions=instructions,
+    prompt_text = POWERPOINT_POINTS_PROMPT.render(
+        language=language, instructions=instructions,
         content=content, max_slides=max_slides)
     return llm.invoke([HumanMessage(content=prompt_text)]).content
 

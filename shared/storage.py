@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
+from .errors import ServiceUnavailableError
 
 DEFAULT_LOCAL_DIR = ".ingestion_artifacts"
 
 
-class StorageError(RuntimeError):
+class StorageError(ServiceUnavailableError):
     """An object-storage operation did not fully succeed."""
 
 
@@ -129,7 +130,7 @@ class LocalUploader(Uploader):
 
 def get_uploader(config: Config) -> Uploader:
     """The configured uploader: S3 when ``S3_BUCKET`` is set, else the local fallback."""
-    key_prefix = config.get("storage.key_prefix", "") or ""
+    key_prefix = config.get("storage.key_prefix", "ai-artifacts") or ""
     bucket = config.secret("S3_BUCKET")
     if bucket:
         return S3Uploader(

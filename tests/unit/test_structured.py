@@ -236,3 +236,24 @@ def test_duplicate_and_unknown_ids_are_named(config):
     with pytest.raises(ValueError) as excinfo:
         align_by_id(["b1"], [Item(id="zz", type="mcq")], what="grade")
     assert "unknown id" in str(excinfo.value)
+
+
+def test_a_prompt_string_is_one_message_not_one_per_character():
+    """A bare string satisfies Sequence[Any], so list() turned a 4,000-character
+    prompt into 4,000 single-character messages. It looked like it worked
+    because Gemini merges consecutive user turns back into one; moving the same
+    call to a provider that does not merge produced an answer about nothing,
+    with no error raised anywhere.
+
+    Both ingestion extractors passed a string.
+    """
+    from langchain_core.messages import HumanMessage
+
+    from shared.structured import _as_conversation
+
+    prompt = "Identify the skills in this lesson."
+    assert _as_conversation(prompt) == [HumanMessage(content=prompt)]
+    assert len(_as_conversation(prompt)) == 1
+
+    already = [HumanMessage(content="a"), HumanMessage(content="b")]
+    assert _as_conversation(already) == already

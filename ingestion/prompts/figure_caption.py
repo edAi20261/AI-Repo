@@ -1,6 +1,13 @@
 """Vision prompt: caption + alt_text for a cropped figure."""
 
-FIGURE_CAPTION_PROMPT = """\
+from shared.prompting import Audience, LanguageRule, Prompt
+
+FIGURE_CAPTION_PROMPT = Prompt(
+    name="FIGURE_CAPTION_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.CONTENT,
+    slot="language_hint",
+    template="""\
 The image is a single figure cropped from a textbook page. Produce two things
 about what it shows:
 
@@ -18,4 +25,5 @@ Return JSON: {{"caption": "...", "alt_text": "..."}}
 
 Surrounding heading (may be empty): {heading_path}
 Language (write your answer in this language): {language_hint}
-"""
+""",
+)

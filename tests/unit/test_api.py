@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from shared.config import get_config
-from system.errors import ConflictError, NotFoundError, TimeoutError_
+from system.errors import ConflictError, NotFoundError, UpstreamTimeoutError
 from system.main import create_app
 from system.settings import Settings
 
@@ -348,7 +348,7 @@ def test_a_turn_past_the_timeout_is_abandoned(monkeypatch):
     )
 
     async def run():
-        with pytest.raises(TimeoutError_):
+        with pytest.raises(UpstreamTimeoutError):
             await runtime.chat({"message": "hi"})
 
     anyio.run(run)
@@ -479,3 +479,27 @@ def test_a_failed_resolve_is_reported_not_swallowed(monkeypatch):
     job = anyio.run(run)
     assert notifier.reported == ["failed"]
     assert "no such lesson" in job.errors[0]
+
+
+def test_a_dependency_failing_is_not_reported_as_a_bug_in_this_service():
+    """There were three disjoint error hierarchies, and only one of them could
+    reach an HTTP status. S3 refusing a signed URL and the agent having a bug
+    both came back as 500 "An unexpected error occurred", so a caller could not
+    tell which one was worth retrying."""
+    from shared.errors import ServiceError
+    from shared.storage import StorageError
+    from shared.structured import StructuredOutputError
+
+    assert issubclass(StorageError, ServiceError)
+    assert issubclass(StructuredOutputError, ServiceError)
+    assert StorageError("s3 refused").status_code == 503
+
+
+def test_unusable_source_material_is_not_a_server_error():
+    """A lesson whose PDF is missing is the request's problem, not the
+    service's, and a retry will not fix it."""
+    from ingestion.utils.source import SourceError
+    from shared.errors import ServiceError
+
+    assert issubclass(SourceError, ServiceError)
+    assert SourceError("source file not found").status_code == 422

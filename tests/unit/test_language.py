@@ -48,7 +48,7 @@ def test_single_word_greeting_is_not_finnish(policy):
 def test_explicit_request_beats_everything(policy):
     decision = policy.resolve(
         "explain photosynthesis, answer in French",
-        api_language="ar", profile_language="de", previous_language="en",
+        api_language="ar", session_language="de", planner_hint="en",
     )
     assert (decision.code, decision.source) == ("fr", "explicit")
 
@@ -115,9 +115,10 @@ def test_planner_hint_only_fills_what_detection_declined(policy):
     assert (declined.code, declined.source) == ("ar", "planner")
 
 
-def test_profile_then_previous_then_default(policy):
-    assert policy.resolve("ok", profile_language="fr").source == "profile"
-    assert policy.resolve("ok", previous_language="de").source == "previous"
+def test_the_last_resort_is_the_default(policy):
+    """There were two tiers between the planner hint and the default — a stored
+    profile preference and the previous turn's language. Nothing ever supplied
+    either, so both arrived None on every call the service ever made."""
     assert policy.resolve("ok").source == "default"
 
 
@@ -135,10 +136,9 @@ def test_unsupported_values_are_ignored(policy):
 ])
 def test_arabizi_is_refused_not_guessed(policy, text):
     """Every detector measured returned a European language for these."""
-    decision = policy.resolve(text, profile_language="ar")
+    decision = policy.resolve(text)
     assert decision.refused is True
     assert decision.script == "arabizi"
-    assert decision.code == "ar"
 
 
 def test_arabizi_can_be_routed_to_arabic_by_config():
@@ -153,7 +153,10 @@ def test_a_refused_decision_is_not_verified(policy):
 
 
 def test_text_without_letters_keeps_continuity(policy):
-    assert policy.resolve("2 + 2 = ?", previous_language="ar").code == "ar"
+    """"2 + 2 = ?" says nothing about a language, so the conversation's own
+    answer has to carry — which is the session store's job, not a tier nothing
+    populated."""
+    assert policy.resolve("2 + 2 = ?", session_language="ar").code == "ar"
 
 
 # --- the explicit-request matcher -------------------------------------------
@@ -432,3 +435,42 @@ def test_an_unsupported_standing_value_is_ignored(policy):
 def test_no_standing_request_leaves_everything_as_it_was(policy):
     assert policy.resolve("explain subtraction").code == "en"
     assert policy.resolve("اشرح لي عملية الطرح").code == "ar"
+
+
+# --- a message about a language, not in one ---------------------------------
+
+@pytest.mark.parametrize("message", [
+    "how do you say hello in Arabic?",
+    "how to say thank you in French",
+    "wie sagt man Hallo auf Arabisch",
+    "comment dit-on bonjour en arabe",
+])
+def test_a_planner_hint_cannot_turn_a_question_about_a_language_into_one_in_it(
+    policy, message,
+):
+    """"how do you say hello in Arabic?" came back in Arabic, explaining the word
+    أهلاً out of a poetry lesson.
+
+    explicit_request has always refused to read that as a request. The planner
+    reads the same message, is told to report a language only when one is
+    explicitly asked for, and reported Arabic anyway — and its hint reached the
+    resolver without the test the matcher applies. One question, decided two
+    ways in two places."""
+    assert policy.resolve(message, planner_hint="ar").code != "ar"
+
+
+@pytest.mark.parametrize("message,expected", [
+    ("ازاي اقول مرحبا بالانجليزي؟", "ar"),
+    ("كيف أقول شكرا بالفرنسية", "ar"),
+])
+def test_the_same_holds_for_a_student_writing_in_arabic(policy, message, expected):
+    """The pilot corpus is Arabic, so the Arabic form of the question is the one
+    a real student types."""
+    assert policy.resolve(message, planner_hint="en").code == expected
+
+
+def test_asking_for_a_translation_is_still_a_request(policy):
+    """The guard must not swallow a real instruction: "translate hello into
+    Arabic" genuinely asks for Arabic."""
+    assert policy.resolve("translate hello into Arabic").code == "ar"
+    assert policy.resolve("what does مرحبا mean in English?").code == "en"

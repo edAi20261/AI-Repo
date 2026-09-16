@@ -3,6 +3,10 @@ name: Deploy to ECS
 on:
   push:
     branches: [main]
+  # The lint and test job only ever ran after a merge, so "no new lint findings"
+  # and every contract test were gates on the deploy rather than on the change.
+  # A broken PR reached main before anything objected.
+  pull_request:
 
 permissions:
   id-token: write # required for OIDC — do not add contents:write etc. beyond what's needed
@@ -21,10 +25,16 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt -r requirements-dev.txt
+      # Lint is a gate, not a suggestion. The rules this project enforces are in
+      # pyproject.toml, with the backlog listed rather than deleted so it can
+      # only shrink.
+      - name: Lint
+        run: python -m ruff check agent shared system ingestion scripts tests
       - run: python -m pytest
 
   deploy:
     needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Debug - decode actual OIDC token claims

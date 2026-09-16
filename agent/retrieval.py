@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import Any, Optional
+
+from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
 from .tools import get_topic_chunks, get_topic_deps, rag_search
@@ -21,9 +22,9 @@ def retrieve(
     query: str,
     namespaces: list[str],
     *,
-    subject_id: Optional[str] = None,
-    topic_ids: Optional[list[str]] = None,
-    lecture_ids: Optional[list[str]] = None,
+    subject_id: str | None = None,
+    topic_ids: list[str] | None = None,
+    lecture_ids: list[str] | None = None,
     k: int = 8,
     min_score: float = 0.0,
     topic_filter: str = "hard",
@@ -52,18 +53,13 @@ def retrieve(
     # what it actually matched, with scores, is the line you read when a student
     # says the tutor answered about history.
     logger.info("retrieve", extra={
-        "query": _clip(query),
+        "query": clip(query),
         "kept": len(kept),
         "min_score": min_score,
         "subject_scoped": bool(subject_id),
         "matched": describe(kept),
     })
     return kept
-
-
-def _clip(text: str, limit: int = 120) -> str:
-    text = " ".join((text or "").split())
-    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
@@ -74,11 +70,20 @@ def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
     ]
 
 
+# The shipped floor, repeated here so a subgraph reached without one does not
+# silently fall back to "keep everything". config.yaml agent.min_score is the
+# source; this is the safety net when a payload omits it.
+DEFAULT_MIN_SCORE = 0.44
+
 DEFAULT_MAX_PREREQS = 5
 
 # Nearest first, and a required prerequisite before a merely recommended one: the
 # topic you must know to follow this lesson outranks one that would help.
-_STRENGTH_RANK = {"required": 0, "recommended": 1}
+# Ingestion writes exactly these two (ingestion/schemas.py DEPENDENCY_STRENGTHS),
+# folding "recommended", "optional" and "helpful" into "related" on the way in.
+# This ranked "recommended", which ingestion never writes, so every non-required
+# edge fell to the unknown sentinel and the ordering worked by accident.
+_STRENGTH_RANK = {"required": 0, "related": 1}
 
 
 def resolve_prereqs(

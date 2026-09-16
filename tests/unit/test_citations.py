@@ -302,3 +302,17 @@ def test_missing_labels_degrade_to_the_lecture(monkeypatch):
             return "http://localhost:6333"
 
     assert tools._citation_labels(["c1"], Cfg()) == {}
+
+
+# --- the two halves agree about prerequisite strength ------------------------
+
+def test_the_runtime_ranks_every_strength_ingestion_writes():
+    """These drifted apart: ingestion folds "recommended" to "related" on the way
+    in, while the ranking still keyed on "recommended" — so every non-required
+    edge scored as unknown and the documented ordering held by accident."""
+    from agent.retrieval import _STRENGTH_RANK
+    from ingestion.schemas import DEPENDENCY_STRENGTHS
+
+    assert DEPENDENCY_STRENGTHS <= set(_STRENGTH_RANK), (
+        f"ingestion writes {sorted(DEPENDENCY_STRENGTHS - set(_STRENGTH_RANK))}, "
+        "which the prerequisite ordering does not rank")

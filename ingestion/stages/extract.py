@@ -51,7 +51,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     ing = cfg.ingestion
     ocr = ing.get("ocr", {})
     norm = ing.get("normalise", {})
-    supported = tuple(cfg.get("language.supported", ["ar", "en"]))
+    supported = tuple(cfg.get("language.supported", ["ar", "en", "fr", "de"]))
     default_lang = state.get("language_hint") or cfg.get("language.default", "en")
 
     min_chars = ocr.get("min_chars_per_page", 40)
@@ -230,7 +230,7 @@ def _extract_body_text(state: IngestionState, ctx: PipelineContext) -> Ingestion
     """Lessons authored in the platform editor: the body text is the whole source."""
     cfg = ctx.config
     norm = cfg.ingestion.get("normalise", {})
-    supported = tuple(cfg.get("language.supported", ["ar", "en"]))
+    supported = tuple(cfg.get("language.supported", ["ar", "en", "fr", "de"]))
     default_lang = state.get("language_hint") or cfg.get("language.default", "en")
 
     blocks = to_blocks(state["source_text"] or "")

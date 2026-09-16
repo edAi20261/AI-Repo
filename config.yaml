@@ -37,6 +37,14 @@ llm:
     assessment:      { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     grade:           { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     report:          { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 2000 }
+    # scripts/eval_answers.py only. Deliberately a different model family from
+    # the one that writes the answers: a model asked to mark its own output
+    # scores it higher than a reader would, so Gemini writes and Claude marks.
+    # Anthropic models served through OpenRouter reject a schema-bound request
+    # in a way the OpenAI client reads as a content filter, with or without
+    # json_schema — so the judge is an OpenAI model, which is a different family
+    # from the Gemini that writes the answers, which is the point.
+    judge:           { provider: openrouter, model: openai/gpt-4.1, temperature: 0.0, max_tokens: 1200 }
     slides:          { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 3000 }
     visual_mindmap:  { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
     visual_flashcards: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
@@ -49,6 +57,9 @@ vision:
   provider: openrouter           # openrouter | anthropic | google | dashscope
   model: qwen/qwen3-vl-235b-a22b-instruct
   fallback_model: anthropic/claude-sonnet-5
+  base_url: https://openrouter.ai/api/v1
+  timeout_seconds: 180           # a scanned page costs one call, so this is per page
+  max_tokens: 4096
 
 embeddings:
   # Bilingual index embedder. `hash` is a deterministic test embedder (no model).
@@ -59,8 +70,13 @@ embeddings:
   normalize: true
 
 vector_store:
-  backend: qdrant                # qdrant | pgvector
-  timeout_seconds: 120
+  timeout_seconds: 120         # the write path: a lesson's points go up in batches
+  # The read path sits between a student's question and every word of the
+  # answer, so it gets its own, far smaller budget. Measured against the
+  # production cluster from outside it: a k=8 search over eduai_chunks runs
+  # 99-100ms, k=24 the same, topics the same, with one 273ms cold outlier.
+  # 5s is ~18x the worst measured call: a search that slow is broken, not busy.
+  query_timeout_seconds: 5
   upsert_batch_size: 64
   collection: eduai_chunks
   topics_collection: eduai_topics  # topic-label vectors (resolve_topics ANN); populated on re-ingest
@@ -78,7 +94,6 @@ vector_store:
   hnsw:
     m: 16
     ef_construct: 128
-    ef_search: 128
 
 ingestion:
   source:
@@ -107,11 +122,10 @@ ingestion:
     strip_tatweel: true
     collapse_whitespace: true
   ocr:
-    enabled: true
-    languages: [eng, ara, fra, deu]
     min_chars_per_page: 40       # fewer characters than this: treat page as scanned
     render_dpi: 300
-    engine: vision               # vision | tesseract
+    engine: vision               # the only one implemented; any other value turns
+                                 # page vision off and leaves the text layer alone
     garbage:                     # legibility gate: glyph-noise digital pages -> vision
       symbol_ratio: 0.45         # non-alphanumeric share above this: symbol-junk (any length)
       word_check_min_chars: 80   # run the word check only past this length
@@ -131,9 +145,6 @@ ingestion:
     vision_fill_math: true       # math pages: add vision-detected figures get_images missed
                                  # (vector geometry diagrams); deduped against get_images
     generate_alt_text: true
-    capture_caption: true
-  review_gate:
-    enabled: false
 
 language:
   supported: [ar, en, fr, de]   # answered in. Others are recognised and fall back —
@@ -170,21 +181,66 @@ language:
     failure_threshold: 3       # consecutive failures before the store is paused
     breaker_seconds: 30
   quiz_single_language: true   # questions follow the subject; prose follows the student
-  keep_technical_terms_in_source_language: true
+
+database:
+  # Postgres has no default timeout of its own: an unresponsive host holds the
+  # connection open until the caller gives up, which for a student's turn means
+  # the HTTP client's limit. Measured against the production instance from
+  # outside the VPC: connect 486ms, the heaviest read (every topic label plus
+  # its 1024-dimension embedding) 554ms, chunk and prerequisite reads ~65ms.
+  # These are roughly 10x the measured worst case — wide enough for a corpus
+  # several times the size, narrow enough that a hang is an error, not a wait.
+  connect_timeout_seconds: 5
+  statement_timeout_ms: 5000
 
 agent:
+  # Retrieval is two-stage. A dense search finds candidates; BM25 over those same
+  # candidates reorders them, and the two rankings are fused by reciprocal rank.
+  #
+  # A single dense vector summarises a chunk's meaning, and a summary loses the
+  # name a question often turns on. Five Grade 7 lessons about success and youth
+  # sit almost on top of each other in the embedding space — their top scores for
+  # "قصيدة الشباب لإيليا أبو ماضي" were within 0.04 — so the right lesson came
+  # second or third. Measured on the 14-query golden set: dense alone 10/14 at
+  # precision@1, hybrid 13/14, and the three it fixes are exactly the title and
+  # proper-name queries. A BAAI/bge-reranker-v2-m3 cross-encoder was measured on
+  # the same set for comparison: 11/14, for 1.8s a query. This costs ~1ms and no
+  # model. Declines are unaffected: min_score is still applied to the dense
+  # cosine, which the fusion does not touch.
+  hybrid:
+    enabled: true
+    candidates: 50             # dense hits reordered; the lexical stage cannot
+                               # recover what the dense stage never returned
+    rrf_k: 60                  # Cormack et al.'s published constant
+
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
-  min_score: 0.50            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
-                             # Swept on scripts/eval_retrieval.py against the live index:
-                             #   0.35 -> 14/14 answerable kept, but 5/8 questions with NO
-                             #           answer in the syllabus were answered anyway
-                             #   0.50 -> 12/14 answerable kept, 0/8 wrongly answered
-                             # The two lost are proper-name questions scoring under 0.45;
-                             # they decline honestly instead of five answers being invented.
-                             # Only raisable because matching folds Arabic (shared/matching.py)
-                             # — at the old scores this floor would have declined nearly every
-                             # Arabic question. Re-sweep when the real curriculum is indexed.
+  min_score: 0.44            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
+                             # 0.50 was swept against same-language questions only, and a
+                             # cross-lingual question scores systematically lower: the same
+                             # lesson answers "ماذا اخترع جابر بن حيان؟" at 0.600 and "what did
+                             # Jabir ibn Hayyan invent?" at 0.455. One absolute cosine over two
+                             # different distributions declined material that plainly exists —
+                             # an English question about an Arabic lesson was answered "not in
+                             # the syllabus" while the Arabic form of it was answered.
+                             # Re-swept over 13 questions the syllabus can answer (Arabic,
+                             # English, and English/French/German asked of Arabic lessons) and
+                             # 12 it cannot:
+                             #   0.50 ->  6/13 answered, 12/12 declined
+                             #   0.46 ->  9/13 answered, 11/12 declined
+                             #   0.44 -> 13/13 answered, 10/12 declined   <- the knee
+                             #   0.42 -> 13/13 answered,  7/12 declined
+                             #   0.40 -> 13/13 answered,  6/12 declined
+                             # The two that reach the model at 0.44 are handled by the second
+                             # gate: an answer that cites nothing is published as a decline
+                             # (explain_summarize_sg._finalize), so a passage that does not
+                             # answer the question cannot become an answer. A score floor
+                             # cannot make that judgement — "ما معنى التسويف؟" retrieves the
+                             # chunk containing the word at 0.451 and the lesson never defines
+                             # it, which is a reading question, not a geometry one.
+                             # Only this low because matching folds Arabic (shared/matching.py)
+                             # and retrieval fuses a lexical rank (shared/lexical.py).
+                             # Re-sweep when the real curriculum is indexed.
   topic_filter: soft         # explain/summarize/report: soft = a topic-filtered miss retries unscoped
                              # (a wrong topic guess must not silently exclude the material); hard = strict
                              # (assessment stays hard — it wants one topic per question)
@@ -196,6 +252,13 @@ agent:
                                 # not. Populate the collection with scripts/reembed_chunks.py
                                 # before turning this on.
   prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
+  intent:
+    # Deciding whether a turn needs the syllabus at all. A greeting used to be
+    # planned as an explain task and searched for in the textbook.
+    enabled: true
+    max_words: 6             # longer than this is a question whatever it resembles
+    similarity: 0.72         # cosine against the seed utterances, when the phrase
+                             # pass finds nothing
   show_prereqs: true         # append "you should know X first" to an answer. The labels
                              # come from topic extraction at ingest, so the line is only as
                              # good as those are — turn it off if they read as noise.
@@ -236,7 +299,6 @@ grade:
   # mastery_event. `source` maps the grading context to the mastery_event_source enum.
   source: practice             # practice | quiz | homework — default for a chat grade turn
   pass_threshold: 0.5          # partial_score >= this counts as 'correct' for mastery
-  max_items: 200               # cap on answers graded in one turn
   # Grounding priority: a key/rubric is used FIRST; RAG grounds ONLY a keyless answer (fallback).
 
 render:
@@ -311,25 +373,17 @@ logging:
   third_party_level: WARNING   # cap HTTP/LLM client loggers so a DEBUG app level
                                # never logs request/response bodies (prompts, PII)
 
-tracing:
-  enabled: false
-  project: eduai
-
 # Overlays merged over the base, selected by APP_ENV.
 environments:
   local:
     logging: { level: DEBUG, format: console }
-    tracing: { enabled: true }
     vector_store: { collection: eduai_chunks_dev, topics_collection: eduai_topics_dev }   # keep dev index off prod
     # Local talks to the real backend when BACKEND_API_BASE_URL is set. For offline
     # work, point fixtures_path at a manifest and flip prefer_fixtures.
     agent: { backend: { fixtures_path: null, prefer_fixtures: false } }
 
-  staging:
-    tracing: { enabled: true }
 
   production:
     api: { docs_enabled: false }
     logging: { level: WARNING }
-    tracing: { enabled: true }
     llm: { max_retries: 5 }
