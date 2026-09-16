@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
+from .errors import ServiceUnavailableError
 
 DEFAULT_LOCAL_DIR = ".ingestion_artifacts"
 
 
-class StorageError(RuntimeError):
+class StorageError(ServiceUnavailableError):
     """An object-storage operation did not fully succeed."""
 
 

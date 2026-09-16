@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
+from shared.logging import clip
+
 from .models import Citation, PrereqTopic, RetrievedChunk
 from .tools import get_topic_chunks, get_topic_deps, rag_search
 
@@ -51,18 +53,13 @@ def retrieve(
     # what it actually matched, with scores, is the line you read when a student
     # says the tutor answered about history.
     logger.info("retrieve", extra={
-        "query": _clip(query),
+        "query": clip(query),
         "kept": len(kept),
         "min_score": min_score,
         "subject_scoped": bool(subject_id),
         "matched": describe(kept),
     })
     return kept
-
-
-def _clip(text: str, limit: int = 120) -> str:
-    text = " ".join((text or "").split())
-    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:

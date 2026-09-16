@@ -22,6 +22,7 @@ from typing import Any, Optional, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from .config import Config
+from .errors import ServiceUnavailableError
 from .llm import get_llm
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ REFUSAL_FINISH_REASONS = frozenset({"content_filter"})
 TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
 
 
-class StructuredOutputError(RuntimeError):
+class StructuredOutputError(ServiceUnavailableError):
     """A structured call did not produce a usable object."""
 
     def __init__(

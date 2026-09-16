@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from shared.errors import UnprocessableError
 from urllib.request import url2pathname
 
 from shared.config import Config
@@ -30,7 +32,7 @@ DEFAULT_MAX_BYTES = 200 * 1024 * 1024
 DEFAULT_CHUNK_BYTES = 1024 * 1024
 
 
-class SourceError(RuntimeError):
+class SourceError(UnprocessableError):
     """The source URI could not be resolved to a readable local file."""
 
 

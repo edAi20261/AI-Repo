@@ -139,3 +139,14 @@ def _cfg(config: Any, dotted: str) -> Optional[str]:
         return None
     getter = getattr(config, "get", None)
     return getter(dotted) if callable(getter) else None
+
+
+def clip(text: str, limit: int = 120) -> str:
+    """One line of ``text`` at most ``limit`` characters, for a log field.
+
+    A log line has to stay one line and stay readable, and a chunk of retrieved
+    Arabic prose is neither. This was written twice, identically, in the two
+    modules that log retrieved text.
+    """
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit] + "\u2026"

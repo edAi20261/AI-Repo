@@ -27,6 +27,7 @@ from shared.language.verify import (
     DEFAULT_MIN_CONFIDENCE,
     verify_answer,
 )
+from shared.logging import clip
 from shared.structured import call_structured
 
 from ..citations import cited_numbers, renumber
@@ -761,11 +762,6 @@ def build_compose(config, llm):
 
 # --- persist ----------------------------------------------------------------
 
-def _clip(text: str, limit: int = 120) -> str:
-    text = " ".join((text or "").split())
-    return text if len(text) <= limit else text[:limit] + "…"
-
-
 def build_persist(config, sticky=None):
     def persist(state) -> dict:
         # TODO (deferred): adaptive_profile / dashboard writes, the
@@ -788,7 +784,7 @@ def build_persist(config, sticky=None):
         logger.info("turn", extra={
             "pathway": state.get("pathway"),
             "intent": state.get("intent"),
-            "question": _clip(state.get("message", "")),
+            "question": clip(state.get("message", "")),
             "language": state.get("language"),
             "language_source": decision.get("source"),
             "subject_id": state.get("subject_id"),
