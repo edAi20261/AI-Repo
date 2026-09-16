@@ -3,6 +3,10 @@ name: Deploy to ECS
 on:
   push:
     branches: [main]
+  # The lint and test job only ever ran after a merge, so "no new lint findings"
+  # and every contract test were gates on the deploy rather than on the change.
+  # A broken PR reached main before anything objected.
+  pull_request:
 
 permissions:
   id-token: write # required for OIDC — do not add contents:write etc. beyond what's needed
@@ -30,6 +34,7 @@ jobs:
 
   deploy:
     needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Debug - decode actual OIDC token claims
