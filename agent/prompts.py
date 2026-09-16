@@ -5,6 +5,9 @@ All are language-parameterised: the answer is written in the language the adapte
 in the source language (the exam uses the textbook's term).
 """
 
+from __future__ import annotations
+
+from shared.prompting import Audience, LanguageRule, Prompt
 
 # One-line intent per task type. The plan node renders only the entries for the
 # pathway's allowed tasks into {task_descriptions}, so the planner never sees a task
@@ -28,7 +31,11 @@ TASK_DESCRIPTIONS = {
 }
 
 
-PLAN_PROMPT = """You are the planner for a multilingual educational assistant.
+PLAN_PROMPT = Prompt(
+    name="PLAN_PROMPT",
+    audience=Audience.INTERNAL,
+    language_rule=LanguageRule.NONE,
+    template="""You are the planner for a multilingual educational assistant.
 The current user is a {role}. Read their message and output ONLY the task(s) needed to answer it.
 
 Allowed task types: {allowed}.
@@ -73,12 +80,17 @@ Omit the whole "assessment"/"grade" object when the user specified none of its p
 omitted the system applies its own configured defaults — that is the intended behaviour, so leaving
 them out is correct, not lazy. Keep "query" to the concept itself (or the answer to grade), original language.
 Message:
-{message}"""
+{message}""",
+)
 
 # Subject-specific instructions appended to any subgraph prompt via its {instructions}
 # slot. The parent (adapter) picks which addendum applies; empty for a plain subject.
 # Math is the first; add more (e.g. a language subject) the same way.
-REPORT_STUDENT_PROMPT = """Write a short progress note for a student.
+REPORT_STUDENT_PROMPT = Prompt(
+    name="REPORT_STUDENT_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""Write a short progress note for a student.
 {language}
 Ground it ONLY in the data below — never invent a topic, a number, or a cause.
 
@@ -94,7 +106,8 @@ Guidance:
   topics that depend on it; otherwise focus on the weakest topics themselves.
 - Reflect the trend honestly (improving / holding steady / slipping) without overstating it.
 - Do NOT quote raw scores as numbers; describe them (strong, shaky, needs work).
-Return only the note, no headings."""
+Return only the note, no headings.""",
+)
 
 
 MATH_PROMPT_INSTRUCTIONS = """This is a mathematics subject. Write equations and \
@@ -128,7 +141,11 @@ FORMATTING_CONTRACT = """Write in Markdown:
 - Do not open with a heading that restates the question, and do not close with a
   summary of what you just said."""
 
-EXPLAIN_PROMPT = """You are a patient tutor. Explain the concept using ONLY the context
+EXPLAIN_PROMPT = Prompt(
+    name="EXPLAIN_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""You are a patient tutor. Explain the concept using ONLY the context
 below. Do not add facts that are not supported by it. If the context is insufficient,
 say so plainly.
 
@@ -146,9 +163,14 @@ the passage a statement rests on, not every passage you read.
 --- CONTEXT (prerequisites) ---
 {prereq_context}
 
-Concept to explain: {query}"""
+Concept to explain: {query}""",
+)
 
-SUMMARIZE_PROMPT = """You are a study assistant. Summarize the material using ONLY the
+SUMMARIZE_PROMPT = Prompt(
+    name="SUMMARIZE_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""You are a study assistant. Summarize the material using ONLY the
 context below. Do not introduce anything not present in it.
 
 {language}
@@ -162,9 +184,14 @@ statement rests on, not every passage you read.
 --- CONTEXT ---
 {context}
 
-Topic to summarize: {query}"""
+Topic to summarize: {query}""",
+)
 
-ASSESSMENT_BATCH_PROMPT = """You write a set of assessment items in ONE pass. Each item is grounded
+ASSESSMENT_BATCH_PROMPT = Prompt(
+    name="ASSESSMENT_BATCH_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.CONTENT,
+    template="""You write a set of assessment items in ONE pass. Each item is grounded
 ONLY in ITS OWN context block below — do not use facts outside that item's context, and do not
 mix contexts between items. If an item's context cannot support a fair question, return an empty
 question for that item.
@@ -201,9 +228,14 @@ Return JSON only, no prose. Fields:
 Overall focus: {query}
 
 --- ITEMS ---
-{items_block}"""
+{items_block}""",
+)
 
-GRADE_BATCH_PROMPT = """You grade a set of student answers in ONE pass. Grade each answer ONLY
+GRADE_BATCH_PROMPT = Prompt(
+    name="GRADE_BATCH_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""You grade a set of student answers in ONE pass. Grade each answer ONLY
 against ITS OWN block below, using this authority order:
 - If a reference answer is given: for mcq/true_false, it is THE authority — require exact
   correctness against it and do NOT override it. For short_answer/essay, treat it as a MODEL
@@ -226,9 +258,14 @@ Return JSON only, no prose. Fields:
 {schema}
 
 --- ANSWERS ---
-{items_block}"""
+{items_block}""",
+)
 
-POWERPOINT_POINTS_PROMPT = """Turn the content below into a slide-by-slide outline the user can
+POWERPOINT_POINTS_PROMPT = Prompt(
+    name="POWERPOINT_POINTS_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.CONTENT,
+    template="""Turn the content below into a slide-by-slide outline the user can
 paste into their own slides. This is TEXT, not a file — do not describe images.
 
 {language}
@@ -246,11 +283,16 @@ Slide 2: <title>
 - <point>
 
 --- CONTENT ---
-{content}"""
+{content}""",
+)
 
 # --- visual builders: turn a topic + grounded context into a render tool's input -------
 
-MINDMAP_PROMPT = """Build a concise mind map of the topic below, grounded ONLY in the context.
+MINDMAP_PROMPT = Prompt(
+    name="MINDMAP_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.CONTENT,
+    template="""Build a concise mind map of the topic below, grounded ONLY in the context.
 The root is the topic; 2-5 top branches; each branch 0-4 leaves. Labels <= 6 words.
 Do NOT add anything the context does not support.
 Return JSON only, no prose. Fields:
@@ -260,9 +302,14 @@ Return JSON only, no prose. Fields:
 Topic: {topic}
 
 --- CONTEXT ---
-{context}"""
+{context}""",
+)
 
-FLASHCARDS_PROMPT = """Create study flashcards from the material below, grounded ONLY in the context.
+FLASHCARDS_PROMPT = Prompt(
+    name="FLASHCARDS_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.CONTENT,
+    template="""Create study flashcards from the material below, grounded ONLY in the context.
 Make up to {n} cards, each side short. Do NOT invent facts beyond the context.
 Return JSON only, no prose. Fields:
 {schema}
@@ -271,9 +318,14 @@ Return JSON only, no prose. Fields:
 Topic: {topic}
 
 --- CONTEXT ---
-{context}"""
+{context}""",
+)
 
-MATH_VISUAL_PROMPT = """{language}
+MATH_VISUAL_PROMPT = Prompt(
+    name="MATH_VISUAL_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.CONTENT,
+    template="""{language}
 Describe the plot or figure that best illustrates the request below.
 Use Python arithmetic in expressions (** for powers) and give a domain for each function.
 For geometry, give exact coordinates in "points" and list each segment as a pair of point
@@ -281,9 +333,14 @@ labels from that map. No prose.
 Return JSON only. Fields:
 {schema}
 
-Request: {topic}"""
+Request: {topic}""",
+)
 
-PDF_STRUCTURE_PROMPT = """Turn the material below into a structured document, grounded ONLY in it.
+PDF_STRUCTURE_PROMPT = Prompt(
+    name="PDF_STRUCTURE_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.CONTENT,
+    template="""Turn the material below into a structured document, grounded ONLY in it.
 Organise it into a few sections — each a short "heading" block followed by one or more "text"
 blocks (a concise paragraph each). Be faithful: do not add anything the material does not contain.
 Return JSON only, no prose. Fields:
@@ -293,9 +350,14 @@ Return JSON only, no prose. Fields:
 Topic: {topic}
 
 --- CONTENT ---
-{content}"""
+{content}""",
+)
 
-COMPOSE_PROMPT = """Combine the drafted answer(s) below into one coherent reply to the
+COMPOSE_PROMPT = Prompt(
+    name="COMPOSE_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""Combine the drafted answer(s) below into one coherent reply to the
 student, in a {tone} voice. {language} Preserve inline citation markers [n]. Preserve any
 mathematical notation (LaTeX $...$, $$...$$, equations) exactly as written. Do not invent new
 content. If prerequisite topics are listed, end with a short line pointing the student to them.
@@ -306,12 +368,17 @@ content. If prerequisite topics are listed, end with a short line pointing the s
 {answers}
 
 --- PREREQUISITE TOPICS ---
-{prereq_topics}"""
+{prereq_topics}""",
+)
 
 
 # Used only when the finished answer came back in a language the student did not
 # write in. A rewrite, never a re-answer: the content was already grounded.
-LANGUAGE_REPAIR_PROMPT = """The reply below was written in the wrong language.
+LANGUAGE_REPAIR_PROMPT = Prompt(
+    name="LANGUAGE_REPAIR_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""The reply below was written in the wrong language.
 {language}
 Rewrite it, changing NOTHING else: keep every fact, the structure, the order, the
 markdown, any LaTeX, and every inline citation marker [n] exactly as they are.
@@ -319,4 +386,5 @@ Keep technical terms, formulas, numbers and proper nouns in their source form.
 Return only the rewritten reply.
 
 --- REPLY ---
-{answer}"""
+{answer}""",
+)

@@ -9,9 +9,8 @@ but is not part of it — the provider layer stays free of pipeline knowledge.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from collections.abc import Sequence
 
-from shared.language import content_directive
 from shared.structured import call_structured, schema_hint
 
 from .config import Config
@@ -19,7 +18,6 @@ from .llm_provider import get_llm, llm_key_available
 from .prompts import DERIVE_DEPS_PROMPT, TOPIC_EXTRACTION_PROMPT
 from .schemas import DependencyList, TopicList
 from .utils.tokens import count_tokens
-
 
 # --- shared helpers --------------------------------------------------------
 
@@ -90,8 +88,8 @@ class LLMTopicExtractor(TopicExtractor):
         # A label is shown to the student, so it follows the lesson's language.
         # Without this the model defaults to English and an Arabic poetry lesson
         # comes back tagged "Evaluate poetic structure".
-        prompt = TOPIC_EXTRACTION_PROMPT.format(
-            language=content_directive(language),
+        prompt = TOPIC_EXTRACTION_PROMPT.render(
+            language=language,
             min_topics=self._min,
             max_topics=self._max,
             chunks="\n\n---\n\n".join(batch),
@@ -152,7 +150,7 @@ class LLMDependencyDeriver(DependencyDeriver):
         if not candidate_labels:
             return []
         candidates = set(candidate_labels)
-        prompt = DERIVE_DEPS_PROMPT.format(
+        prompt = DERIVE_DEPS_PROMPT.render(
             topic=topic_label,
             candidates="\n".join(f"- {c}" for c in candidate_labels),
             schema=schema_hint(DependencyList),

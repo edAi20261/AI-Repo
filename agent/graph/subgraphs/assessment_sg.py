@@ -19,7 +19,6 @@ from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 
-from shared.language import content_directive
 from shared.structured import align_by_id, call_structured, schema_hint
 
 from ... import retrieval
@@ -318,9 +317,9 @@ def _batch_generate(
         f"Context:\n{getattr(chunk, 'text', '')}"
         for i, (slot, chunk) in enumerate(bound, 1)
     ]
-    prompt_text = ASSESSMENT_BATCH_PROMPT.format(
+    prompt_text = ASSESSMENT_BATCH_PROMPT.render(
         schema=schema_hint(DraftBatch),
-        language=content_directive(state.get("language", "en")),
+        language=state.get("language", "en"),
         instructions=state.get("instructions", ""),
         query=state.get("query", ""),
         n=len(bound),

@@ -19,7 +19,7 @@ from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 
-from shared.language import language_directive, translate
+from shared.language import translate
 from shared.structured import align_by_id, call_structured, schema_hint
 
 from ...mastery import Mastery, MasteryParams, observation, update_aggregate
@@ -427,9 +427,9 @@ def _batch_grade(llm, items, state: GradeState, config=None) -> list:
     to the wrong question. Any failure propagates: the node degrades, and no
     mastery moves on a grade we could not actually compute.
     """
-    prompt_text = GRADE_BATCH_PROMPT.format(
+    prompt_text = GRADE_BATCH_PROMPT.render(
         schema=schema_hint(GradeBatch),
-        language=language_directive(state.get("language", "en")),
+        language=state.get("language", "en"),
         instructions=state.get("instructions", ""),
         n=len(items),
         items_block=_grade_blocks(items),

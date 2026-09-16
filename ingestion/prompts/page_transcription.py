@@ -4,6 +4,8 @@ Two variants share one JSON contract (this general/scanned prompt and the maths
 variant in ``math_transcription``); figure captioning stays a separate call.
 """
 
+from shared.prompting import Audience, LanguageRule, Prompt
+
 # The shared output contract. Both variants must return exactly this shape.
 _JSON_CONTRACT = """\
 Return ONLY a JSON object, no prose and no code fences:
@@ -30,8 +32,15 @@ Return ONLY a JSON object, no prose and no code fences:
   the top-left, so x1 > x0 and y1 > y0. Return [] if there are none.
 """
 
-PAGE_TRANSCRIPTION_PROMPT = (
-    "You are transcribing one page of a scanned textbook and locating its figures.\n\n"
-    + _JSON_CONTRACT
-    + "\nLanguage hint (may be empty): {language_hint}\n"
+PAGE_TRANSCRIPTION_PROMPT = Prompt(
+    name="PAGE_TRANSCRIPTION_PROMPT",
+    audience=Audience.STUDENT,
+    # Copied off the page, never translated — so a reply-language directive here
+    # would be actively wrong. The hint only helps the model read the script.
+    language_rule=LanguageRule.TRANSCRIBE,
+    template=(
+        "You are transcribing one page of a scanned textbook and locating its figures.\n\n"
+        + _JSON_CONTRACT
+        + "\nLanguage hint (may be empty): {language_hint}\n"
+    ),
 )

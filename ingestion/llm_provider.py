@@ -115,7 +115,7 @@ class OpenRouterVisionClient(VisionClient):
         math: bool = False,
     ) -> PageTranscription:
         template = MATH_PAGE_TRANSCRIPTION_PROMPT if math else PAGE_TRANSCRIPTION_PROMPT
-        prompt = template.format(language_hint=language_hint or "")
+        prompt = template.render(language_hint=language_hint or "")
         data = self._complete_json(prompt, image_png)
         if data is None:
             return PageTranscription(text="", figures=[], unreadable=True)
@@ -128,9 +128,9 @@ class OpenRouterVisionClient(VisionClient):
         heading_path: str = "",
         language_hint: str | None = None,
     ) -> FigureCaption | None:
-        prompt = FIGURE_CAPTION_PROMPT.format(
-            heading_path=heading_path, language_hint=language_hint or ""
-        )
+        # A caption is read by a student, so it follows the page's language.
+        prompt = FIGURE_CAPTION_PROMPT.render(
+            language=language_hint or "en", heading_path=heading_path)
         data = self._complete_json(prompt, image_png)
         if data is None:
             # An empty caption used to be indistinguishable from a model that had
@@ -197,11 +197,11 @@ def _strip_json(text: str | None) -> dict | None:
 
     if not text:
         return None
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         text = fenced.group(1)
     else:
-        bare = re.search(r"\{.*\}", text, re.S)
+        bare = re.search(r"\{.*\}", text, re.DOTALL)
         if bare:
             text = bare.group(0)
     try:

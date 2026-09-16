@@ -20,7 +20,7 @@ from typing import Any, TypedDict
 from langchain_core.messages import HumanMessage
 from pydantic import ValidationError
 
-from shared.language import language_directive, translate
+from shared.language import translate
 
 from ... import render, retrieval
 from ...citations import cited_numbers, has_citation, keep_cited
@@ -119,8 +119,7 @@ def _build_answer(mode: str, llm, config):
         started = time.perf_counter()
 
         instructions = state.get("instructions", "")
-        prompt_text = prompt.format(
-            language=language_directive(state.get("language", "en")),
+        prompt_text = prompt.render(language=state.get("language", "en"),
             level=state.get("level", "intermediate"),
             length=state.get("length", "medium"),
             style=style,
@@ -129,8 +128,7 @@ def _build_answer(mode: str, llm, config):
             context=primary_ctx,
             prereq_context=prereq_ctx or "(none)",
             query=state.get("query", ""),
-        ) if mode == "explain" else prompt.format(
-            language=language_directive(state.get("language", "en")),
+        ) if mode == "explain" else prompt.render(language=state.get("language", "en"),
             length=state.get("length", "medium"),
             style=style,
             instructions=instructions,

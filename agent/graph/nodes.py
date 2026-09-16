@@ -9,30 +9,46 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-from ..models import (
-    AssessmentSpec, Citation, GradeSpec, PlannerOutput, PrereqTopic, Style, VisualSpec)
-from ..prompts import (
-    COMPOSE_PROMPT, FORMATTING_CONTRACT, LANGUAGE_REPAIR_PROMPT, PLAN_PROMPT,
-    TASK_DESCRIPTIONS)
-from ..tools import resolve_topics
 from shared.language import (
+    LanguageDecision,
+    LanguagePolicy,
     clear_request,
     explicit_request,
     language_instruction_only,
-    LanguageDecision, LanguagePolicy, language_directive, translate)
+    translate,
+)
 from shared.language.catalog import STRINGS
 from shared.language.script import ARABIC
-from ..citations import cited_numbers, renumber
-from ..intent import IntentRouter
 from shared.language.verify import (
-    DEFAULT_MIN_ANSWER_CHARS, DEFAULT_MIN_CONFIDENCE, verify_answer)
-
+    DEFAULT_MIN_ANSWER_CHARS,
+    DEFAULT_MIN_CONFIDENCE,
+    verify_answer,
+)
 from shared.structured import call_structured
 
+from ..citations import cited_numbers, renumber
+from ..intent import IntentRouter
+from ..models import (
+    AssessmentSpec,
+    Citation,
+    GradeSpec,
+    PlannerOutput,
+    PrereqTopic,
+    Style,
+    VisualSpec,
+)
+from ..prompts import (
+    COMPOSE_PROMPT,
+    FORMATTING_CONTRACT,
+    LANGUAGE_REPAIR_PROMPT,
+    PLAN_PROMPT,
+    TASK_DESCRIPTIONS,
+)
+from ..tools import resolve_topics
 from .pathways import build_namespaces, resolve_style
 
 logger = logging.getLogger(__name__)
@@ -190,7 +206,7 @@ def _plan_tasks(
     nothing to do — and still falls back to a single explain task.
     """
     if llm is not None:
-        prompt_text = PLAN_PROMPT.format(
+        prompt_text = PLAN_PROMPT.render(
             allowed=", ".join(allowed), task_descriptions=_allowed_descriptions(allowed),
             role=role, languages=languages, message=message)
         plan = call_structured(
@@ -265,7 +281,7 @@ def _infer_subject(message: str, config, enrolled_ids: set | None = None) -> str
     return (hits[0].subject_id or None) if hits else None
 
 
-def _validate_assessment_spec(raw: Any) -> Optional[AssessmentSpec]:
+def _validate_assessment_spec(raw: Any) -> AssessmentSpec | None:
     """An AssessmentSpec from raw planner output, or None when absent/empty/invalid."""
     if not isinstance(raw, dict):
         return None
@@ -276,7 +292,7 @@ def _validate_assessment_spec(raw: Any) -> Optional[AssessmentSpec]:
     return spec if (spec.count is not None or spec.types or spec.difficulty) else None
 
 
-def _validate_grade_spec(raw: Any) -> Optional[GradeSpec]:
+def _validate_grade_spec(raw: Any) -> GradeSpec | None:
     """A GradeSpec (assessment_id/kind) from raw planner output, or None when absent."""
     if not isinstance(raw, dict):
         return None
@@ -287,7 +303,7 @@ def _validate_grade_spec(raw: Any) -> Optional[GradeSpec]:
     return spec if (spec.assessment_id or spec.kind) else None
 
 
-def _validate_visual_spec(raw: Any) -> Optional[VisualSpec]:
+def _validate_visual_spec(raw: Any) -> VisualSpec | None:
     """A VisualSpec (kind/params/description) from raw planner output, or None when absent."""
     if not isinstance(raw, dict):
         return None
@@ -672,8 +688,7 @@ def _sources_block(citations: list[Citation], language: str) -> str:
 def _compose_llm(llm, answers, prereqs, language, tone) -> str:
     joined = "\n\n".join(a.get("text", "") for a in answers)
     prereq_str = ", ".join(p.label for p in prereqs) or "(none)"
-    prompt_text = COMPOSE_PROMPT.format(
-        language=language_directive(language), tone=tone, answers=joined,
+    prompt_text = COMPOSE_PROMPT.render(language=language, tone=tone, answers=joined,
         formatting=FORMATTING_CONTRACT, prereq_topics=prereq_str)
     return llm.invoke([HumanMessage(content=prompt_text)]).content
 
@@ -839,8 +854,7 @@ def build_verify_language(config, llm=None):
             return {"language_repair": "failed"}
 
         try:
-            rewritten = (llm.invoke([HumanMessage(content=LANGUAGE_REPAIR_PROMPT.format(
-                language=language_directive(decision.code, context_may_differ=False),
+            rewritten = (llm.invoke([HumanMessage(content=LANGUAGE_REPAIR_PROMPT.render(language=decision.code, context_may_differ=False,
                 answer=answer))]).content or "").strip()
         except Exception:
             logger.exception("language repair call failed")
