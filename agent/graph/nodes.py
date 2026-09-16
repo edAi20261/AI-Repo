@@ -25,6 +25,7 @@ from shared.language import (
     language_instruction_only,
     LanguageDecision, LanguagePolicy, language_directive, translate)
 from shared.language.catalog import STRINGS
+from shared.language.script import ARABIC
 from ..citations import cited_numbers, renumber
 from ..intent import IntentRouter
 from shared.language.verify import (
@@ -501,9 +502,27 @@ def _citation_where(c: Citation, language: str) -> str:
 
 
 def _prereq_line(prereqs: list[PrereqTopic], language: str) -> str:
-    labels = ", ".join(p.label for p in prereqs)
+    """"You should know X first" — but only when X is readable to this student.
+
+    Topic labels are written at ingest, and until recently the extractor was
+    never told what language the lesson was in, so an Arabic literature lesson
+    came back tagged "Evaluate poetic structure". Showing that under an Arabic
+    answer is worse than showing nothing: the student cannot read it, and it
+    looks like the tutor lost track of the conversation.
+    """
+    readable = [p.label for p in prereqs if _matches_script(p.label, language)]
+    if not readable:
+        return ""
     head = translate("compose.prereq_head", language)
-    return f"{head}: {labels}"
+    return f"{head}: {', '.join(readable)}"
+
+
+def _matches_script(label: str, language: str) -> bool:
+    """Whether a label is written in the script the reply is written in."""
+    if not label:
+        return False
+    is_arabic = bool(ARABIC.search(label))
+    return is_arabic if language == "ar" else not is_arabic
 
 
 def _assessment_line(assessment: dict, language: str) -> str:
@@ -708,7 +727,7 @@ def build_compose(config, llm):
         # must not trail "Prerequisite topics: …" as if it had answered.
         any_grounded = any(a.get("grounded", True) for a in answers)
         parts = [body]
-        if prereqs and any_grounded:
+        if prereqs and any_grounded and config.get("agent.show_prereqs", True):
             parts.append(_prereq_line(prereqs, language))
         sources = _sources_block(citations, language)
         if sources:
@@ -736,6 +755,11 @@ def build_compose(config, llm):
 
 # --- persist ----------------------------------------------------------------
 
+def _clip(text: str, limit: int = 120) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def build_persist(config, sticky=None):
     def persist(state) -> dict:
         # TODO (deferred): adaptive_profile / dashboard writes, the
@@ -750,8 +774,28 @@ def build_persist(config, sticky=None):
                 sticky.set(user_id, session_id, code=write["code"],
                            user_type=state.get("user_type"),
                            evidence=write.get("evidence"))
-        logger.info("persist", extra={"pathway": state.get("pathway"),
-                                      "session_language_op": write.get("op")})
+        # One line per turn, carrying everything needed to explain the answer
+        # without re-reading five others: what was asked, in what language and
+        # why, what it matched, and what came back. Correlated by request_id.
+        decision = state.get("language_decision") or {}
+        answers = state.get("answers") or []
+        logger.info("turn", extra={
+            "pathway": state.get("pathway"),
+            "intent": state.get("intent"),
+            "question": _clip(state.get("message", "")),
+            "language": state.get("language"),
+            "language_source": decision.get("source"),
+            "subject_id": state.get("subject_id"),
+            "tasks": [t.get("type") for t in (state.get("tasks") or [])],
+            "grounded": any(a.get("grounded", False) for a in answers),
+            "citations": len(state.get("published_citations") or []),
+            "cited": [
+                f"{c.lesson_title or c.lecture_id}" for c in
+                (state.get("published_citations") or [])[:5]
+            ],
+            "answer_chars": len(state.get("response") or ""),
+            "session_language_op": write.get("op"),
+        })
         # Must stay empty: the streaming path merges every node's delta into the
         # response, so anything returned here would show on one endpoint only.
         return {}

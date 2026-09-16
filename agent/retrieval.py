@@ -8,6 +8,7 @@ module rather than another subgraph, keeping subgraphs independent.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any, Optional
 
 from .models import Citation, PrereqTopic, RetrievedChunk
@@ -47,8 +48,30 @@ def retrieve(
     if topic_filter == "soft" and topic_ids and not kept:
         kept = _search(None)
         logger.info("retrieve soft-fallback: topic filter dropped", extra={"kept": len(kept)})
-    logger.info("retrieve", extra={"kept": len(kept), "min_score": min_score})
+    # "kept: 8" cannot explain an answer about the wrong lesson. The query and
+    # what it actually matched, with scores, is the line you read when a student
+    # says the tutor answered about history.
+    logger.info("retrieve", extra={
+        "query": _clip(query),
+        "kept": len(kept),
+        "min_score": min_score,
+        "subject_scoped": bool(subject_id),
+        "matched": describe(kept),
+    })
     return kept
+
+
+def _clip(text: str, limit: int = 120) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
+    """``"Subtraction Part 2 0.715"`` per chunk — what matched, and how well."""
+    return [
+        f"{c.lesson_title or c.lecture_id or '?'} {c.score:.3f}"
+        for c in chunks[:limit]
+    ]
 
 
 DEFAULT_MAX_PREREQS = 5

@@ -74,6 +74,7 @@ vector_store:
     - lecture_id
     - topic_ids
     - version
+    - chunk_kind          # contents pages are filtered out of retrieval
   hnsw:
     m: 16
     ef_construct: 128
@@ -174,13 +175,30 @@ language:
 agent:
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
-  min_score: 0.35            # retrieval similarity floor; below this a chunk is off-syllabus -> decline (tunable)
+  min_score: 0.50            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
+                             # Swept on scripts/eval_retrieval.py against the live index:
+                             #   0.35 -> 14/14 answerable kept, but 5/8 questions with NO
+                             #           answer in the syllabus were answered anyway
+                             #   0.50 -> 12/14 answerable kept, 0/8 wrongly answered
+                             # The two lost are proper-name questions scoring under 0.45;
+                             # they decline honestly instead of five answers being invented.
+                             # Only raisable because matching folds Arabic (shared/matching.py)
+                             # — at the old scores this floor would have declined nearly every
+                             # Arabic question. Re-sweep when the real curriculum is indexed.
   topic_filter: soft         # explain/summarize/report: soft = a topic-filtered miss retries unscoped
                              # (a wrong topic guess must not silently exclude the material); hard = strict
                              # (assessment stays hard — it wants one topic per question)
-  resolve_topics_qdrant: false  # topic resolution via the Qdrant topics collection; false = Postgres
-                                # brute-force (default until the re-ingest populates the collection)
+  resolve_topics_qdrant: true   # topic resolution via the Qdrant topics collection.
+                                # The Postgres path is a pure-Python O(N) cosine that streams
+                                # every label vector over the wire, on every question — measured
+                                # at 1648 ms/call against 487 ms indexed, for identical results.
+                                # It also grows with the catalogue while the indexed path does
+                                # not. Populate the collection with scripts/reembed_chunks.py
+                                # before turning this on.
   prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
+  show_prereqs: true         # append "you should know X first" to an answer. The labels
+                             # come from topic extraction at ingest, so the line is only as
+                             # good as those are — turn it off if they read as noise.
   max_prereqs: 5             # nearest prerequisite topics kept from that walk; the rest
                              # would outweigh the lesson the student actually asked about
   max_citations: 6           # sources published per turn; markers beyond this are dropped

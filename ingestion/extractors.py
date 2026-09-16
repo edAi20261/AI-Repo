@@ -11,6 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Sequence
 
+from shared.language import content_directive
 from shared.structured import call_structured, schema_hint
 
 from .config import Config
@@ -28,7 +29,7 @@ class TopicExtractor(ABC):
     is_stub: bool = False
 
     @abstractmethod
-    def extract(self, chunk_texts: Sequence[str]) -> list[dict]:
+    def extract(self, chunk_texts: Sequence[str], language: str = "en") -> list[dict]:
         """Return ``{label, description, bloom_level}`` dicts."""
 
 
@@ -38,7 +39,7 @@ class StubTopicExtractor(TopicExtractor):
 
     is_stub = True
 
-    def extract(self, chunk_texts: Sequence[str]) -> list[dict]:
+    def extract(self, chunk_texts: Sequence[str], language: str = "en") -> list[dict]:
         return []
 
 
@@ -58,12 +59,12 @@ class LLMTopicExtractor(TopicExtractor):
         self._max_input_tokens = max_input_tokens
         self._config = config
 
-    def extract(self, chunk_texts: Sequence[str]) -> list[dict]:
+    def extract(self, chunk_texts: Sequence[str], language: str = "en") -> list[dict]:
         if not chunk_texts:
             return []
         seen: dict[str, dict] = {}
         for batch in self._batches(chunk_texts):
-            for topic in self._extract_batch(batch):
+            for topic in self._extract_batch(batch, language):
                 seen.setdefault(topic["label"].lower(), topic)
         return list(seen.values())[: self._max]
 
@@ -85,8 +86,12 @@ class LLMTopicExtractor(TopicExtractor):
             batches.append(current)
         return batches or [list(chunk_texts)]
 
-    def _extract_batch(self, batch: Sequence[str]) -> list[dict]:
+    def _extract_batch(self, batch: Sequence[str], language: str = "en") -> list[dict]:
+        # A label is shown to the student, so it follows the lesson's language.
+        # Without this the model defaults to English and an Arabic poetry lesson
+        # comes back tagged "Evaluate poetic structure".
         prompt = TOPIC_EXTRACTION_PROMPT.format(
+            language=content_directive(language),
             min_topics=self._min,
             max_topics=self._max,
             chunks="\n\n---\n\n".join(batch),

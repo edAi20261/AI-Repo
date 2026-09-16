@@ -334,7 +334,20 @@ def _pt(topic_id="t0", label="Cells", strength="weak", depth=1):
 def test_prereq_line_bilingual():
     prereqs = [_pt()]
     assert _prereq_line(prereqs, "en") == "Prerequisite topics: Cells"
-    assert _prereq_line(prereqs, "ar").startswith("مواضيع تمهيدية")
+
+
+def test_a_prereq_the_student_cannot_read_is_not_shown():
+    """Topic labels are written at ingest, and the extractor was never told what
+    language the lesson was in — so Arabic lessons came back tagged in English.
+    An Arabic answer trailing "Prerequisite topics: Evaluate poetic structure"
+    reads as the tutor losing the thread."""
+    assert _prereq_line([_pt()], "ar") == ""
+
+
+def test_an_arabic_prereq_is_shown_under_an_arabic_answer():
+    arabic = PrereqTopic(topic_id="t2", label="تحليل النص الشعري",
+                         strength="required", depth=1)
+    assert _prereq_line([arabic], "ar").startswith("مواضيع تمهيدية")
 
 
 def test_prereq_and_sources_headers_fr_de():

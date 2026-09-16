@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Golden set for scripts/eval_retrieval.py.",
+    "",
+    "`answerable` queries name the lesson that should come back first. `expect` is",
+    "matched case-insensitively against the lesson title, so it only needs to be",
+    "the distinctive part of it.",
+    "",
+    "`unanswerable` queries have no answer anywhere in the corpus. The tutor must",
+    "decline rather than reach for the nearest thing, so what matters is that their",
+    "best score stays BELOW the worst answerable score. That gap is the number that",
+    "predicts whether a student asking about physics gets an Arabic poem.",
+    "",
+    "This set describes the placeholder corpus. When the real curriculum is indexed,",
+    "replace these entries — the harness does not change."
+  ],
+  "answerable": [
+    { "q": "من هو جابر بن حيان؟", "expect": "Jabir", "lang": "ar" },
+    { "q": "ماذا اخترع جابر بن حيان؟", "expect": "Jabir", "lang": "ar" },
+    { "q": "جابر بن حيان وعلم الكيمياء", "expect": "Jabir", "lang": "ar" },
+    { "q": "ما هي مخاطر الألعاب الإلكترونية؟", "expect": "Electronic", "lang": "ar" },
+    { "q": "الآثار الإيجابية والسلبية للألعاب الإلكترونية", "expect": "Electronic", "lang": "ar" },
+    { "q": "اشرح لي درس طريق النجاح", "expect": "Tareeq", "lang": "ar" },
+    { "q": "ما معنى التسويف؟", "expect": "Tareeq", "lang": "ar" },
+    { "q": "ما معنى ريادة الأعمال؟", "expect": "Entrepreneur", "lang": "ar" },
+    { "q": "قصيدة الشباب لإيليا أبو ماضي", "expect": "AlShabab", "lang": "ar" },
+    { "q": "من هو إيليا أبو ماضي؟", "expect": "AlShabab", "lang": "ar" },
+    { "q": "explain subtraction", "expect": "Subtraction", "lang": "en" },
+    { "q": "how do I subtract two numbers", "expect": "Subtraction", "lang": "en" },
+    { "q": "what is column subtraction", "expect": "Subtraction", "lang": "en" },
+    { "q": "what does regrouping mean in subtraction", "expect": "Subtraction", "lang": "en" }
+  ],
+  "unanswerable": [
+    { "q": "explain photosynthesis", "lang": "en" },
+    { "q": "what is the capital of Brazil", "lang": "en" },
+    { "q": "who won the world cup in 1998", "lang": "en" },
+    { "q": "explain Newton's first law of motion", "lang": "en" },
+    { "q": "ما هي عاصمة فرنسا؟", "lang": "ar" },
+    { "q": "اشرح لي قانون نيوتن الأول", "lang": "ar" },
+    { "q": "ما هي عملية البناء الضوئي؟", "lang": "ar" },
+    { "q": "متى بدأت الحرب العالمية الثانية؟", "lang": "ar" }
+  ]
+}
