@@ -22,7 +22,6 @@ from shared.language import (
     translate,
 )
 from shared.language.catalog import STRINGS
-from shared.language.script import ARABIC
 from shared.language.verify import (
     DEFAULT_MIN_ANSWER_CHARS,
     DEFAULT_MIN_CONFIDENCE,
@@ -518,27 +517,19 @@ def _citation_where(c: Citation, language: str) -> str:
 
 
 def _prereq_line(prereqs: list[PrereqTopic], language: str) -> str:
-    """"You should know X first" — but only when X is readable to this student.
+    """"You should know X first", from the lesson's own topic graph.
 
-    Topic labels are written at ingest, and until recently the extractor was
-    never told what language the lesson was in, so an Arabic literature lesson
-    came back tagged "Evaluate poetic structure". Showing that under an Arabic
-    answer is worse than showing nothing: the student cannot read it, and it
-    looks like the tutor lost track of the conversation.
+    There used to be a filter here dropping labels whose script did not match the
+    reply, because the extractor had produced English labels for Arabic lessons.
+    That hid the rows rather than fixing them, only ever worked for Arabic, and
+    left the same labels going out on the API. The labels are validated where
+    they are written now, so there is nothing left to hide.
     """
-    readable = [p.label for p in prereqs if _matches_script(p.label, language)]
-    if not readable:
+    labels = [p.label for p in prereqs if p.label]
+    if not labels:
         return ""
     head = translate("compose.prereq_head", language)
-    return f"{head}: {', '.join(readable)}"
-
-
-def _matches_script(label: str, language: str) -> bool:
-    """Whether a label is written in the script the reply is written in."""
-    if not label:
-        return False
-    is_arabic = bool(ARABIC.search(label))
-    return is_arabic if language == "ar" else not is_arabic
+    return f"{head}: {', '.join(labels)}"
 
 
 def _assessment_line(assessment: dict, language: str) -> str:

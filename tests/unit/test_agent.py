@@ -336,12 +336,9 @@ def test_prereq_line_bilingual():
     assert _prereq_line(prereqs, "en") == "Prerequisite topics: Cells"
 
 
-def test_a_prereq_the_student_cannot_read_is_not_shown():
-    """Topic labels are written at ingest, and the extractor was never told what
-    language the lesson was in — so Arabic lessons came back tagged in English.
-    An Arabic answer trailing "Prerequisite topics: Evaluate poetic structure"
-    reads as the tutor losing the thread."""
-    assert _prereq_line([_pt()], "ar") == ""
+def test_an_empty_prereq_list_renders_no_heading():
+    """A bare "Prerequisite topics:" with nothing after it reads as a bug."""
+    assert _prereq_line([], "ar") == ""
 
 
 def test_an_arabic_prereq_is_shown_under_an_arabic_answer():

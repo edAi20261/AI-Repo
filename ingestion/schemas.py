@@ -91,13 +91,19 @@ class TopicList(BaseModel):
 
 class DependencyItem(BaseModel):
     """One prerequisite edge proposed for a topic. ``prereq`` is a candidate label;
-    an unknown ``strength`` folds to ``required``."""
+    an unknown ``strength`` folds to ``required``.
+
+    There was a ``rationale`` here — a sentence explaining the edge, generated for
+    every prerequisite of every topic on every ingest, written to the database,
+    and read by nothing. It also had no language contract, so it came back in
+    whatever language the model felt like. Asking for it again means paying for
+    it again, so it is gone until something needs it.
+    """
 
     prereq: str = Field(description="An exact label copied from the candidate list.")
     strength: str = Field(
         default="required",
         description="required when the target cannot be learned without it, else related.")
-    rationale: Optional[str] = Field(default=None, description="Short reason, one clause.")
 
     @field_validator("prereq", mode="before")
     @classmethod
@@ -110,11 +116,6 @@ class DependencyItem(BaseModel):
         s = str(v or "").strip().lower()
         s = DEPENDENCY_STRENGTH_ALIASES.get(s, s)
         return s if s in DEPENDENCY_STRENGTHS else "required"
-
-    @field_validator("rationale", mode="before")
-    @classmethod
-    def _empty_rationale_to_none(cls, v):
-        return (str(v).strip() or None) if v is not None else None
 
 
 class DependencyList(BaseModel):

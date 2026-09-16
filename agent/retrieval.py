@@ -82,7 +82,11 @@ DEFAULT_MAX_PREREQS = 5
 
 # Nearest first, and a required prerequisite before a merely recommended one: the
 # topic you must know to follow this lesson outranks one that would help.
-_STRENGTH_RANK = {"required": 0, "recommended": 1}
+# Ingestion writes exactly these two (ingestion/schemas.py DEPENDENCY_STRENGTHS),
+# folding "recommended", "optional" and "helpful" into "related" on the way in.
+# This ranked "recommended", which ingestion never writes, so every non-required
+# edge fell to the unknown sentinel and the ordering worked by accident.
+_STRENGTH_RANK = {"required": 0, "related": 1}
 
 
 def resolve_prereqs(

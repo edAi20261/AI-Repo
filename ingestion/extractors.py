@@ -11,6 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
+from shared.matching import written_in
 from shared.structured import call_structured, schema_hint
 
 from .config import Config
@@ -98,8 +99,29 @@ class LLMTopicExtractor(TopicExtractor):
         result = call_structured(
             TopicList, prompt, task="extract_topics", config=self._config,
             llm=self._llm, label="topics",
+            validate=lambda batch: _labels_in(batch, language),
         )
         return [t.model_dump() for t in result.topics if t.label]
+
+
+def _labels_in(batch: TopicList, language: str) -> None:
+    """A topic label is shown to the student under their answer, so it has to be
+    in the lesson's language.
+
+    The schema said so all along — "the skill, 2-6 words, in the lesson's main
+    language" — but a description is only a hint, and pydantic checks that a
+    label is a string, never which language it is in. So Arabic lessons came back
+    tagged "Evaluate poetic structure" and the rows were written.
+
+    Failing here hands the model the same feedback any other validation failure
+    gets: what it sent, and what was required. It corrects itself, and nothing
+    wrong reaches the table.
+    """
+    wrong = [t.label for t in batch.topics if t.label and not written_in(t.label, language)]
+    if wrong:
+        raise ValueError(
+            f"every label must be written in {language!r}, the language of this "
+            f"lesson. These are not: {wrong}")
 
 
 def get_topic_extractor(config: Config) -> TopicExtractor:
@@ -127,7 +149,7 @@ class DependencyDeriver(ABC):
 
     @abstractmethod
     def derive(self, topic_label: str, candidate_labels: Sequence[str]) -> list[dict]:
-        """Return ``{prereq, strength, rationale}`` dicts (prereq is a candidate label)."""
+        """Return ``{prereq, strength}`` dicts (prereq is a candidate label)."""
 
 
 class StubDependencyDeriver(DependencyDeriver):

@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from .language.script import ARABIC
+
 # Fathatan..sukun, superscript alef, and the hamza/madda marks above and below.
 DIACRITICS = re.compile(r"[ً-ٰٕ]")
 TATWEEL = "ـ"
@@ -72,3 +74,16 @@ def looks_like_contents(text: str) -> bool:
     if not text:
         return False
     return len(_NAVIGATION_MARKER.findall(text)) >= MIN_NAVIGATION_MARKERS
+
+
+def written_in(text: str, language: str) -> bool:
+    """Whether ``text`` is written in the script ``language`` uses.
+
+    Coarse on purpose — it separates Arabic from Latin and nothing finer, which
+    is all that can be told from characters alone. It is a guard against a model
+    answering in the wrong language entirely, not a language detector.
+    """
+    if not text or not text.strip():
+        return False
+    arabic = bool(ARABIC.search(text))
+    return arabic if language == "ar" else not arabic
