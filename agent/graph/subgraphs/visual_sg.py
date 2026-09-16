@@ -32,6 +32,7 @@ from ...models import (
     MindmapNode,
     PdfDocument,
 )
+from ...retrieval import DEFAULT_MIN_SCORE
 from ...tools import get_figures, rag_search
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,7 @@ def _context_text(spec: dict, content: dict, state: VisualState, config) -> str:
     namespaces = state.get("namespaces")
     if namespaces and query:
         try:
-            floor = config.get("agent.min_score", 0.50)
+            floor = config.get("agent.min_score", DEFAULT_MIN_SCORE)
             chunks = rag_search(query, namespaces, subject_id=state.get("subject_id"),
                                 topic_ids=spec.get("topic_ids"),
                                 lecture_ids=state.get("lecture_ids") or None, config=config)

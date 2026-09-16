@@ -215,16 +215,32 @@ agent:
 
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
-  min_score: 0.50            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
-                             # Swept on scripts/eval_retrieval.py against the live index:
-                             #   0.35 -> 14/14 answerable kept, but 5/8 questions with NO
-                             #           answer in the syllabus were answered anyway
-                             #   0.50 -> 12/14 answerable kept, 0/8 wrongly answered
-                             # The two lost are proper-name questions scoring under 0.45;
-                             # they decline honestly instead of five answers being invented.
-                             # Only raisable because matching folds Arabic (shared/matching.py)
-                             # — at the old scores this floor would have declined nearly every
-                             # Arabic question. Re-sweep when the real curriculum is indexed.
+  min_score: 0.44            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
+                             # 0.50 was swept against same-language questions only, and a
+                             # cross-lingual question scores systematically lower: the same
+                             # lesson answers "ماذا اخترع جابر بن حيان؟" at 0.600 and "what did
+                             # Jabir ibn Hayyan invent?" at 0.455. One absolute cosine over two
+                             # different distributions declined material that plainly exists —
+                             # an English question about an Arabic lesson was answered "not in
+                             # the syllabus" while the Arabic form of it was answered.
+                             # Re-swept over 13 questions the syllabus can answer (Arabic,
+                             # English, and English/French/German asked of Arabic lessons) and
+                             # 12 it cannot:
+                             #   0.50 ->  6/13 answered, 12/12 declined
+                             #   0.46 ->  9/13 answered, 11/12 declined
+                             #   0.44 -> 13/13 answered, 10/12 declined   <- the knee
+                             #   0.42 -> 13/13 answered,  7/12 declined
+                             #   0.40 -> 13/13 answered,  6/12 declined
+                             # The two that reach the model at 0.44 are handled by the second
+                             # gate: an answer that cites nothing is published as a decline
+                             # (explain_summarize_sg._finalize), so a passage that does not
+                             # answer the question cannot become an answer. A score floor
+                             # cannot make that judgement — "ما معنى التسويف؟" retrieves the
+                             # chunk containing the word at 0.451 and the lesson never defines
+                             # it, which is a reading question, not a geometry one.
+                             # Only this low because matching folds Arabic (shared/matching.py)
+                             # and retrieval fuses a lexical rank (shared/lexical.py).
+                             # Re-sweep when the real curriculum is indexed.
   topic_filter: soft         # explain/summarize/report: soft = a topic-filtered miss retries unscoped
                              # (a wrong topic guess must not silently exclude the material); hard = strict
                              # (assessment stays hard — it wants one topic per question)

@@ -73,7 +73,7 @@ def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
 # The shipped floor, repeated here so a subgraph reached without one does not
 # silently fall back to "keep everything". config.yaml agent.min_score is the
 # source; this is the safety net when a payload omits it.
-DEFAULT_MIN_SCORE = 0.50
+DEFAULT_MIN_SCORE = 0.44
 
 DEFAULT_MAX_PREREQS = 5
 

@@ -44,7 +44,7 @@ from .detect import (
     detect,
     is_trustworthy,
 )
-from .request import explicit_request
+from .request import about_a_language, explicit_request
 from .script import MIN_MIXED_SHARE, classify
 from .types import LanguageDecision
 
@@ -103,6 +103,12 @@ class LanguagePolicy:
         """The language this turn is answered in, and the rule that decided it."""
         text = message or ""
         writing_system = classify(text, arabic_threshold=self.arabic_ratio)
+
+        # A message that names a language is evidence about the topic, not about
+        # the language to answer in. explicit_request has always known that; the
+        # planner's hint reached the fallback tiers without the same test.
+        if planner_hint and about_a_language(text):
+            planner_hint = None
 
         requested = explicit_request(text)
         if requested and self._supported(requested[0]):

@@ -101,11 +101,29 @@ _WORDS = re.compile(r"[^\W\d_]+", re.UNICODE)
 _DETERMINERS = re.compile(r"\b(?:the|la|le|les|der|die|das)\s+\S+$", re.IGNORECASE)
 
 # "how do you say X in Arabic" asks *about* Arabic; the answer belongs in the
-# language the student asked the question in.
+# language the student asked the question in. Every supported language needs its
+# own form of the question — the pilot corpus is Arabic, and a student asking
+# "ازاي اقول مرحبا بالانجليزي" is asking exactly the same thing.
 _ABOUT_THE_LANGUAGE = re.compile(
-    r"\b(?:how (?:do|would) (?:you|i) say|how to say|what(?:'s| is) .{0,24} called)\b",
+    r"\b(?:how (?:do|would) (?:you|i) say|how to say|what(?:'s| is) .{0,24} called)\b"
+    r"|(?:كيف|ازاي|إزاي)\s+(?:أقول|اقول|نقول|تقول)"
+    r"|(?:ما|ايه|إيه)\s+(?:معنى|ترجمة)"
+    r"|comment (?:dit|dit-on|on dit)"
+    r"|wie sagt man",
     re.IGNORECASE,
 )
+
+
+def about_a_language(text: str) -> bool:
+    """Whether the message asks *about* a language rather than *in* one.
+
+    ``explicit_request`` has always applied this test. The planner did not: it
+    reads the same message, is told to report a language only when one is
+    explicitly requested, and reported Arabic for "how do you say hello in
+    Arabic?" — so an English question came back in Arabic, explaining the word
+    أهلاً from a poetry lesson. The same question decided two ways in two places.
+    """
+    return bool(text and _ABOUT_THE_LANGUAGE.search(text))
 _NEXT_WORD = re.compile(r"[^\w]*([A-Za-zÀ-ɏ']+)")
 
 

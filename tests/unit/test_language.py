@@ -435,3 +435,42 @@ def test_an_unsupported_standing_value_is_ignored(policy):
 def test_no_standing_request_leaves_everything_as_it_was(policy):
     assert policy.resolve("explain subtraction").code == "en"
     assert policy.resolve("اشرح لي عملية الطرح").code == "ar"
+
+
+# --- a message about a language, not in one ---------------------------------
+
+@pytest.mark.parametrize("message", [
+    "how do you say hello in Arabic?",
+    "how to say thank you in French",
+    "wie sagt man Hallo auf Arabisch",
+    "comment dit-on bonjour en arabe",
+])
+def test_a_planner_hint_cannot_turn_a_question_about_a_language_into_one_in_it(
+    policy, message,
+):
+    """"how do you say hello in Arabic?" came back in Arabic, explaining the word
+    أهلاً out of a poetry lesson.
+
+    explicit_request has always refused to read that as a request. The planner
+    reads the same message, is told to report a language only when one is
+    explicitly asked for, and reported Arabic anyway — and its hint reached the
+    resolver without the test the matcher applies. One question, decided two
+    ways in two places."""
+    assert policy.resolve(message, planner_hint="ar").code != "ar"
+
+
+@pytest.mark.parametrize("message,expected", [
+    ("ازاي اقول مرحبا بالانجليزي؟", "ar"),
+    ("كيف أقول شكرا بالفرنسية", "ar"),
+])
+def test_the_same_holds_for_a_student_writing_in_arabic(policy, message, expected):
+    """The pilot corpus is Arabic, so the Arabic form of the question is the one
+    a real student types."""
+    assert policy.resolve(message, planner_hint="en").code == expected
+
+
+def test_asking_for_a_translation_is_still_a_request(policy):
+    """The guard must not swallow a real instruction: "translate hello into
+    Arabic" genuinely asks for Arabic."""
+    assert policy.resolve("translate hello into Arabic").code == "ar"
+    assert policy.resolve("what does مرحبا mean in English?").code == "en"
