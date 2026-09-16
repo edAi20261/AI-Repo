@@ -196,6 +196,9 @@ agent:
                                 # not. Populate the collection with scripts/reembed_chunks.py
                                 # before turning this on.
   prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
+  show_prereqs: true         # append "you should know X first" to an answer. The labels
+                             # come from topic extraction at ingest, so the line is only as
+                             # good as those are — turn it off if they read as noise.
   max_prereqs: 5             # nearest prerequisite topics kept from that walk; the rest
                              # would outweigh the lesson the student actually asked about
   max_citations: 6           # sources published per turn; markers beyond this are dropped
