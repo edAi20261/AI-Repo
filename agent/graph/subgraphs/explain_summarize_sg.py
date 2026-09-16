@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Optional, TypedDict
+from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 from pydantic import ValidationError
@@ -24,8 +24,9 @@ from shared.language import language_directive, translate
 
 from ... import render, retrieval
 from ...citations import cited_numbers, has_citation, keep_cited
-from ...models import MathFigureSpec, Citation, PrereqTopic, RetrievedChunk, Style
+from ...models import Citation, MathFigureSpec, PrereqTopic, RetrievedChunk, Style
 from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, SUMMARIZE_PROMPT
+from ...retrieval import DEFAULT_MIN_SCORE
 
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
 _MATH_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -40,11 +41,11 @@ class ExplainSummarizeState(TypedDict, total=False):
     length: str
     topic_ids: list[str]
     namespaces: list[str]
-    style: Optional[Style]
+    style: Style | None
     language: str
-    subject_id: Optional[str]
-    lecture_ids: Optional[list[str]]  # optional lecture scope; None -> whole subject
-    grade: Optional[str]
+    subject_id: str | None
+    lecture_ids: list[str] | None  # optional lecture scope; None -> whole subject
+    grade: str | None
     instructions: str               # subject-specific prompt addendum (e.g. math), or ""
     k: int
     prereq_depth: int
@@ -69,7 +70,7 @@ def _retrieve(state: ExplainSummarizeState) -> dict:
         subject_id=state.get("subject_id"),
         topic_ids=state.get("topic_ids") or None,
         lecture_ids=state.get("lecture_ids") or None,
-        min_score=state.get("min_score", 0.0),
+        min_score=state.get("min_score", DEFAULT_MIN_SCORE),
         topic_filter=state.get("topic_filter", "hard"),
     )
     return {"chunks": chunks}
@@ -175,7 +176,7 @@ def _finalize(text, citations, mode, state, chunks, config) -> dict:
     return out
 
 
-def _math_figure_from_answer(text, config) -> tuple[str, Optional[dict]]:
+def _math_figure_from_answer(text, config) -> tuple[str, dict | None]:
     """Extract a trailing ```json math-figure block; return (clean_text, visual_spec|None).
     The spec's params are sampled here (expr+domain -> points) so prepare renders directly."""
     if not text:
@@ -203,7 +204,7 @@ def _math_figure_from_answer(text, config) -> tuple[str, Optional[dict]]:
     return clean, {"kind": kind, "params": spec}
 
 
-def _figure_spec(mode, state, chunks, config) -> Optional[dict]:
+def _figure_spec(mode, state, chunks, config) -> dict | None:
     """Emit a ``figure`` visual_spec so an explanation also surfaces the lecture's diagram
     (visual_sg reuses a syllabus figure — no generation). Config-gated; explain only."""
     if mode != "explain" or not config.get("render.figures_with_explain", False):

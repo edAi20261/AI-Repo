@@ -15,15 +15,17 @@ mistake labels are canonicalized to tag ids deterministically.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, TypedDict
+from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 
 from shared.language import language_directive, translate
+from shared.structured import align_by_id, call_structured, schema_hint
 
 from ...mastery import Mastery, MasteryParams, observation, update_aggregate
 from ...models import GradeBatch, GradedItem, SubmissionItem
 from ...prompts import GRADE_BATCH_PROMPT
+from ...retrieval import DEFAULT_MIN_SCORE
 from ...tools import (
     create_mistake_tag,
     fetch_rubric,
@@ -34,8 +36,6 @@ from ...tools import (
     update_mastery,
     write_mastery_events,
 )
-from shared.structured import align_by_id, call_structured, schema_hint
-
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +54,13 @@ _RUBRIC_MAP = {
 class GradeState(TypedDict, total=False):
     # inputs
     submissions: list[dict[str, Any]]   # normalized: question/student_answer (+ optional key)
-    subject_id: Optional[str]
-    lecture_ids: Optional[list[str]]    # optional lecture scope for grounding; None -> whole subject
-    user_id: Optional[str]
+    subject_id: str | None
+    lecture_ids: list[str] | None    # optional lecture scope for grounding; None -> whole subject
+    user_id: str | None
     language: str
     instructions: str                   # subject-specific prompt addendum (math), or ""
-    kind: Optional[str]                 # quiz | homework (for fetch_rubric)
-    assessment_id: Optional[str]        # DB reference -> fetch the answer key
+    kind: str | None                 # quiz | homework (for fetch_rubric)
+    assessment_id: str | None        # DB reference -> fetch the answer key
     source: str                         # mastery_event source: practice | quiz | homework
     pass_threshold: float
     namespaces: list[str]               # syllabus scope for grounding a keyless answer
@@ -104,8 +104,8 @@ def _merge_rubric(items: list[SubmissionItem], rubric: list[dict]) -> list[Submi
 
 
 def _resolve_missing_topics(
-    items: list[SubmissionItem], subject_id: Optional[str], config,
-    lecture_ids: Optional[list[str]] = None,
+    items: list[SubmissionItem], subject_id: str | None, config,
+    lecture_ids: list[str] | None = None,
 ) -> None:
     """Stamp a topic_id on items that lack one (invariant 8), matching the question text, then
     backfill lecture_id from that topic (a topic belongs to a lecture). This lets a graded
@@ -152,7 +152,7 @@ def _ground_answers(
         # KEYLESS answer. (Was: open-ended got RAG even with a key.)
         if item.context or item.correct_answer:
             continue
-        floor = state.get("min_score", 0.0)
+        floor = state.get("min_score", DEFAULT_MIN_SCORE)
 
         def _grounded(topic_ids):
             chunks = rag_search(
@@ -265,7 +265,7 @@ def _stub_draft(item: SubmissionItem):
     )
 
 
-def _canonicalize(graded: list[GradedItem], subject_id: Optional[str], config) -> None:
+def _canonicalize(graded: list[GradedItem], subject_id: str | None, config) -> None:
     """Map each wrong answer's free-text mistake labels to canonical tag ids
     (``create_mistake_tag`` reuses on exact label). Failures are non-fatal — a missing
     tag just means an unlabelled mistake."""
@@ -285,7 +285,7 @@ def _canonicalize(graded: list[GradedItem], subject_id: Optional[str], config) -
             g.mistake_tag_ids.append(cache[key])
 
 
-def _event_from(g: GradedItem, user_id: str, source: str) -> Optional[dict]:
+def _event_from(g: GradedItem, user_id: str, source: str) -> dict | None:
     """A mastery_event dict for one graded answer, or None when it lacks the invariant-12
     spine (topic_id + lecture_id) and so cannot be recorded. ``original_score`` = the AI's
     score now, preserved for a later teacher correction."""

@@ -49,6 +49,9 @@ vision:
   provider: openrouter           # openrouter | anthropic | google | dashscope
   model: qwen/qwen3-vl-235b-a22b-instruct
   fallback_model: anthropic/claude-sonnet-5
+  base_url: https://openrouter.ai/api/v1
+  timeout_seconds: 180           # a scanned page costs one call, so this is per page
+  max_tokens: 4096
 
 embeddings:
   # Bilingual index embedder. `hash` is a deterministic test embedder (no model).
@@ -196,6 +199,13 @@ agent:
                                 # not. Populate the collection with scripts/reembed_chunks.py
                                 # before turning this on.
   prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
+  intent:
+    # Deciding whether a turn needs the syllabus at all. A greeting used to be
+    # planned as an explain task and searched for in the textbook.
+    enabled: true
+    max_words: 6             # longer than this is a question whatever it resembles
+    similarity: 0.72         # cosine against the seed utterances, when the phrase
+                             # pass finds nothing
   show_prereqs: true         # append "you should know X first" to an answer. The labels
                              # come from topic extraction at ingest, so the line is only as
                              # good as those are — turn it off if they read as noise.

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import Any, Optional
 
 from .models import Citation, PrereqTopic, RetrievedChunk
 from .tools import get_topic_chunks, get_topic_deps, rag_search
@@ -21,9 +20,9 @@ def retrieve(
     query: str,
     namespaces: list[str],
     *,
-    subject_id: Optional[str] = None,
-    topic_ids: Optional[list[str]] = None,
-    lecture_ids: Optional[list[str]] = None,
+    subject_id: str | None = None,
+    topic_ids: list[str] | None = None,
+    lecture_ids: list[str] | None = None,
     k: int = 8,
     min_score: float = 0.0,
     topic_filter: str = "hard",
@@ -73,6 +72,11 @@ def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
         for c in chunks[:limit]
     ]
 
+
+# The shipped floor, repeated here so a subgraph reached without one does not
+# silently fall back to "keep everything". config.yaml agent.min_score is the
+# source; this is the safety net when a payload omits it.
+DEFAULT_MIN_SCORE = 0.50
 
 DEFAULT_MAX_PREREQS = 5
 

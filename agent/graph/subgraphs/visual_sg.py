@@ -113,7 +113,7 @@ def _context_text(spec: dict, content: dict, state: VisualState, config) -> str:
     namespaces = state.get("namespaces")
     if namespaces and query:
         try:
-            floor = config.get("agent.min_score", 0.0)
+            floor = config.get("agent.min_score", 0.50)
             chunks = rag_search(query, namespaces, subject_id=state.get("subject_id"),
                                 topic_ids=spec.get("topic_ids"),
                                 lecture_ids=state.get("lecture_ids") or None, config=config)

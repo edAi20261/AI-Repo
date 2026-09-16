@@ -226,7 +226,7 @@ def resolve_topics(
     vector = get_embedder(config).embed_query(query)
     # TODO: once the topics collection is populated and validated, delete the brute-force
     # `_resolve_topics_pg` and this gate so the indexed path is the only one.
-    if config.get("agent.resolve_topics_qdrant", False):
+    if config.get("agent.resolve_topics_qdrant", True):
         return _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config)
     return _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config)
 
