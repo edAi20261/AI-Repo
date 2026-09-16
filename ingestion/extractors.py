@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
-from shared.matching import written_in
+from shared.language import written_in
 from shared.structured import call_structured, schema_hint
 
 from .config import Config

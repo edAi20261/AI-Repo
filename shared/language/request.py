@@ -9,8 +9,9 @@ language name — otherwise "the French Revolution" would switch the whole turn.
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Optional
+
+from shared.matching import fold_for_match
 
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("ar", re.compile(
@@ -96,7 +97,6 @@ _COURTESY = frozenset({
 })
 
 _WORDS = re.compile(r"[^\W\d_]+", re.UNICODE)
-_AR_DIACRITICS = re.compile(r"[\u064b-\u0652\u0670\u0640]")
 
 _DETERMINERS = re.compile(r"\b(?:the|la|le|les|der|die|das)\s+\S+$", re.IGNORECASE)
 
@@ -187,7 +187,8 @@ def clear_request(text: str) -> Optional[str]:
 
 
 def _fold(text: str) -> str:
-    return _AR_DIACRITICS.sub("", unicodedata.normalize("NFKC", text)).lower()
+    """The shared fold, plus case — the courtesy words are matched exactly."""
+    return fold_for_match(text).lower()
 
 
 def language_instruction_only(text: str) -> Optional[tuple[str, Optional[str]]]:

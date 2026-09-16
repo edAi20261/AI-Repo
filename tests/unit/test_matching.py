@@ -69,3 +69,23 @@ def test_the_embedder_folds_both_sides():
     vocalised = embedder.embed(["جَابِرُ بْنُ حَيَّانَ"])[0]
     typed = embedder.embed_query("جابر بن حيان")
     assert vocalised == typed
+
+
+def test_intent_matching_folds_a_message_the_way_retrieval_does():
+    """There were three hand-written folds. Two of them missed ٱ, ئ, ة and ؤ,
+    so a student typing "مدرسه" was matched one way by search and another way
+    by the intent router — and the router is what decides whether the question
+    reaches search at all."""
+    from agent.intent import normalise
+
+    assert normalise("مدرسة") == normalise("مدرسه")
+    assert normalise("مسئول") == normalise("مسيول")
+    assert normalise("ٱلدرس") == normalise("الدرس")
+
+
+def test_courtesy_matching_folds_a_message_the_way_retrieval_does():
+    """The same fold, in the other place that had its own copy."""
+    from shared.language.request import _fold
+
+    assert _fold("شكراً") == _fold("شكرا")
+    assert _fold("مدرسة") == _fold("مدرسه")

@@ -9,7 +9,7 @@ from .detect import Detection, detect, is_trustworthy
 from .directive import content_directive, language_directive, name_of
 from .request import clear_request, explicit_request, language_instruction_only
 from .resolver import DEFAULT_LANGUAGE, DEFAULT_SUPPORTED, LanguagePolicy
-from .script import arabic_ratio, classify, looks_arabizi
+from .script import arabic_ratio, classify, looks_arabizi, written_in
 from .types import (
     ENDONYMS,
     ENGLISH_NAMES,
@@ -46,4 +46,5 @@ __all__ = [
     "prose_of",
     "translate",
     "verify_answer",
+    "written_in",
 ]

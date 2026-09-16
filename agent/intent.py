@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import logging
 import re
-import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from shared.language.request import language_instruction_only
+from shared.matching import fold_for_match
 from shared.language.script import ARABIC
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,6 @@ SEEDS: dict[Intent, tuple[str, ...]] = {
 
 _PUNCTUATION = re.compile(r"[!?.,؛،:؟\-_*\"'()\[\]]+")
 _WHITESPACE = re.compile(r"\s+")
-_ARABIC_DIACRITICS = re.compile(r"[ً-ْٰـ]")
 
 
 @dataclass(frozen=True)
@@ -89,16 +88,16 @@ class IntentDecision:
 
 
 def normalise(text: str) -> str:
-    """Fold a message to the form seeds are matched in.
+    """Fold a message to the form the seed phrases are matched in.
 
-    Arabic diacritics and alef variants are stripped for the same reason they are
-    in retrieval: a student writes "شكراً" or "شكرا" interchangeably.
+    The same fold retrieval uses, plus the two things an exact dictionary lookup
+    needs and a vector comparison does not: case and punctuation. It used to be a
+    second hand-written copy that folded less — it missed ٱ, ئ, ة and ؤ — so a
+    student writing "مدرسة" and one writing "مدرسه" took different paths here
+    than they did in search.
     """
-    folded = unicodedata.normalize("NFKC", text or "").strip().lower()
-    folded = _ARABIC_DIACRITICS.sub("", folded)
-    folded = folded.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ى", "ي")
-    folded = _PUNCTUATION.sub(" ", folded)
-    return _WHITESPACE.sub(" ", folded).strip()
+    folded = fold_for_match(text).lower()
+    return _WHITESPACE.sub(" ", _PUNCTUATION.sub(" ", folded)).strip()
 
 
 def word_count(text: str) -> int:
