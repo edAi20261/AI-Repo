@@ -22,10 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ingestion.config import Config
 from ingestion.llm_provider import VISION_STUB_SENTINEL
-
-
-def _pg_url(raw: str) -> str:
-    return raw.replace("+asyncpg", "").replace("+psycopg", "")
+from shared.postgres import connect
 
 
 def _lectures(cur, lecture_id: str | None) -> list[str]:
@@ -41,13 +38,16 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = Config.load()
-    import psycopg
     from qdrant_client import QdrantClient, models
 
     collection = cfg.vector_store.get("collection", "eduai_chunks")
     qc = QdrantClient(url=cfg.secret("QDRANT_URL", "http://localhost:6333"),
                       api_key=cfg.secret("QDRANT_API_KEY"))
-    conn = psycopg.connect(_pg_url(cfg.secret("DATABASE_URL")))
+    with connect(cfg, connect_timeout=15, statement_timeout_ms=0) as conn:
+        return _verify(cfg, conn, qc, collection, models, args)
+
+
+def _verify(cfg, conn, qc, collection, models, args) -> int:
     cur = conn.cursor()
 
     print(f"collection={collection}  app_env={cfg.app_env}\n")
@@ -104,7 +104,6 @@ def main() -> int:
             if not passed:
                 print(f"        - FAIL: {name}")
 
-    conn.close()
     print("\n" + ("ALL LECTURES OK" if all_ok else "SOME CHECKS FAILED"))
     return 0 if all_ok else 1
 

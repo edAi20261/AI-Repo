@@ -175,6 +175,17 @@ language:
   quiz_single_language: true   # questions follow the subject; prose follows the student
   keep_technical_terms_in_source_language: true
 
+database:
+  # Postgres has no default timeout of its own: an unresponsive host holds the
+  # connection open until the caller gives up, which for a student's turn means
+  # the HTTP client's limit. Measured against the production instance from
+  # outside the VPC: connect 486ms, the heaviest read (every topic label plus
+  # its 1024-dimension embedding) 554ms, chunk and prerequisite reads ~65ms.
+  # These are roughly 10x the measured worst case — wide enough for a corpus
+  # several times the size, narrow enough that a hang is an error, not a wait.
+  connect_timeout_seconds: 5
+  statement_timeout_ms: 5000
+
 agent:
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
