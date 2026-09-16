@@ -21,6 +21,11 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt -r requirements-dev.txt
+      # Lint is a gate, not a suggestion. The rules this project enforces are in
+      # pyproject.toml, with the backlog listed rather than deleted so it can
+      # only shrink.
+      - name: Lint
+        run: python -m ruff check agent shared system ingestion scripts tests
       - run: python -m pytest
 
   deploy:
