@@ -11,6 +11,11 @@
 Every statement below was checked against that code. Where something does not
 exist, it says so and gives the file it belongs in. Nothing here is assumed.
 
+**Nothing here depends on an unreleased AI-service change.** The response
+contract it describes — `citations`, `assessment`, `visuals`, `prereq_topics`
+and the six task types — is the same on `main`, on `staging` and in the deployed
+service, so you can build and test against what is running today.
+
 ---
 
 ## The short version
