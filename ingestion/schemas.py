@@ -122,3 +122,31 @@ class DependencyList(BaseModel):
     """Structured-output wrapper: one topic's prerequisites."""
 
     dependencies: list[DependencyItem] = Field(default_factory=list)
+
+
+# --- topic repair ----------------------------------------------------------
+
+class RelabelledTopic(BaseModel):
+    """One existing topic, named again in the lesson's language. ``topic_id`` is
+    carried through so a student's mastery history stays attached to the skill."""
+
+    topic_id: str
+    label: str = Field(description="The same skill, 2-6 words, in the lesson's language.")
+    description: Optional[str] = Field(
+        default=None, description="One sentence on what mastering it means.")
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _clamp_label(cls, v):
+        return str(v or "").strip()[:255]
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _empty_description_to_none(cls, v):
+        return (str(v).strip() or None) if v is not None else None
+
+
+class RelabelList(BaseModel):
+    """Structured-output wrapper: one lesson's relabelled topics."""
+
+    topics: list[RelabelledTopic] = Field(default_factory=list)
