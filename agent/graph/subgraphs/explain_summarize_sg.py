@@ -76,6 +76,12 @@ def _retrieve(state: ExplainSummarizeState) -> dict:
 
 
 def _resolve_prereqs(state: ExplainSummarizeState) -> dict:
+    # Prerequisites support an answer; they cannot be one. They are fetched by
+    # topic id rather than searched, so they carry no relevance score and pass
+    # straight through the floor — which meant a question the syllabus had just
+    # refused came back cited to five unrelated lessons.
+    if not state.get("chunks"):
+        return {"prereq_topics": [], "prereq_chunks": []}
     prereq_topics, prereq_chunks = retrieval.resolve_prereqs(
         state.get("topic_ids") or [],
         state["namespaces"],

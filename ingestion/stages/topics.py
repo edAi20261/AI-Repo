@@ -20,6 +20,15 @@ from ..state import Chunk, IngestionState, Topic
 logger = logging.getLogger(__name__)
 
 
+def _lesson_language(chunks: list[Chunk]) -> str:
+    """The language most of the lesson is written in — what its topics are named in."""
+    counts: dict[str, int] = {}
+    for chunk in chunks:
+        if chunk.language:
+            counts[chunk.language] = counts.get(chunk.language, 0) + 1
+    return max(counts, key=counts.get) if counts else "en"
+
+
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     chunks: list[Chunk] = state.get("chunks", [])
     stats = {"extracted": 0, "reused": 0, "new": 0, "chunks_tagged": 0}
@@ -29,7 +38,8 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
         return state
 
     try:
-        raw = ctx.topic_extractor.extract([c.text for c in chunks])
+        raw = ctx.topic_extractor.extract(
+            [c.text for c in chunks], _lesson_language(chunks))
     except StructuredOutputError as exc:
         # Compliance is retried one layer down; reaching here means the model
         # never produced a usable answer. Index the lesson without topic_ids and

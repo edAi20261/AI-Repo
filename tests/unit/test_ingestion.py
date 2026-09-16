@@ -301,7 +301,7 @@ class _FakeExtractor:
         self._topics = topics
         self.is_stub = False
 
-    def extract(self, chunk_texts):
+    def extract(self, chunk_texts, language="en"):
         return list(self._topics)
 
 
@@ -980,7 +980,7 @@ class _CountingExtractor:
         self.is_stub = is_stub
         self.calls = 0
 
-    def extract(self, chunk_texts):
+    def extract(self, chunk_texts, language="en"):
         i = min(self.calls, len(self._results) - 1)
         self.calls += 1
         return list(self._results[i])
@@ -1014,7 +1014,7 @@ def test_topics_extraction_failure_is_flagged_not_lost():
         is_stub = False
         calls = 0
 
-        def extract(self, _texts):
+        def extract(self, _texts, language="en"):
             self.calls += 1
             raise StructuredValidationFailure(
                 "topics: the model did not return valid output after 2 attempts.",

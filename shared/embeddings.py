@@ -13,16 +13,27 @@ from abc import ABC, abstractmethod
 from typing import Sequence
 
 from .config import Config
+from .matching import fold_for_match
 
 
 class Embedder(ABC):
-    """Embedder behind a thin interface so callers never name a provider."""
+    """Embedder behind a thin interface so callers never name a provider.
+
+    Every text is folded on its way in — see ``shared/matching.py``. Doing it
+    here rather than at the call sites is the point: a document folded while a
+    query is not is worse than folding neither, and there are six call sites
+    across ingestion and the agent. None of them can get it wrong from here.
+    """
 
     dimension: int
 
     @abstractmethod
+    def _encode(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed a batch of already-folded texts."""
+
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed a batch of texts."""
+        return self._encode([fold_for_match(t) for t in texts])
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed([text])[0]
@@ -47,7 +58,7 @@ class LocalSentenceTransformerEmbedder(Embedder):
         self._batch_size = batch_size
         self.dimension = self._model.get_embedding_dimension()
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+    def _encode(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
         vectors = self._model.encode(
@@ -67,7 +78,7 @@ class HashEmbedder(Embedder):
     def __init__(self, dimension: int = 1024) -> None:
         self.dimension = dimension
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+    def _encode(self, texts: Sequence[str]) -> list[list[float]]:
         return [self._one(t) for t in texts]
 
     def _one(self, text: str) -> list[float]:
