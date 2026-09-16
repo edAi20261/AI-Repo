@@ -12,12 +12,14 @@ live in ``agent/models.py``.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from shared.backend import get_backend_client
 from shared.config import Config
+from shared.lexical import bm25_scores, ranks_from_scores, reciprocal_rank_fusion
+from shared.postgres import connect
+from shared.vector_store import query_client
 from shared.embeddings import get_embedder
 
 logger = logging.getLogger(__name__)
@@ -43,27 +45,6 @@ __all__ = [
     "update_mastery",
     "write_mastery_events",
 ]
-
-
-# --- Postgres helper --------------------------------------------------------
-
-def pg_url(raw: str) -> str:
-    """Strip the SQLAlchemy driver suffix so psycopg accepts the URL."""
-    return raw.replace("+asyncpg", "").replace("+psycopg", "")
-
-
-@contextmanager
-def connect(config: Config | None = None) -> Iterator[object]:
-    """A psycopg connection scoped to ``ai.*``. Read tools use ``with connect(config)
-    as conn``; write tools call ``conn.commit()`` before the block exits."""
-    import psycopg
-
-    config = config or Config.load()
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 
 # --- authorization ----------------------------------------------------------
@@ -115,7 +96,7 @@ def rag_search(
         raise ValueError("rag_search requires at least one namespace (invariant 1).")
     config = config or Config.load()
 
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
 
     vector = get_embedder(config).embed_query(query)
 
@@ -148,10 +129,12 @@ def rag_search(
         key="chunk_kind", match=models.MatchValue(value="contents"))]
 
     collection = config.vector_store.get("collection", "eduai_chunks")
-    client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                          api_key=config.secret("QDRANT_API_KEY"))
-    # Over-fetch when ready_only may drop hits, so we still return up to k.
+    client = query_client(config)
+    # Over-fetch for two reasons: ready_only may drop hits, and the lexical
+    # stage can only reorder what the dense stage brought back.
     fetch = k * 3 if ready_only else k
+    if config.get("agent.hybrid.enabled"):
+        fetch = max(fetch, config.get("agent.hybrid.candidates"))
     hits = client.query_points(
         collection, query=vector,
         query_filter=models.Filter(must=must, must_not=must_not),
@@ -173,15 +156,9 @@ def rag_search(
         "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
     )
 
-    import psycopg
-
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (list(scores),))
-            rows = cur.fetchall()
-    finally:
-        conn.close()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (list(scores),))
+        rows = cur.fetchall()
 
     out = [
         RetrievedChunk(
@@ -196,7 +173,32 @@ def rag_search(
         for r in rows
     ]
     out.sort(key=lambda c: c.score, reverse=True)
+    if config.get("agent.hybrid.enabled"):
+        out = _fuse_lexically(query, out, config)
     return out[:k]
+
+
+def _fuse_lexically(
+    query: str, candidates: list[RetrievedChunk], config: Config,
+) -> list[RetrievedChunk]:
+    """Reorder dense candidates by fusing their rank with a BM25 rank.
+
+    ``score`` is deliberately left as the dense cosine. It is what
+    ``agent.min_score`` is measured against, and a fused rank-based score is not
+    comparable to a similarity — swapping it in would silently disable the floor
+    that stops the tutor answering questions the syllabus cannot answer.
+    """
+    if len(candidates) < 2:
+        return candidates
+    dense_ranks = list(range(1, len(candidates) + 1))   # already sorted by score
+    lexical = bm25_scores(query, [c.text or "" for c in candidates])
+    # A document that matches none of the query's words should not be pushed up
+    # merely for being in the pool, so it places in the dense ranking only.
+    lexical_ranks = ranks_from_scores(lexical, skip_zero=True)
+    fused = reciprocal_rank_fusion(
+        dense_ranks, lexical_ranks, k=config.get("agent.hybrid.rrf_k"))
+    order = sorted(range(len(candidates)), key=lambda i: -fused[i])
+    return [candidates[i] for i in order]
 
 
 # --- resolve_topics: free-text -> topic_ids ---------------------------------
@@ -226,7 +228,7 @@ def resolve_topics(
     vector = get_embedder(config).embed_query(query)
     # TODO: once the topics collection is populated and validated, delete the brute-force
     # `_resolve_topics_pg` and this gate so the indexed path is the only one.
-    if config.get("agent.resolve_topics_qdrant", False):
+    if config.get("agent.resolve_topics_qdrant", True):
         return _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config)
     return _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config)
 
@@ -234,7 +236,7 @@ def resolve_topics(
 def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config):
     """Indexed top-k over the Qdrant topics collection (label vectors + subject/lecture
     payload). Scalable — no full-catalog scan."""
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
 
     must = []
     if subject_id:
@@ -243,8 +245,7 @@ def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config
     if lecture_ids:
         must.append(models.FieldCondition(
             key="lecture_id", match=models.MatchAny(any=list(lecture_ids))))
-    client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                          api_key=config.secret("QDRANT_API_KEY"))
+    client = query_client(config)
     hits = client.query_points(
         config.vector_store.get("topics_collection", "eduai_topics"),
         query=vector, query_filter=models.Filter(must=must) if must else None,
@@ -274,15 +275,9 @@ def _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config):
         sql += " AND lecture_id::text = ANY(%s)"
         params.append([str(x) for x in lecture_ids])
 
-    import psycopg
-
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-    finally:
-        conn.close()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
 
     scored, mismatched = [], 0
     for tid, label, sid, emb in rows:
@@ -319,37 +314,31 @@ def get_topic_deps(
         return []
     config = config or Config.load()
 
-    import psycopg
-
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
     found: dict[str, PrereqTopic] = {}
-    try:
-        with conn.cursor() as cur:
-            seen: set[str] = {str(t) for t in topic_ids}
-            frontier: list[str] = list(seen)
-            for level in range(1, depth + 1):
-                if not frontier:
-                    break
-                cur.execute(
-                    "SELECT d.prereq_topic_id::text, d.strength::text, t.label "
-                    "FROM ai.topic_dependencies d "
-                    "LEFT JOIN ai.topics t ON t.topic_id = d.prereq_topic_id "
-                    "WHERE d.topic_id::text = ANY(%s)",
-                    (frontier,),
+    with connect(config) as conn, conn.cursor() as cur:
+        seen: set[str] = {str(t) for t in topic_ids}
+        frontier: list[str] = list(seen)
+        for level in range(1, depth + 1):
+            if not frontier:
+                break
+            cur.execute(
+                "SELECT d.prereq_topic_id::text, d.strength::text, t.label "
+                "FROM ai.topic_dependencies d "
+                "LEFT JOIN ai.topics t ON t.topic_id = d.prereq_topic_id "
+                "WHERE d.topic_id::text = ANY(%s)",
+                (frontier,),
+            )
+            next_frontier: list[str] = []
+            for prereq_id, strength, label in cur.fetchall():
+                if prereq_id in seen:
+                    continue
+                seen.add(prereq_id)
+                next_frontier.append(prereq_id)
+                found[prereq_id] = PrereqTopic(
+                    topic_id=prereq_id, label=label or "", strength=strength,
+                    depth=level,
                 )
-                next_frontier: list[str] = []
-                for prereq_id, strength, label in cur.fetchall():
-                    if prereq_id in seen:
-                        continue
-                    seen.add(prereq_id)
-                    next_frontier.append(prereq_id)
-                    found[prereq_id] = PrereqTopic(
-                        topic_id=prereq_id, label=label or "", strength=strength,
-                        depth=level,
-                    )
-                frontier = next_frontier
-    finally:
-        conn.close()
+            frontier = next_frontier
 
     return sorted(found.values(), key=lambda p: (p.depth, p.label))
 
@@ -406,12 +395,10 @@ def _citation_labels(
     """
     if not chunk_ids:
         return {}
-    from qdrant_client import QdrantClient
 
     collection = config.vector_store.get("collection", "eduai_chunks")
     try:
-        client = QdrantClient(url=config.secret("QDRANT_URL", "http://localhost:6333"),
-                              api_key=config.secret("QDRANT_API_KEY"))
+        client = query_client(config)
         points = client.retrieve(collection, ids=list(chunk_ids), with_payload=True,
                                  with_vectors=False)
     except Exception:
@@ -469,15 +456,9 @@ def get_topic_chunks(
     )
     wanted = [str(t) for t in topic_ids]
 
-    import psycopg
-
-    conn = psycopg.connect(pg_url(config.secret("DATABASE_URL")))
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (wanted, list(namespaces)))
-            rows = cur.fetchall()
-    finally:
-        conn.close()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (wanted, list(namespaces)))
+        rows = cur.fetchall()
 
     # Cap to ``per_topic`` chunks per requested topic.
     counts: dict[str, int] = {}

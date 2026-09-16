@@ -25,10 +25,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import psycopg
 
 from agent.config import Config
-from agent.tools import pg_url
+from shared.postgres import connect
 
 WIDTH = 96
 
@@ -61,8 +60,7 @@ def main() -> int:
         params.append(args.session)
 
     config = Config.load()
-    with psycopg.connect(pg_url(config.secret("DATABASE_URL")),
-                         connect_timeout=15) as conn, conn.cursor() as cur:
+    with connect(config, connect_timeout=15, statement_timeout_ms=0) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT session_id::text, sender, created_at, message_text, metadata "
             f"FROM engagement.ai_chat_messages {where} "

@@ -64,9 +64,9 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
     k = config.get("agent.k", 8)
     depth = config.get("agent.prereq_depth", 2)
     prereq_limit = config.get("agent.max_prereqs", retrieval.DEFAULT_MAX_PREREQS)
-    min_score = config.get("agent.min_score", 0.0)
-    topic_filter = config.get("agent.topic_filter", "hard")
-    with_figure = config.get("agent.explain_figures", True)
+    min_score = config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE)
+    topic_filter = config.get("agent.topic_filter", "soft")
+    with_figure = config.get("agent.explain_figures", False)
 
     def adapter(payload) -> dict:                    # payload = {task, ...shared context}
         task = payload["task"]
@@ -174,7 +174,7 @@ def _build_assessment_adapter(compiled, config: Config, client=None):
             "type_mix": params.get("type_mix") or q.get("type_mix", {}),
             "difficulty": params.get("difficulty") or q.get("difficulty", "mixed"),
             "k_per_topic": q.get("k_per_topic", 4),
-            "min_score": config.get("agent.min_score", 0.0),
+            "min_score": config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE),
             "adaptive": q.get("adaptive", True),
         })
         return {"assessment": result.get("assessment", {})}   # (2) translate out
@@ -221,7 +221,7 @@ def _build_grade_adapter(compiled, config: Config, client=None):
             "source": source,
             "pass_threshold": g.get("pass_threshold", 0.5),
             "namespaces": payload.get("namespaces") or ["syllabus"],
-            "min_score": config.get("agent.min_score", 0.0),
+            "min_score": config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE),
         })
         return {"grade_result": result.get("result", {})}   # (2) translate out
 

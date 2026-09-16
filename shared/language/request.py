@@ -9,8 +9,9 @@ language name — otherwise "the French Revolution" would switch the whole turn.
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Optional
+
+from shared.matching import fold_for_match
 
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("ar", re.compile(
@@ -96,16 +97,33 @@ _COURTESY = frozenset({
 })
 
 _WORDS = re.compile(r"[^\W\d_]+", re.UNICODE)
-_AR_DIACRITICS = re.compile(r"[\u064b-\u0652\u0670\u0640]")
 
 _DETERMINERS = re.compile(r"\b(?:the|la|le|les|der|die|das)\s+\S+$", re.IGNORECASE)
 
 # "how do you say X in Arabic" asks *about* Arabic; the answer belongs in the
-# language the student asked the question in.
+# language the student asked the question in. Every supported language needs its
+# own form of the question — the pilot corpus is Arabic, and a student asking
+# "ازاي اقول مرحبا بالانجليزي" is asking exactly the same thing.
 _ABOUT_THE_LANGUAGE = re.compile(
-    r"\b(?:how (?:do|would) (?:you|i) say|how to say|what(?:'s| is) .{0,24} called)\b",
+    r"\b(?:how (?:do|would) (?:you|i) say|how to say|what(?:'s| is) .{0,24} called)\b"
+    r"|(?:كيف|ازاي|إزاي)\s+(?:أقول|اقول|نقول|تقول)"
+    r"|(?:ما|ايه|إيه)\s+(?:معنى|ترجمة)"
+    r"|comment (?:dit|dit-on|on dit)"
+    r"|wie sagt man",
     re.IGNORECASE,
 )
+
+
+def about_a_language(text: str) -> bool:
+    """Whether the message asks *about* a language rather than *in* one.
+
+    ``explicit_request`` has always applied this test. The planner did not: it
+    reads the same message, is told to report a language only when one is
+    explicitly requested, and reported Arabic for "how do you say hello in
+    Arabic?" — so an English question came back in Arabic, explaining the word
+    أهلاً from a poetry lesson. The same question decided two ways in two places.
+    """
+    return bool(text and _ABOUT_THE_LANGUAGE.search(text))
 _NEXT_WORD = re.compile(r"[^\w]*([A-Za-zÀ-ɏ']+)")
 
 
@@ -187,7 +205,8 @@ def clear_request(text: str) -> Optional[str]:
 
 
 def _fold(text: str) -> str:
-    return _AR_DIACRITICS.sub("", unicodedata.normalize("NFKC", text)).lower()
+    """The shared fold, plus case — the courtesy words are matched exactly."""
+    return fold_for_match(text).lower()
 
 
 def language_instruction_only(text: str) -> Optional[tuple[str, Optional[str]]]:

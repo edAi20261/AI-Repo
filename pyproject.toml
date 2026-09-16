@@ -1,0 +1,47 @@
+# Lint configuration. Before this, ruff ran on defaults and nothing recorded
+# which rules this project actually cares about — so "no new findings" was one
+# person's discipline rather than a property of the repo.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".venv", "demos", "__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes — undefined names, unused imports
+    "I",         # import ordering
+    "UP",        # pyupgrade
+    "B",         # bugbear — mutable defaults, shadowed loop vars
+    "C4",        # comprehensions
+    "SIM",       # simplify
+    "RUF",       # ruff's own
+    "LOG", "G",  # logging correctness
+    "BLE",       # blind except — see CLAUDE.md rule 7
+]
+ignore = [
+    # Permanent. Arabic and French strings are full of characters ruff reads as
+    # ambiguous, and long prompt templates are more readable unwrapped.
+    "RUF001", "RUF002", "RUF003",
+    "E501",
+    "B008",   # FastAPI's Depends() in a default is the framework's idiom
+
+    # Backlog. Each is real and each is a separate change; they are listed
+    # rather than deleted so the list can only shrink. Enforcing everything
+    # else today is worth more than enforcing nothing until these are done.
+    "BLE001",   # 28 — blind except. CLAUDE.md rule 7; needs a judgement per site
+    "G201",     # 11 — logger.error(exc_info=True) should be logger.exception
+    "I001",     # 10 — import ordering, mechanical but touches many files
+    "B905",     # 15 — zip() without strict=
+    "UP045", "UP007", "UP035", "UP037", "UP042", "UP047", "UP017", "UP015", "UP012",
+    "RUF022", "RUF100", "RUF046", "RUF005", "RUF007", "RUF012",
+    "E402", "E701", "E702",
+    "B023", "SIM105", "SIM117", "SIM300", "C408", "C416",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests name fakes and fixtures freely, and re-export shims exist to be unused.
+"tests/*" = ["BLE001", "RUF012", "SIM117"]
+"*/llm_provider.py" = ["F401", "E402"]
+"*/__init__.py" = ["F401"]

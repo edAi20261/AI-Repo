@@ -47,10 +47,6 @@ def start_meter() -> Meter:
     return meter
 
 
-def current_meter() -> "Meter | None":
-    return _METER.get()
-
-
 def _first(usage: dict, *keys):
     for key in keys:
         value = usage.get(key)

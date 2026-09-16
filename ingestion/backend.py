@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from shared.service_http import DEFAULT_TIMEOUT, BackendTransport
+
 from .config import Config
 from .state import Discipline
 from .utils.grades import to_platform_grade
@@ -65,27 +67,14 @@ class BackendClient(ABC):
 
 
 class HttpBackendClient(BackendClient):
-    """Calls the real platform APIs. httpx is imported lazily so importing this
-    module never requires it."""
+    """Calls the real platform APIs."""
 
-    def __init__(self, base_url: str, service_token: str | None = None, timeout: float = 30) -> None:
-        # base_url points at the service-to-service prefix (…/api/ai-integration).
-        self._base = base_url.rstrip("/")
-        # Service-to-service auth: one shared secret, same header both directions.
-        self._headers = {"x-service-token": service_token} if service_token else {}
-        self._timeout = timeout
+    def __init__(self, base_url: str, service_token: str | None = None,
+                 timeout: float = DEFAULT_TIMEOUT) -> None:
+        self._http = BackendTransport(base_url, service_token, timeout=timeout)
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        import httpx  # lazy
-
-        resp = httpx.get(
-            f"{self._base}{path}",
-            params=params,
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._http.get(path, params)
 
     def list_pending_lesson_ids(self, subject_id: str | None = None) -> list[str]:
         params: dict[str, Any] = {"status": "published", "ingested": False}

@@ -20,7 +20,7 @@ import time
 from typing import Optional
 
 from .config import Config
-from .tools import pg_url
+from shared.postgres import connect
 
 logger = logging.getLogger(__name__)
 
@@ -158,12 +158,10 @@ class SessionLanguage:
         if time.monotonic() < self._closed_until:
             return None
         try:
-            import psycopg
-
-            with psycopg.connect(
-                pg_url(self._config.secret("DATABASE_URL")),
+            with connect(
+                self._config,
                 connect_timeout=self._connect_timeout,
-                options=f"-c statement_timeout={self._statement_timeout_ms}",
+                statement_timeout_ms=self._statement_timeout_ms,
             ) as conn:
                 rows = None
                 with conn.cursor() as cur:

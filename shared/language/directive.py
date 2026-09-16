@@ -20,8 +20,18 @@ CONTEXT_PULL = (
 
 
 def name_of(code: str) -> str:
-    """``ar`` -> ``Arabic (العربية)`` — how a language is named to a model."""
-    english = ENGLISH_NAMES.get(code, code)
+    """``ar`` -> ``Arabic (العربية)`` — how a language is named to a model.
+
+    An unknown code is refused rather than passed through. Falling back to the
+    input is how ``content_directive`` once accepted a whole directive as its
+    "language" and asked a model to obey "Write the content in Write the content
+    in Arabic (العربية)." Both are strings; only one is a language.
+    """
+    english = ENGLISH_NAMES.get(code)
+    if english is None:
+        raise ValueError(
+            f"{code!r} is not a language code. Expected one of "
+            f"{sorted(ENGLISH_NAMES)} — pass the code, not a name or a directive.")
     endonym = ENDONYMS.get(code)
     return f"{english} ({endonym})" if endonym and endonym != english else english
 

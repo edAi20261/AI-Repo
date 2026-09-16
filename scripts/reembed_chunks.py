@@ -27,12 +27,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import psycopg
 from psycopg.types.json import Json
 from qdrant_client import QdrantClient, models
 
 from agent.config import Config
-from agent.tools import pg_url
+from shared.postgres import connect
+from shared.vector_store import upsert_client
 from shared.matching import looks_like_contents
 
 PAYLOAD_ONLY_FIELDS = ("subject_name", "lesson_title", "lesson_order")
@@ -63,8 +63,7 @@ def _with_kind(payload: dict, text: str) -> dict:
 
 
 def _chunk_texts(config: Config, chunk_ids: list[str]) -> dict[str, str]:
-    with psycopg.connect(pg_url(config.secret("DATABASE_URL")),
-                         connect_timeout=15) as conn, conn.cursor() as cur:
+    with connect(config, connect_timeout=15, statement_timeout_ms=0) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT chunk_id::text, text FROM ai.chunks "
             "WHERE chunk_id::text = ANY(%s)", (chunk_ids,))
@@ -82,8 +81,7 @@ def main() -> int:
 
     config = Config.load()
     collection = config.vector_store.get("collection", "eduai_chunks")
-    client = QdrantClient(url=config.secret("QDRANT_URL"),
-                          api_key=config.secret("QDRANT_API_KEY"), timeout=120)
+    client = upsert_client(config, config.secret("QDRANT_URL"))
 
     payloads = _existing_points(client, collection)
     print(f"collection {collection}: {len(payloads)} points")
@@ -140,8 +138,7 @@ def _reembed_topics(config, client: QdrantClient, embedder, batch_size: int) -> 
     needs before it can stop scanning the whole catalogue in Python.
     """
     collection = config.vector_store.get("topics_collection", "eduai_topics")
-    with psycopg.connect(pg_url(config.secret("DATABASE_URL")),
-                         connect_timeout=15) as conn:
+    with connect(config, connect_timeout=15, statement_timeout_ms=0) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT topic_id::text, label, subject_id::text, "
                         "lecture_id::text FROM ai.topics WHERE label IS NOT NULL")

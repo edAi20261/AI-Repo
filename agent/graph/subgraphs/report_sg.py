@@ -18,11 +18,11 @@ and the school-scoping decision before they can aggregate beyond one student.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, TypedDict
+from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 
-from shared.language import language_directive, translate
+from shared.language import translate
 
 from ...prompts import REPORT_STUDENT_PROMPT
 from ...tools import get_mastery, get_mastery_trend, get_topic_deps, get_topic_labels
@@ -43,16 +43,16 @@ _SHELLED = {"class_analytics", "at_risk", "parent", "homework_batch"}
 class ReportState(TypedDict, total=False):
     # inputs
     scope: str                          # student_progress (others shelled)
-    user_id: Optional[str]
-    subject_id: Optional[str]
-    lecture_ids: Optional[list[str]]    # optional lecture scope; first is used
+    user_id: str | None
+    subject_id: str | None
+    lecture_ids: list[str] | None    # optional lecture scope; first is used
     language: str
     # working
     weak_topics: list[dict[str, Any]]   # weakest-first, label-hydrated, capped
     weak_ids: list[str]                 # ALL weak topic ids (root-cause seeds)
     scores: dict[str, float]            # topic_id -> mastery score
     trend: dict[str, Any]               # get_mastery_trend output
-    root_cause: Optional[dict[str, Any]]
+    root_cause: dict[str, Any] | None
     done: bool                          # shelled scope -> skip straight to the result
     # produced
     result: dict[str, Any]              # payload_json-shaped report
@@ -132,7 +132,7 @@ def _build_root_cause(config, depth):
     return _node
 
 
-def _describe(score: Optional[float]) -> str:
+def _describe(score: float | None) -> str:
     """A word for a score — the model is told not to quote raw numbers."""
     s = score or 0.0
     return "very weak" if s < 0.3 else "shaky" if s < 0.45 else "developing"
@@ -145,7 +145,7 @@ def _weak_block(weak_topics: list[dict]) -> str:
         for w in weak_topics) or "- (none)"
 
 
-def _trend_chart(trend: dict, language: str) -> Optional[dict]:
+def _trend_chart(trend: dict, language: str) -> dict | None:
     """A line chart of mastery score over recent events, or None when too few points.
     Data-tied — the values are the real graded scores, never invented."""
     events = trend.get("events") or []
@@ -180,8 +180,7 @@ def _build_narrate(llm, config):
             narrative = (translate("report.focus_next", language, focus=focus) if focus
                          else translate("report.all_good", language))
         else:
-            prompt_text = REPORT_STUDENT_PROMPT.format(
-                language=language_directive(language),
+            prompt_text = REPORT_STUDENT_PROMPT.render(language=language,
                 weak_block=_weak_block(weak_topics),
                 root_cause=(root_cause or {}).get("label") or "none",
                 trend=trend.get("direction", "insufficient"))

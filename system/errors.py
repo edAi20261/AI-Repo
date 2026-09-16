@@ -1,4 +1,7 @@
-"""Error taxonomy and the handlers that render it.
+"""The handlers that render the error taxonomy.
+
+The taxonomy itself is ``shared/errors.py``: raising a mapped failure must not
+require FastAPI, because the pipeline that raises most of them runs as a CLI.
 
 Every failure leaves the service in the same envelope — ``{error: {code,
 message, request_id}}`` — so the platform backend can branch on ``code`` and
@@ -16,49 +19,30 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from agent.tools import AuthorizationError
+from shared.errors import (
+    ConflictError,
+    NotFoundError,
+    ServiceError,
+    ServiceUnavailableError,
+    UnauthorizedError,
+    UnprocessableError,
+    UpstreamTimeoutError,
+)
 
 from .context import get_request_id
 
+__all__ = [
+    "ConflictError",
+    "NotFoundError",
+    "ServiceError",
+    "ServiceUnavailableError",
+    "UnauthorizedError",
+    "UnprocessableError",
+    "UpstreamTimeoutError",
+    "register_exception_handlers",
+]
+
 logger = logging.getLogger(__name__)
-
-
-class ServiceError(Exception):
-    """Base class for failures with a deliberate HTTP mapping."""
-
-    status_code = 500
-    code = "internal_error"
-
-    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.message = message
-        self.details = details or {}
-
-
-class UnauthorizedError(ServiceError):
-    status_code = 401
-    code = "unauthorized"
-
-
-class NotFoundError(ServiceError):
-    status_code = 404
-    code = "not_found"
-
-
-class ConflictError(ServiceError):
-    status_code = 409
-    code = "conflict"
-
-
-class ServiceUnavailableError(ServiceError):
-    status_code = 503
-    code = "service_unavailable"
-
-
-class TimeoutError_(ServiceError):
-    """The turn exceeded ``api.request_timeout``."""
-
-    status_code = 504
-    code = "timeout"
 
 
 def _envelope(code: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:

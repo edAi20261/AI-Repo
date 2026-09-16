@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ingestion.config import Config
 from ingestion.llm_provider import VISION_STUB_SENTINEL
+from shared.postgres import connect
 
 _UPSERT = """
 INSERT INTO ai.lecture_ingestion
@@ -29,15 +30,13 @@ ON CONFLICT (lecture_id) DO UPDATE SET
 """
 
 
-def _pg_url(raw: str) -> str:
-    return raw.replace("+asyncpg", "").replace("+psycopg", "")
-
-
 def main() -> int:
     cfg = Config.load()
-    import psycopg
+    with connect(cfg, connect_timeout=15, statement_timeout_ms=0) as conn:
+        return _backfill(conn)
 
-    conn = psycopg.connect(_pg_url(cfg.secret("DATABASE_URL")))
+
+def _backfill(conn) -> int:
     cur = conn.cursor()
     cur.execute("SELECT DISTINCT lecture_id::text FROM ai.chunks ORDER BY 1")
     lectures = [r[0] for r in cur.fetchall()]
@@ -77,7 +76,6 @@ def main() -> int:
         print(f"  {status:12s} {lid}  chunks={n_chunks} figures={n_fig} topics={n_topics} v{version}")
 
     conn.commit()
-    conn.close()
     print(f"\nbackfilled {len(lectures)} lecture(s) into ai.lecture_ingestion")
     return 0
 

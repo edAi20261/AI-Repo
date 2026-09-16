@@ -47,7 +47,7 @@ def _would_answer(query: str, config, k: int) -> bool:
     """Whether the turn grounds in anything at all, i.e. answers rather than
     declines. This is the decision the student actually experiences, and it is
     the floor — not the ranking — that makes it."""
-    floor = config.get("agent.min_score", 0.0)
+    floor = config.get("agent.min_score", 0.50)
     return bool(retrieve(query, ["syllabus"], k=k, min_score=floor,
                          topic_filter="soft"))
 

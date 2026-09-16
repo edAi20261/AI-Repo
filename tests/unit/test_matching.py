@@ -69,3 +69,78 @@ def test_the_embedder_folds_both_sides():
     vocalised = embedder.embed(["جَابِرُ بْنُ حَيَّانَ"])[0]
     typed = embedder.embed_query("جابر بن حيان")
     assert vocalised == typed
+
+
+def test_intent_matching_folds_a_message_the_way_retrieval_does():
+    """There were three hand-written folds. Two of them missed ٱ, ئ, ة and ؤ,
+    so a student typing "مدرسه" was matched one way by search and another way
+    by the intent router — and the router is what decides whether the question
+    reaches search at all."""
+    from agent.intent import normalise
+
+    assert normalise("مدرسة") == normalise("مدرسه")
+    assert normalise("مسئول") == normalise("مسيول")
+    assert normalise("ٱلدرس") == normalise("الدرس")
+
+
+def test_courtesy_matching_folds_a_message_the_way_retrieval_does():
+    """The same fold, in the other place that had its own copy."""
+    from shared.language.request import _fold
+
+    assert _fold("شكراً") == _fold("شكرا")
+    assert _fold("مدرسة") == _fold("مدرسه")
+
+
+# --- lexical ranking --------------------------------------------------------
+
+def test_a_name_in_the_question_outranks_a_paraphrase_of_it():
+    """Why retrieval is two-stage. A dense vector summarises meaning, and the
+    summary loses the name a question turns on: five Grade 7 lessons about
+    success and youth scored within 0.04 of each other, so the lesson that
+    actually names the poet came second."""
+    from shared.lexical import bm25_scores
+
+    query = "من هو إيليا أبو ماضي؟"
+    named = "قال إيليا أبو ماضي في قصيدته عن الشباب"
+    paraphrase = "الشاعر يتحدث عن الأمل والتفاؤل في الحياة"
+
+    scores = bm25_scores(query, [paraphrase, named])
+    assert scores[1] > scores[0]
+
+
+def test_the_lexical_stage_folds_the_way_retrieval_does():
+    """The textbook prints التَّسْوِيفُ and the student types التسويف. Comparing
+    them unfolded compares two different strings."""
+    from shared.lexical import bm25_scores
+
+    assert bm25_scores("التسويف", ["الكسل، التَّسْوِيفُ، الفوضى"])[0] > 0
+
+
+def test_a_word_carrying_an_attached_conjunction_is_a_different_word():
+    """A known limit, recorded rather than guessed at. Arabic attaches و/ب/ل/ك
+    to the front of a word, so وَالتَّسْوِيف and التسويف do not match on tokens.
+    Stripping those prefixes was measured against the golden set and moved
+    precision@1 by nothing at all (11/12 either way), so the stemmer is not
+    here: an unmeasured transformation that can only create false matches is
+    worse than a miss you know about."""
+    from shared.lexical import bm25_scores
+
+    assert bm25_scores("التسويف", ["الكسل وَالتَّسْوِيفُ وَالفَوْضَى"])[0] == 0
+
+
+def test_a_document_matching_no_query_word_does_not_place():
+    """Fusion adds a rank to a rank. A document that matches nothing must not be
+    lifted merely for being in the candidate pool — that is how a lexical stage
+    turns a decline into a confident wrong answer."""
+    from shared.lexical import ranks_from_scores
+
+    assert ranks_from_scores([2.0, 0.0, 1.0], skip_zero=True) == [1, 0, 2]
+
+
+def test_fusion_uses_rank_not_score():
+    """A cosine and a BM25 score are not on the same scale, and no normalisation
+    makes them comparable; reciprocal rank fusion never compares them."""
+    from shared.lexical import reciprocal_rank_fusion
+
+    fused = reciprocal_rank_fusion([1, 2, 3], [3, 1, 2], k=60)
+    assert fused[1] > fused[0] > fused[2]
