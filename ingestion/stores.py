@@ -13,7 +13,10 @@ from __future__ import annotations
 import logging
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
+
+from shared.matching import looks_like_contents
 
 from .config import Config
 from .state import Chunk, Dependency, Figure, Topic
@@ -435,6 +438,9 @@ def _payload(c: Chunk) -> dict[str, Any]:
         "subject_name": c.subject_name,
         "lesson_title": c.lesson_title,
         "lesson_order": c.lesson_order,
+        # Navigation, not material. A contents page is a list of lesson titles
+        # and so outmatches the lessons themselves on any title-shaped question.
+        "chunk_kind": "contents" if looks_like_contents(c.text) else None,
     }
     return {k: v for k, v in payload.items() if v is not None}
 

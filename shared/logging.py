@@ -58,6 +58,29 @@ def redact_uri(uri: Any) -> Any:
     return f"{parts.scheme}://{parts.hostname or ''}{parts.path}"
 
 
+class RequestIdFilter(logging.Filter):
+    """Stamp every record with the turn it belongs to.
+
+    Without it only the access log carries ``request_id``, so a turn's language
+    decision, retrieval and answer are separate lines with nothing tying them
+    together — and a complaint about one wrong answer cannot be traced back to
+    the chunks that caused it. The id is read from the same context variable the
+    HTTP layer sets, so nothing has to pass it down.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not getattr(record, "request_id", None):
+            try:
+                from system.context import get_request_id
+            except ImportError:
+                # Ingestion and the CLIs log without the HTTP layer present.
+                return True
+            current = get_request_id()
+            if current:
+                record.request_id = current
+        return True
+
+
 class JsonFormatter(logging.Formatter):
     """One JSON object per record, with any ``extra`` fields promoted to keys."""
 
@@ -91,6 +114,7 @@ def setup_logging(
     style = (fmt or _cfg(config, "logging.format") or "console").lower()
 
     handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(RequestIdFilter())
     if style == "json":
         handler.setFormatter(JsonFormatter())
     else:

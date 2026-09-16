@@ -46,3 +46,29 @@ def fold_for_match(text: str) -> str:
     folded = DIACRITICS.sub("", folded)
     folded = folded.translate(_LETTERS)
     return _WHITESPACE.sub(" ", folded).strip()
+
+
+# A contents page repeats "الدرس الأول / الدرس الثاني / الوحدة" down the page.
+# A lesson body names its own lesson at most once. Measured on the indexed
+# corpus the gap is clean: contents pages carry five such markers, no real
+# lesson chunk carries more than one.
+_NAVIGATION_MARKER = re.compile(
+    r"الدَّرْسُ|الدرس|الوَحْدَةُ|الوحدة|الوحده|\blesson\s+\d|\bunit\s+\d|"
+    r"\btable\s+of\s+contents\b|\bcontents\b|فهرس|محتويات",
+    re.IGNORECASE,
+)
+
+MIN_NAVIGATION_MARKERS = 3
+
+
+def looks_like_contents(text: str) -> bool:
+    """Whether a chunk is a contents page rather than something to answer from.
+
+    A contents page is a dense list of lesson titles, so it matches any
+    title-shaped question better than the lesson itself does — a student asking
+    to be taught a lesson was handed the index page instead. It is navigation,
+    and never an answer.
+    """
+    if not text:
+        return False
+    return len(_NAVIGATION_MARKER.findall(text)) >= MIN_NAVIGATION_MARKERS

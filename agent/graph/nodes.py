@@ -736,6 +736,11 @@ def build_compose(config, llm):
 
 # --- persist ----------------------------------------------------------------
 
+def _clip(text: str, limit: int = 120) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def build_persist(config, sticky=None):
     def persist(state) -> dict:
         # TODO (deferred): adaptive_profile / dashboard writes, the
@@ -750,8 +755,28 @@ def build_persist(config, sticky=None):
                 sticky.set(user_id, session_id, code=write["code"],
                            user_type=state.get("user_type"),
                            evidence=write.get("evidence"))
-        logger.info("persist", extra={"pathway": state.get("pathway"),
-                                      "session_language_op": write.get("op")})
+        # One line per turn, carrying everything needed to explain the answer
+        # without re-reading five others: what was asked, in what language and
+        # why, what it matched, and what came back. Correlated by request_id.
+        decision = state.get("language_decision") or {}
+        answers = state.get("answers") or []
+        logger.info("turn", extra={
+            "pathway": state.get("pathway"),
+            "intent": state.get("intent"),
+            "question": _clip(state.get("message", "")),
+            "language": state.get("language"),
+            "language_source": decision.get("source"),
+            "subject_id": state.get("subject_id"),
+            "tasks": [t.get("type") for t in (state.get("tasks") or [])],
+            "grounded": any(a.get("grounded", False) for a in answers),
+            "citations": len(state.get("published_citations") or []),
+            "cited": [
+                f"{c.lesson_title or c.lecture_id}" for c in
+                (state.get("published_citations") or [])[:5]
+            ],
+            "answer_chars": len(state.get("response") or ""),
+            "session_language_op": write.get("op"),
+        })
         # Must stay empty: the streaming path merges every node's delta into the
         # response, so anything returned here would show on one endpoint only.
         return {}
