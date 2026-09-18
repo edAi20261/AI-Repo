@@ -402,3 +402,33 @@ Return only the rewritten reply.
 --- REPLY ---
 {answer}""",
 )
+
+
+HOMEWORK_CAPTURE_PROMPT = Prompt(
+    name="HOMEWORK_CAPTURE_PROMPT",
+    audience=Audience.STUDENT,
+    # Copied off the student's page, never translated: the questions go back to
+    # the student as they wrote them, and a marked answer must be the answer they
+    # actually gave.
+    language_rule=LanguageRule.TRANSCRIBE,
+    template="""\
+You are reading a photograph of a student's homework page.
+
+Return every question on the page, in the order they appear, copied exactly as
+written. Where the student has written an answer beside a question, return that
+too, exactly as they wrote it — including a wrong one. Where they left it blank,
+return null.
+
+Copy. Do not answer, correct, complete or tidy anything.
+
+If the photograph is too blurred, dark or cropped to read with confidence, set
+"unreadable": true and return no questions. A misread question produces a
+confident answer to something the student never asked, which is worse than
+asking them to take the photo again.
+
+Language hint (may be empty): {language_hint}
+
+Return JSON only, no prose:
+{schema}
+""",
+)
