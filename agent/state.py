@@ -27,6 +27,7 @@ class MainState(TypedDict, total=False):
     message: str
     subject_id: Optional[str]       # the subject this turn is about (scopes retrieval)
     lecture_ids: Optional[list[str]]  # optional lecture scope; None -> whole subject
+    study_scope: Optional[dict[str, Any]]  # the UI selection this turn is bounded by
     grade: Optional[str]            # academic grade/year level (NOT a grading result — see grade_result)
     grade_ref: Optional[dict[str, Any]]  # structured {assessment_id, kind} from the frontend for a grade turn
 

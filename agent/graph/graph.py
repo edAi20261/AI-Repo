@@ -22,6 +22,7 @@ from shared.llm import llm_key_available, maybe_llm
 from .. import retrieval
 from ..config import Config, get_config
 from ..models import Style, SubjectFacts
+from ..scope import lecture_filter
 from ..session_memory import SessionLanguage
 from ..state import MainState
 from . import nodes
@@ -66,6 +67,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
     prereq_limit = config.get("agent.max_prereqs", retrieval.DEFAULT_MAX_PREREQS)
     min_score = config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE)
     topic_filter = config.get("agent.topic_filter", "soft")
+    scope_ratio = config.get("agent.scope.relevance_ratio", retrieval.DEFAULT_SCOPE_RATIO)
     with_figure = config.get("agent.explain_figures", False)
 
     def adapter(payload) -> dict:                    # payload = {task, ...shared context}
@@ -80,7 +82,8 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
             "level": params.get("level", "intermediate"),
             "length": params.get("length", "medium"),
             "topic_ids": params.get("topic_ids") or [],
-            "lecture_ids": payload.get("lecture_ids") or None,
+            "lecture_ids": lecture_filter(payload),
+            "study_scope": payload.get("study_scope"),
             "namespaces": payload.get("namespaces") or ["syllabus"],
             "style": payload.get("style") or Style(),
             "language": payload.get("language", "en"),
@@ -92,6 +95,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
             "prereq_limit": prereq_limit,
             "min_score": min_score,
             "topic_filter": topic_filter,
+            "scope_relevance_ratio": scope_ratio,
         })
         # (2) the subgraph ran; `result` is its private output. (3) TRANSLATE OUT below.
         # Tag citations with their task so compose can renumber [n] globally across a
@@ -163,7 +167,7 @@ def _build_assessment_adapter(compiled, config: Config, client=None):
         result = compiled.invoke({
             "query": params.get("query", ""),
             "topic_ids": params.get("topic_ids") or [],
-            "lecture_ids": payload.get("lecture_ids") or None,
+            "lecture_ids": lecture_filter(payload),
             "subject_id": payload.get("subject_id"),
             "namespaces": payload.get("namespaces") or ["syllabus"],
             "language": language,
@@ -212,7 +216,7 @@ def _build_grade_adapter(compiled, config: Config, client=None):
         result = compiled.invoke({       # (1) translate in
             "submissions": submissions,
             "subject_id": payload.get("subject_id"),
-            "lecture_ids": payload.get("lecture_ids") or None,
+            "lecture_ids": lecture_filter(payload),
             "user_id": payload.get("user_id"),
             "language": payload.get("language", "en"),
             "instructions": _subject_instructions(facts),
@@ -260,7 +264,7 @@ def _build_report_adapter(compiled, config: Config, client=None):
             "scope": "student_progress",
             "user_id": payload.get("user_id"),
             "subject_id": payload.get("subject_id"),
-            "lecture_ids": payload.get("lecture_ids") or None,
+            "lecture_ids": lecture_filter(payload),
             "language": payload.get("language", "en"),
         })
         result = state.get("result", {})
@@ -297,7 +301,7 @@ def _build_render_visuals(compiled, config: Config, client=None):
         result = compiled.invoke({
             "specs": specs,
             "subject_id": state.get("subject_id"),
-            "lecture_ids": state.get("lecture_ids") or None,
+            "lecture_ids": lecture_filter(state),
             "user_id": state.get("user_id"),
             "conversation_id": state.get("session_id"),
             "language": state.get("language", "en"),

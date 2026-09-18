@@ -62,6 +62,34 @@ def retrieve(
     return kept
 
 
+def answers_within_scope(
+    query: str,
+    namespaces: list[str],
+    scoped_best: float,
+    *,
+    subject_id: str | None = None,
+    ratio: float,
+) -> bool:
+    """Whether the selected lesson is where this question is actually answered.
+
+    Inside one lesson a similarity floor cannot tell a question the lesson
+    covers from one it does not: with the rest of the corpus filtered out there
+    is nothing left to lose to, so the lesson's own best chunk clears the floor
+    whatever was asked. Both "who was Jabir ibn Hayyan" and "explain the Youth
+    poem" score around 0.50 against the Jabir lesson.
+
+    What separates them is the rest of the corpus. A question the lesson owns
+    scores the same with or without the filter; a question belonging to another
+    lesson scores markedly worse once that lesson is excluded.
+    """
+    if scoped_best <= 0:
+        return False
+    unscoped = rag_search(query or "", namespaces, k=1, subject_id=subject_id)
+    if not unscoped:
+        return True
+    return scoped_best / unscoped[0].score >= ratio
+
+
 def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
     """``"Subtraction Part 2 0.715"`` per chunk — what matched, and how well."""
     return [
@@ -74,6 +102,10 @@ def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
 # silently fall back to "keep everything". config.yaml agent.min_score is the
 # source; this is the safety net when a payload omits it.
 DEFAULT_MIN_SCORE = 0.44
+
+# The shipped ratio, repeated here so a subgraph reached without one does not
+# silently fall back to answering everything. config.yaml is the source.
+DEFAULT_SCOPE_RATIO = 0.90
 
 DEFAULT_MAX_PREREQS = 5
 
