@@ -85,10 +85,18 @@ class PageMeta(BaseModel):
     reading_direction: ReadingDirection = "ltr"
     image_uri: Optional[str] = None
     source_tier: int = 1
+    figure_area: float = Field(
+        default=0.0,
+        description="Combined area of the figures on the page, backgrounds excluded.")
 
     @property
     def area(self) -> float:
         return self.width * self.height
+
+    @property
+    def figure_fraction(self) -> float:
+        """How much of the page is illustration."""
+        return (self.figure_area / self.area) if self.area else 0.0
 
 
 class ParsedPage(BaseModel):

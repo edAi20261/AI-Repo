@@ -35,6 +35,26 @@ def band_height(page_height: float, blocks: Sequence[Block] = ()) -> float:
     return max(MIN_BAND_POINTS, page_height / BAND_DIVISOR)
 
 
+def assign_rows(blocks: Sequence[Block], band: float) -> dict[int, int]:
+    """Which row of the page each block sits in.
+
+    Blocks are clustered by how far apart their tops are, not by rounding the
+    top to a fixed grid. Rounding puts a boundary somewhere on every page, and
+    two boxes three points apart that straddle it end up in different rows —
+    which is exactly the case the banding exists to prevent.
+    """
+    ordered = sorted(blocks, key=lambda b: b.bbox[1])
+    rows: dict[int, int] = {}
+    row = 0
+    top = ordered[0].bbox[1] if ordered else 0.0
+    for block in ordered:
+        if block.bbox[1] - top > band:
+            row += 1
+            top = block.bbox[1]
+        rows[id(block)] = row
+    return rows
+
+
 def sort_blocks(
     blocks: Iterable[Block],
     *,
@@ -46,13 +66,12 @@ def sort_blocks(
     if not blocks:
         return []
 
-    band = band_height(page_height, blocks)
+    rows = assign_rows(blocks, band_height(page_height, blocks))
 
-    def key(block: Block) -> tuple[float, float]:
-        x0, y0, x1, _ = block.bbox
-        row = round(y0 / band)
+    def key(block: Block) -> tuple[int, float]:
+        x0, _, x1, _ = block.bbox
         # Arabic reads from the right, so the rightmost edge comes first.
-        return (row, -x1) if direction == "rtl" else (row, x0)
+        return (rows[id(block)], -x1 if direction == "rtl" else x0)
 
     ordered = sorted(blocks, key=key)
     for position, block in enumerate(ordered, start=1):
