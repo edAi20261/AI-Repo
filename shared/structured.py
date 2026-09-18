@@ -397,6 +397,17 @@ def _allowed_values(schema: type[BaseModel]) -> dict[str, list[Any]]:
     return found
 
 
+def recover(raw_text: str, schema: type[M]) -> Optional[M]:
+    """Validate a reply into ``schema``, or return ``None``.
+
+    For a caller that owns its own transport and so cannot use
+    ``call_structured`` — the vision client posts an image alongside the prompt
+    — but must not grow a private JSON scraper to do it. There were two of those
+    before this existed.
+    """
+    return _recover(raw_text, schema)
+
+
 def _recover(raw_text: str, schema: type[M]) -> Optional[M]:
     """Last resort: pull an object out of a reply that wrapped it in prose.
 

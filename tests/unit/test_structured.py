@@ -257,3 +257,38 @@ def test_a_prompt_string_is_one_message_not_one_per_character():
 
     already = [HumanMessage(content="a"), HumanMessage(content="b")]
     assert _as_conversation(already) == already
+
+
+def test_a_vision_failure_says_which_model_and_why(caplog):
+    """The reason is the point. The vision transport used to be a bare
+    `except Exception: return None`, so an expired key, a rate limit and a
+    genuinely unreadable page were indistinguishable — operators saw "needs
+    review" on a whole textbook with nothing to act on."""
+    import logging
+
+    import httpx
+    import pytest
+
+    from shared.config import Config
+    from shared.vision import read_image
+    from ingestion.schemas import PageTranscription
+
+    def refuse(*args, **kwargs):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(httpx, "post", refuse)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert read_image(b"png", "read this", PageTranscription,
+                              config=Config.load(), label="transcribe_page") is None
+    finally:
+        monkeypatch.undo()
+
+    # The structured fields, not the message: the JSON formatter emits these as
+    # first-class keys, which is what an operator actually filters on.
+    failures = [r for r in caplog.records if r.message == "vision call failed"]
+    assert failures, "the failed call was not logged"
+    assert {r.label for r in failures} == {"transcribe_page"}
+    assert {r.error for r in failures} == {"ConnectError"}
+    assert any(r.message == "vision failed on every model" for r in caplog.records)
