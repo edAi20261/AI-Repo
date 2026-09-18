@@ -69,6 +69,8 @@ def parse_page(
 
     ordered = sort_blocks(_deduplicate(blocks), page_height=meta.height,
                           direction=direction)
+    meta = meta.model_copy(update={
+        "figure_area": sum((r[2] - r[0]) * (r[3] - r[1]) for r in figures)})
     return ParsedPage(meta=meta, blocks=ordered)
 
 
