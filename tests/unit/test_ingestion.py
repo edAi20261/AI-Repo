@@ -17,9 +17,6 @@ from ingestion.llm_provider import (
     HashEmbedder,
     OpenRouterVisionClient,
     StubVisionClient,
-    _caption_from_json,
-    _page_from_json,
-    _strip_json,
     get_vision_client,
 )
 from ingestion.backend import (
@@ -28,6 +25,7 @@ from ingestion.backend import (
     resolve_lesson,
 )
 from ingestion.context import PipelineContext
+from ingestion.schemas import FigureCaption, PageTranscription
 from ingestion.graph import run_ingestion
 from ingestion.state import Chunk, Dependency, Discipline, Element, new_state
 from ingestion.stages.chunk import run as run_chunk
@@ -543,40 +541,44 @@ def test_vision_stub_is_marked_and_safe():
 
 # --- real vision client: JSON parsing + factory ----------------------------
 
-def test_strip_json_recovers_fenced_and_bare():
+def test_a_vision_reply_wrapped_in_prose_is_still_read():
+    """Vision models fence their JSON or introduce it. The parsing lives in
+    shared.structured now, so the vision client no longer carries a private
+    scraper of its own — there were two of those."""
+    from shared.structured import recover
+
     fenced = 'Here you go:\n```json\n{"unreadable": false, "text": "hi"}\n```'
-    assert _strip_json(fenced) == {"unreadable": False, "text": "hi"}
+    assert recover(fenced, PageTranscription).text == "hi"
     bare = 'prose {"text": "x", "figures": []} trailing'
-    assert _strip_json(bare) == {"text": "x", "figures": []}
-    assert _strip_json("no json here") is None
-    assert _strip_json(None) is None
-    assert _strip_json("[1, 2, 3]") is None  # a list is not a page object
+    assert recover(bare, PageTranscription).text == "x"
+    assert recover("no json here", PageTranscription) is None
 
 
-def test_page_from_json_reads_text_boxes_and_unreadable():
-    page = _page_from_json(
-        {
-            "unreadable": False,
-            "text": "the page",
-            "figures": [{"bbox": [1, 2, 3, 4]}, {"bbox": "bad"}, {"nope": 1}],
-        }
-    )
+def test_a_malformed_figure_box_costs_the_figure_not_the_page():
+    """The regression this guards. The old hand-written parser dropped a bad box
+    and kept the page; validating the object whole would fail the page instead,
+    sending a page of readable text to manual review over one bad crop."""
+    page = PageTranscription.model_validate({
+        "unreadable": False,
+        "text": "the page",
+        "figures": [{"bbox": [1, 2, 3, 4]}, {"bbox": "bad"}, {"nope": 1}],
+    })
     assert page.text == "the page"
     assert page.unreadable is False
-    # Only the well-formed 4-number bbox survives.
     assert [f.bbox for f in page.figures] == [(1.0, 2.0, 3.0, 4.0)]
 
 
-def test_page_from_json_unreadable_true():
-    page = _page_from_json({"unreadable": True, "text": "", "figures": []})
+def test_an_unreadable_page_says_so():
+    page = PageTranscription.model_validate(
+        {"unreadable": True, "text": "", "figures": []})
     assert page.unreadable is True
     assert page.text == ""
 
 
-def test_caption_from_json():
-    cap = _caption_from_json({"caption": "a heart", "alt_text": "labelled diagram"})
-    assert cap.caption == "a heart" and cap.alt_text == "labelled diagram"
-    empty = _caption_from_json({})
+def test_a_caption_with_nothing_in_it_is_empty_not_absent():
+    cap = FigureCaption.model_validate({"caption": "a heart", "alt_text": "diagram"})
+    assert cap.caption == "a heart" and cap.alt_text == "diagram"
+    empty = FigureCaption.model_validate({})
     assert empty.caption == "" and empty.alt_text == ""
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 BLOOM_LEVELS = {"remember", "understand", "apply", "analyze", "evaluate", "create"}
 # The platform owns ai.dependency_strength; these are its values. A model asked for
@@ -44,6 +44,24 @@ class PageTranscription(BaseModel):
     text: str = ""
     figures: list[FigureBox] = Field(default_factory=list)
     unreadable: bool = False
+
+    @field_validator("figures", mode="before")
+    @classmethod
+    def _drop_malformed_boxes(cls, v):
+        """A figure whose box the model got wrong costs that figure, not the page.
+
+        Losing one crop is a missing illustration; failing the whole object sends
+        a page of readable text to manual review instead of indexing it.
+        """
+        if not isinstance(v, list):
+            return []
+        kept = []
+        for box in v:
+            try:
+                kept.append(FigureBox.model_validate(box))
+            except ValidationError:
+                continue
+        return kept
 
 
 class FigureCaption(BaseModel):
