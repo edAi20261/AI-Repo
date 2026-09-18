@@ -360,6 +360,12 @@ api:
   request_timeout: 120         # seconds a caller should allow for a chat turn
   docs_enabled: true           # OpenAPI + /docs; off in production
   cors_origins: []             # the platform backend calls this service, not a browser
+  homework:
+    # A phone photo of one page. Above this the upload is refused with a size
+    # error rather than spending a vision call on it: a 12 MP camera JPEG is
+    # around 4 MB, and anything much larger is a scan of a whole booklet, which
+    # is an ingestion job rather than a homework question.
+    max_upload_bytes: 8388608
   ingestion:
     max_workers: 2             # concurrent pipeline runs (each is minutes long and heavy)
     job_retention: 500         # in-process job records kept for status polling
