@@ -26,7 +26,8 @@ from ... import render, retrieval
 from ...citations import cited_numbers, has_citation, keep_cited
 from ...models import Citation, MathFigureSpec, PrereqTopic, RetrievedChunk, Style
 from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, SUMMARIZE_PROMPT
-from ...retrieval import DEFAULT_MIN_SCORE
+from ...retrieval import DEFAULT_MIN_SCORE, DEFAULT_SCOPE_RATIO
+from ...scope import StudyScope, lecture_filter, scope_of
 
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
 _MATH_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -45,6 +46,7 @@ class ExplainSummarizeState(TypedDict, total=False):
     language: str
     subject_id: str | None
     lecture_ids: list[str] | None  # optional lecture scope; None -> whole subject
+    study_scope: dict | None       # the UI selection this turn is bounded by
     grade: str | None
     instructions: str               # subject-specific prompt addendum (e.g. math), or ""
     k: int
@@ -52,6 +54,7 @@ class ExplainSummarizeState(TypedDict, total=False):
     prereq_limit: int
     min_score: float
     topic_filter: str               # soft = a topic-filtered miss retries unscoped (config agent.topic_filter)
+    scope_relevance_ratio: float    # in-scope share of the unscoped best score (config agent.scope.relevance_ratio)
     # produced
     chunks: list[RetrievedChunk]
     prereq_chunks: list[RetrievedChunk]
@@ -63,16 +66,28 @@ class ExplainSummarizeState(TypedDict, total=False):
 
 
 def _retrieve(state: ExplainSummarizeState) -> dict:
+    scope = scope_of(state)
+    subject_id = scope.subject_id or state.get("subject_id")
+    query = state.get("query") or ""
     chunks = retrieval.retrieve(
-        state.get("query") or "",
+        query,
         state["namespaces"],
         k=state.get("k", 8),
-        subject_id=state.get("subject_id"),
+        subject_id=subject_id,
         topic_ids=state.get("topic_ids") or None,
-        lecture_ids=state.get("lecture_ids") or None,
+        lecture_ids=lecture_filter(state),
         min_score=state.get("min_score", DEFAULT_MIN_SCORE),
         topic_filter=state.get("topic_filter", "hard"),
     )
+    if chunks and scope.is_narrow:
+        ratio = state.get("scope_relevance_ratio") or DEFAULT_SCOPE_RATIO
+        if not retrieval.answers_within_scope(
+            query, state["namespaces"], chunks[0].score,
+            subject_id=subject_id, ratio=ratio,
+        ):
+            logger.info("question falls outside the selected lesson", extra={
+                "lecture_id": scope.lecture_id, "scoped_best": round(chunks[0].score, 3)})
+            return {"chunks": []}
     return {"chunks": chunks}
 
 
@@ -105,9 +120,11 @@ def _build_answer(mode: str, llm, config):
         style = st.tone if st else "neutral"
 
         if not chunks and not prereq_chunks:
+            scope = scope_of(state)
             logger.info("answer declined (no grounding)", extra={
-                "mode": mode, "chunks": 0, "prereq_chunks": 0})
-            return {"explanation": _no_context_message(state.get("language", "en")),
+                "mode": mode, "chunks": 0, "prereq_chunks": 0,
+                "lecture_id": scope.lecture_id})
+            return {"explanation": _declined(scope, state.get("language", "en")),
                     "citations": [], "grounded": False}
 
         if llm is None:  # no chat key: deterministic grounded stub
@@ -217,7 +234,16 @@ def _figure_spec(mode, state, chunks, config) -> dict | None:
             "page": page}
 
 
-def _no_context_message(language: str) -> str:
+def _declined(scope: StudyScope, language: str) -> str:
+    """Why nothing was found, in the terms the student is working in.
+
+    Inside a lesson, "there isn't enough syllabus material" is the wrong answer
+    twice over: the material exists, and the student cannot tell that the
+    boundary they chose is what stopped it.
+    """
+    lesson = scope.label()
+    if scope.is_narrow and lesson:
+        return translate("explain.out_of_scope", language, lesson=lesson)
     return translate("explain.no_context", language)
 
 
