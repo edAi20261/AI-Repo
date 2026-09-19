@@ -121,21 +121,21 @@ def test_an_oversized_chunk_is_split_on_sentence_boundaries():
 
 
 def test_a_fragment_joins_the_chunk_before_it_under_the_same_heading():
-    from ingestion.layout.chunker import Chunk
+    from ingestion.layout.chunker import PageChunk
 
     merged = merge_undersized([
-        Chunk(text=PROSE, heading="Tides", page=7, doc_id="d"),
-        Chunk(text="Short tail.", heading="Tides", page=7, doc_id="d"),
+        PageChunk(text=PROSE, heading="Tides", page=7, doc_id="d"),
+        PageChunk(text="Short tail.", heading="Tides", page=7, doc_id="d"),
     ])
     assert len(merged) == 1
     assert merged[0].text.endswith("Short tail.")
 
 
 def test_a_fragment_with_nothing_before_it_survives_only_if_it_is_findable():
-    from ingestion.layout.chunker import Chunk
+    from ingestion.layout.chunker import PageChunk
 
-    kept = merge_undersized([Chunk(text="Tiny.", heading="Tides", page=7, doc_id="d")])
-    dropped = merge_undersized([Chunk(text="Tiny.", page=7, doc_id="d")])
+    kept = merge_undersized([PageChunk(text="Tiny.", heading="Tides", page=7, doc_id="d")])
+    dropped = merge_undersized([PageChunk(text="Tiny.", page=7, doc_id="d")])
     assert len(kept) == 1
     assert dropped == []
 

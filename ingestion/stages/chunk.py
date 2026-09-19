@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import Counter
 
 from ..context import PipelineContext
+from ..layout.bridge import chunks_for, parsed_pages
 from ..state import Chunk, Element, IngestionState
 from ..utils.tokens import count_tokens
 
@@ -23,11 +24,42 @@ _SENTENCE_ENDS = ".!?؟\n"
 _HEADING_TRAIL = " \t،,;:."
 
 
+def _layout_chunks(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    """Chunks from the layout parser: whole blocks, never split text.
+
+    The length-based chunker below stays for lessons that arrive as body text
+    rather than a file, and for any document the tier router sends to a parser
+    that is not wired yet.
+    """
+    pages = parsed_pages(state["parsed_pages"])
+    chunks = chunks_for(
+        pages,
+        lecture_id=state["lecture_id"],
+        language=state.get("language_hint") or ctx.config.get("language.default", "en"),
+        version=state.get("version", 1),
+        namespace=state.get("namespace", "syllabus"),
+        subject_id=state.get("subject_id"),
+        grade=state.get("grade"),
+    )
+    state["chunks"] = chunks
+    state.setdefault("stats", {})["chunk"] = {
+        "chunks": len(chunks),
+        "pages_parsed": len(pages),
+        "avg_tokens": round(
+            sum(count_tokens(c.text) for c in chunks) / len(chunks), 1) if chunks else 0,
+        "source": "layout",
+    }
+    return state
+
+
 def _clean_heading(text: str) -> str:
     return text.rstrip(_HEADING_TRAIL)
 
 
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    if state.get("parsed_pages"):
+        return _layout_chunks(state, ctx)
+
     cfg = ctx.config.get("ingestion.chunk", {})
     chunker = _Chunker(
         state=state,

@@ -140,6 +140,7 @@ class IngestionState(TypedDict, total=False):
 
     # accumulated by the stages
     pages: list[PageResult]
+    parsed_pages: list[dict]        # layout-parsed pages, when ingestion.layout is on
     elements: list[Element]  # flattened across pages, in reading order
     figures: list[Figure]
     chunks: list[Chunk]

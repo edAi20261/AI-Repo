@@ -62,8 +62,13 @@ STANDS_ALONE = frozenset({"sidebar", "question"})
 ANNOTATES = frozenset({"caption", "label"})
 
 
-class Chunk(BaseModel):
-    """One row in the vector store."""
+class PageChunk(BaseModel):
+    """One page's worth of blocks that belong together.
+
+    Named apart from ``ingestion.state.Chunk``, which is the row written to
+    ``ai.chunks``. This is the layout decision; that is the record. Keeping one
+    name for both invites code that converts a thing into itself.
+    """
 
     text: str
     block_type: str = "section"
@@ -85,7 +90,7 @@ class Chunk(BaseModel):
         return count_tokens(self.text)
 
 
-def page_to_chunks(page: ParsedPage) -> list[Chunk]:
+def page_to_chunks(page: ParsedPage) -> list[PageChunk]:
     """The chunks one parsed page produces.
 
     Four outcomes, and every page in every document falls into one of them.
@@ -146,7 +151,7 @@ def classify_layout(blocks: Sequence[Block], meta: PageMeta) -> PageLayout:
 
 # --- the ordinary page ------------------------------------------------------
 
-def standard_chunks(blocks: Sequence[Block], meta: PageMeta) -> list[Chunk]:
+def standard_chunks(blocks: Sequence[Block], meta: PageMeta) -> list[PageChunk]:
     """A page of prose under headings: one chunk per heading and its body."""
     blocks = content_blocks(blocks)
     groups: list[dict] = []
@@ -186,14 +191,14 @@ def standard_chunks(blocks: Sequence[Block], meta: PageMeta) -> list[Chunk]:
     return merge_undersized(chunks)
 
 
-def _group_to_chunk(group: dict, meta: PageMeta) -> Chunk:
+def _group_to_chunk(group: dict, meta: PageMeta) -> PageChunk:
     """One group of blocks as a chunk."""
     heading: Optional[Block] = group["heading"]
     parts = [heading.text] if heading else []
     parts += [b.text for b in group["body"]]
     parts += [b.text for b in group["extras"]]
     members = ([heading] if heading else []) + group["body"] + group["extras"]
-    return Chunk(
+    return PageChunk(
         text="\n".join(p for p in parts if p),
         block_type=group.get("kind", "section"),
         heading=heading.text if heading else None,
@@ -222,8 +227,8 @@ def is_passenger(block: Block) -> bool:
 
 
 def attach_passengers(
-    chunks: list[Chunk], orphans: Sequence[Block], *, test: bool = True
-) -> list[Chunk]:
+    chunks: list[PageChunk], orphans: Sequence[Block], *, test: bool = True
+) -> list[PageChunk]:
     """Give every fragment no group claimed to the chunk it sits nearest.
 
     Written into the chunk text in brackets so it is embedded *with* its parent,
@@ -245,7 +250,7 @@ def attach_passengers(
     return chunks
 
 
-def _nearest(chunks: list[Chunk], block: Block) -> Optional[Chunk]:
+def _nearest(chunks: list[PageChunk], block: Block) -> Optional[PageChunk]:
     """The chunk whose region sits closest to this block on the page."""
     placed = [c for c in chunks if c.bbox]
     if not placed:
@@ -257,7 +262,7 @@ def _nearest(chunks: list[Chunk], block: Block) -> Optional[Chunk]:
 
 def whole_page_chunk(
     blocks: Sequence[Block], meta: PageMeta, block_type: str
-) -> Chunk:
+) -> PageChunk:
     """One chunk for a page whose text only means anything together.
 
     An opener with a title over a photograph, or a spread of scattered boxes
@@ -267,7 +272,7 @@ def whole_page_chunk(
     ordered = _banded(content_blocks(blocks), meta)
     body = [b for b in ordered if b.type != "answer_key"]
     hidden = [b for b in ordered if b.type == "answer_key"]
-    return Chunk(
+    return PageChunk(
         text="\n".join(b.text for b in body),
         block_type=block_type,
         bbox=_union(list(blocks)),
@@ -280,7 +285,7 @@ def whole_page_chunk(
     )
 
 
-def diagram_chunks(blocks: Sequence[Block], meta: PageMeta) -> list[Chunk]:
+def diagram_chunks(blocks: Sequence[Block], meta: PageMeta) -> list[PageChunk]:
     """One chunk per annotation on an illustration.
 
     Each callout on a diagram is usually self-contained — a small heading and a
@@ -289,7 +294,7 @@ def diagram_chunks(blocks: Sequence[Block], meta: PageMeta) -> list[Chunk]:
     """
     figure_id = f"{meta.doc_id}-p{meta.page}-fig1"
     return [
-        Chunk(
+        PageChunk(
             text=block.text,
             block_type="diagram_callout",
             figure_id=figure_id,
@@ -306,9 +311,9 @@ def diagram_chunks(blocks: Sequence[Block], meta: PageMeta) -> list[Chunk]:
 
 # --- size guards ------------------------------------------------------------
 
-def split_oversized(chunks: list[Chunk], limit: int = MAX_TOKENS) -> list[Chunk]:
+def split_oversized(chunks: list[PageChunk], limit: int = MAX_TOKENS) -> list[PageChunk]:
     """Break a chunk that grew past the limit, on sentence boundaries only."""
-    out: list[Chunk] = []
+    out: list[PageChunk] = []
     for chunk in chunks:
         if chunk.tokens <= limit:
             out.append(chunk)
@@ -318,13 +323,13 @@ def split_oversized(chunks: list[Chunk], limit: int = MAX_TOKENS) -> list[Chunk]
     return out
 
 
-def merge_undersized(chunks: list[Chunk], floor: int = MIN_TOKENS) -> list[Chunk]:
+def merge_undersized(chunks: list[PageChunk], floor: int = MIN_TOKENS) -> list[PageChunk]:
     """Fold a fragment into the chunk before it, under the same heading.
 
     A fragment with nothing before it survives only if it is the kind of thing
     someone searches for.
     """
-    out: list[Chunk] = []
+    out: list[PageChunk] = []
     for chunk in chunks:
         if chunk.tokens >= floor:
             out.append(chunk)
