@@ -199,3 +199,69 @@ def test_changing_the_prompt_changes_what_the_cache_is_keyed_on():
 
     assert _prompt("read this page").fingerprint == _prompt("read this page").fingerprint
     assert _prompt("read this page").fingerprint != _prompt("read this page.").fingerprint
+
+
+# --- reading a page with a vision model -------------------------------------
+
+def test_a_reported_box_is_converted_from_fractions_to_page_points():
+    """Models place boxes far more reliably in fractions of the page than in
+    absolute points, and everything downstream measures points."""
+    from ingestion.layout.tier3 import RawBlock, _to_block
+
+    meta = PageMeta(doc_id="d", page=1, width=600, height=800)
+    block = _to_block(RawBlock(text="x", bbox=(0.0, 0.25, 0.5, 0.5)), meta)
+    assert block.bbox == (0.0, 200.0, 300.0, 400.0)
+
+
+def test_a_reversed_box_is_read_rather_than_refused():
+    from ingestion.layout.tier3 import RawBlock
+
+    assert RawBlock(text="x", bbox=(0.9, 0.8, 0.1, 0.2)).bbox == (0.1, 0.2, 0.9, 0.8)
+
+
+def test_a_block_the_model_mangled_costs_that_block_not_the_page():
+    from ingestion.layout.tier3 import LayoutTranscription
+
+    page = LayoutTranscription.model_validate({
+        "page_layout": "standard",
+        "blocks": [{"text": "real", "bbox": [0, 0, 1, 0.2]},
+                   {"bbox": "nonsense"},
+                   {"text": "   ", "bbox": [0, 0, 1, 1]}],
+    })
+    assert [b.text for b in page.blocks] == ["real"]
+
+
+# --- what a confidently wrong transcription looks like ----------------------
+
+def _parsed(text: str) -> ParsedPage:
+    return _page(1, [_block(text)])
+
+
+def test_a_page_of_ink_that_came_back_almost_empty_is_flagged():
+    """The output parses perfectly and the page is gone."""
+    from ingestion.layout.tier3 import problems
+
+    assert "short_output" in problems(_parsed("a few words"), ink=0.40)
+    assert problems(_parsed("a few words"), ink=0.001) == []
+
+
+def test_latin_letters_welded_into_arabic_words_are_flagged():
+    """Script drift: the model has left the script it was reading."""
+    from ingestion.layout.tier3 import problems
+
+    assert "script_drift" in problems(_parsed("جابرd بن حيان"), ink=0.01)
+    assert "script_drift" not in problems(_parsed("جابر بن حيان (Jabir)"), ink=0.01)
+
+
+def test_a_phrase_repeated_until_the_budget_ran_out_is_flagged():
+    """The classic collapse: it finds a phrase it likes and emits it forever."""
+    from ingestion.layout.tier3 import problems
+
+    loop = "the sun heats the air near the equator " * 8
+    assert "repetition" in problems(_parsed(loop), ink=0.20)
+
+
+def test_a_page_that_could_not_be_read_at_all_says_so():
+    from ingestion.layout.tier3 import problems
+
+    assert problems(None, ink=0.3) == ["unreadable"]

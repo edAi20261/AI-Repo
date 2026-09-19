@@ -203,3 +203,41 @@ def test_page_furniture_never_becomes_a_chunk():
     ], META)
     assert all("Publisher" not in c.text for c in chunks)
     assert all("\n7" not in c.text for c in chunks)
+
+
+def test_a_run_with_no_sentence_marks_is_still_cut():
+    """Sentence boundaries are the right place to cut, and sometimes there are
+    none: a transcribed Arabic page came back as one 3,000-token run with no
+    punctuation at all and the size guard passed it through whole. A vector
+    averaged over 3,000 tokens matches nothing in particular."""
+    from ingestion.layout.chunker import _split_text
+    from ingestion.utils.tokens import count_tokens
+
+    # Vocalised, as the corpus is: the diacritics are most of the tokens — the
+    # same words without them come to 468 rather than 3,068.
+    run = "وَكَانَ مِنَ الرَّكَائِزِ الَّتِي اعْتَمَدَ عَلَيْهَا جَابِرٌ بْنُ حَيَّانَ " * 40
+    assert count_tokens(run) > 2000
+    pieces = _split_text(run, 800)
+    assert len(pieces) > 1
+    assert max(count_tokens(p) for p in pieces) <= 900
+
+
+def test_a_long_sentence_is_not_carried_across_a_split_as_overlap():
+    """Overlap keeps a statement whole across a join. Carrying a long sentence
+    forward instead doubles the piece it starts — which turned a 3,000-token run
+    into pieces of 1,600."""
+    from ingestion.layout.chunker import _split_text
+    from ingestion.utils.tokens import count_tokens
+
+    long_sentences = " ".join(f"{'word ' * 300}." for _ in range(3))
+    assert all(count_tokens(p) <= 900 for p in _split_text(long_sentences, 800))
+
+
+def test_short_sentences_still_overlap_so_a_statement_survives_the_join():
+    from ingestion.layout.chunker import _split_text
+
+    prose = "Water moves between the sea and the air. " * 120
+    pieces = _split_text(prose, 800)
+    assert len(pieces) > 1
+    # The last sentence of one piece opens the next.
+    assert pieces[1].startswith(pieces[0].rstrip().split(".")[-2].strip()[:20])
