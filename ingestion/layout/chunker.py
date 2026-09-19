@@ -49,6 +49,9 @@ COLUMN_TOLERANCE = 0.10
 LABEL_MEDIAN_WORDS = 2
 LABEL_MIN_BLOCKS = 8
 
+# A sentence longer than this is not carried across a split as overlap.
+OVERLAP_MAX = MAX_TOKENS // 4
+
 _SENTENCE_END = re.compile(r"(?<=[.!?؟۔])\s+")
 
 # Types that never become a chunk on their own: page furniture, and the image
@@ -343,21 +346,50 @@ def merge_undersized(chunks: list[PageChunk], floor: int = MIN_TOKENS) -> list[P
 
 
 def _split_text(text: str, limit: int) -> list[str]:
-    sentences = [s for s in _SENTENCE_END.split(text) if s.strip()] or [text]
     pieces: list[str] = []
     current: list[str] = []
-    for sentence in sentences:
+    for sentence in _sentences(text, limit):
         candidate = current + [sentence]
         if current and count_tokens(" ".join(candidate)) > limit:
             pieces.append(" ".join(current))
             # One sentence of overlap, so a statement split across the join is
-            # still whole in one of the pieces.
-            current = [current[-1], sentence]
+            # still whole in one of the pieces — but only while that sentence is
+            # small. Carrying a long one forward doubles the piece it starts,
+            # which is how a 3,000-token run came back as pieces of 1,600.
+            tail = current[-1]
+            current = [tail, sentence] if count_tokens(tail) <= OVERLAP_MAX else [sentence]
         else:
             current = candidate
     if current:
         pieces.append(" ".join(current))
     return pieces
+
+
+def _sentences(text: str, limit: int) -> list[str]:
+    """The text as sentences, and any single sentence longer than a whole chunk
+    broken on word boundaries.
+
+    Sentence boundaries are the right place to cut, and sometimes there are
+    none: a transcribed Arabic page came back as one 3,000-token run with no
+    punctuation at all, and the size guard passed it through whole. A vector
+    averaged over 3,000 tokens matches nothing in particular, so a cut on a word
+    boundary is worse than a sentence and much better than no cut.
+    """
+    out: list[str] = []
+    sentences = [s for s in _SENTENCE_END.split(text) if s.strip()] or [text]
+    for sentence in sentences:
+        if count_tokens(sentence) <= limit:
+            out.append(sentence)
+            continue
+        words, run = sentence.split(), []
+        for word in words:
+            run.append(word)
+            if count_tokens(" ".join(run)) >= limit:
+                out.append(" ".join(run))
+                run = []
+        if run:
+            out.append(" ".join(run))
+    return out or [text]
 
 
 # --- geometry ---------------------------------------------------------------
