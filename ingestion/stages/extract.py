@@ -24,6 +24,8 @@ from ..utils import is_garbage, normalise_text, pdf
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
 from ..layout import TEXT_LAYER, VISION, PageMeta, ParsedPage, choose_tier, parse_page
+from ..layout.page_cache import PageCache
+from ..prompts import PAGE_TRANSCRIPTION_PROMPT
 from ..utils.source import materialise
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     layout_cfg = ing.get("layout", {})
     layout_on = bool(layout_cfg.get("enabled"))
     parsed_pages: list[dict] = []
+    cache = _page_cache(cfg, layout_cfg) if layout_on else None
 
     pages: list[PageResult] = []
     elements: list[Element] = []
@@ -90,7 +93,8 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
         char_count = pdf.page_char_count(page)
 
         if layout_on:
-            parsed = _parse_layout(page, page_no, state, layout_cfg, char_count, counts)
+            parsed = _parse_layout(
+                page, page_no, state, layout_cfg, char_count, counts, cache)
             if parsed is not None:
                 parsed_pages.append(parsed)
 
@@ -215,6 +219,8 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     state["figures"] = figures
     if layout_on:
         state["parsed_pages"] = parsed_pages
+        if cache is not None:
+            counts.update(cache.report())
     state.setdefault("stats", {})["extract"] = {
         "pages": len(pages),
         **counts,
@@ -291,6 +297,19 @@ def _extract_body_text(state: IngestionState, ctx: PipelineContext) -> Ingestion
     return state
 
 
+def _page_cache(cfg: Any, layout_cfg: dict) -> Optional[PageCache]:
+    """The cache for this run, or ``None`` when it is switched off.
+
+    Keyed on the tier that produced a page and on the prompt's own digest, so a
+    change to either sends the page back to a model without anyone having to
+    remember to invalidate anything.
+    """
+    if not layout_cfg.get("cache", True):
+        return None
+    return PageCache(cfg, model="text-layer",
+                     prompt_version=PAGE_TRANSCRIPTION_PROMPT.fingerprint)
+
+
 def _parse_layout(
     page: Any,
     page_no: int,
@@ -298,6 +317,7 @@ def _parse_layout(
     layout_cfg: dict,
     char_count: int,
     counts: dict,
+    cache: Optional[PageCache] = None,
 ) -> Optional[dict]:
     """This page as typed blocks in reading order, or ``None`` when no tier can.
 
@@ -312,6 +332,11 @@ def _parse_layout(
         height=float(page.rect.height),
         reading_direction=layout_cfg.get("reading_direction", "ltr"),
     )
+    if cache is not None:
+        stored = cache.get(state["lecture_id"], page_no)
+        if stored is not None:
+            return stored.model_dump()
+
     blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
     wanted = choose_tier(page, char_count=char_count, blocks=blocks)
     counts[f"layout_wants_tier{wanted}"] = counts.get(f"layout_wants_tier{wanted}", 0) + 1
@@ -332,7 +357,11 @@ def _parse_layout(
         logger.info("page read by the text layer though it wants a richer parser",
                     extra={"lecture_id": state["lecture_id"], "page": page_no,
                            "wanted_tier": wanted})
-    return ParsedPage(meta=meta, blocks=blocks).model_dump()
+
+    parsed = ParsedPage(meta=meta, blocks=blocks)
+    if cache is not None:
+        cache.put(state["lecture_id"], page_no, parsed)
+    return parsed.model_dump()
 
 
 def _clear_previous_figures(ctx: PipelineContext, lecture_id: str) -> None:

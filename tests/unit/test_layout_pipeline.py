@@ -119,3 +119,83 @@ def test_rotated_content_still_means_the_page_needs_a_better_parser():
     blocks = [_block("Tides", "heading", y=50), _block(PROSE, y=120),
               _block("Answers: 1b 2d", "answer_key", y=700, rotation=180.0)]
     assert choose_tier(_Page(), char_count=900, blocks=blocks) == VISION
+
+
+# --- the page cache ---------------------------------------------------------
+
+def test_a_cached_page_is_not_read_again(fake_postgres):
+    """One vision call per page is the most expensive thing the pipeline does,
+    and chunking is the thing most often changed. Coupling them means every
+    adjustment to how blocks are grouped re-pays for reading every page."""
+    from ingestion.layout.page_cache import PageCache
+    from shared.config import Config
+
+    stored = _page(4, [_block("Tides", "heading", y=50), _block(PROSE)])
+    fake_postgres(rows=[(stored.model_dump(mode="json"),)])
+
+    cache = PageCache(Config.load(), model="text-layer", prompt_version="abc123")
+    got = cache.get("11111111-1111-1111-1111-111111111111", 4)
+
+    assert got is not None
+    assert got.meta.page == 4
+    assert [b.text for b in got.blocks] == [b.text for b in stored.blocks]
+    assert cache.report()["cache_hits"] == 1
+
+
+def test_a_page_nobody_has_read_is_a_miss(fake_postgres):
+    from ingestion.layout.page_cache import PageCache
+    from shared.config import Config
+
+    fake_postgres(rows=[])
+    cache = PageCache(Config.load(), model="text-layer", prompt_version="abc123")
+
+    assert cache.get("11111111-1111-1111-1111-111111111111", 4) is None
+    assert cache.report() == {"cache_hits": 0, "cache_misses": 1, "cache_enabled": True}
+
+
+def test_a_cache_that_cannot_be_reached_never_fails_the_ingest(fake_postgres, caplog):
+    """A missing table costs money, not correctness. It is reported once, with
+    what to do about it, rather than per page or not at all."""
+    import logging
+
+    from ingestion.layout.page_cache import PageCache
+    from shared.config import Config
+
+    fake_postgres(explode=True)
+    cache = PageCache(Config.load(), model="text-layer", prompt_version="abc123")
+
+    with caplog.at_level(logging.ERROR):
+        assert cache.get("11111111-1111-1111-1111-111111111111", 4) is None
+        assert cache.get("11111111-1111-1111-1111-111111111111", 5) is None
+
+    assert cache.report()["cache_enabled"] is False
+    # An outage is not a miss: reporting one would describe a working cache
+    # that happened to be cold.
+    assert cache.report()["cache_misses"] == 0
+    assert sum(1 for r in caplog.records if "page cache unavailable" in r.message) == 1
+
+
+def test_a_stored_page_that_no_longer_fits_the_schema_is_re_read(fake_postgres):
+    """The shape changed under it. That is stale, not fatal."""
+    from ingestion.layout.page_cache import PageCache
+    from shared.config import Config
+
+    fake_postgres(rows=[({"meta": {"doc_id": "d"}, "blocks": "not a list"},)])
+    cache = PageCache(Config.load(), model="text-layer", prompt_version="abc123")
+
+    assert cache.get("11111111-1111-1111-1111-111111111111", 4) is None
+    assert cache.report()["cache_misses"] == 1
+
+
+def test_changing_the_prompt_changes_what_the_cache_is_keyed_on():
+    """A hand-maintained version string is a step someone forgets, and the cache
+    then serves pages the previous prompt produced — the one failure a cache
+    exists to be trusted not to have."""
+    from shared.prompting import Audience, LanguageRule, Prompt
+
+    def _prompt(text):
+        return Prompt(name="p", template=text, audience=Audience.INTERNAL,
+                      language_rule=LanguageRule.NONE)
+
+    assert _prompt("read this page").fingerprint == _prompt("read this page").fingerprint
+    assert _prompt("read this page").fingerprint != _prompt("read this page.").fingerprint
