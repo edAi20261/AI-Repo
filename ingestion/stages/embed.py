@@ -16,12 +16,15 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
         state.setdefault("stats", {})["embed"] = {"embedded": 0}
         return state
 
-    vectors = ctx.embedder.embed([c.text for c in chunks])
+    prefixed = bool(ctx.config.get("ingestion.context_prefix"))
+    vectors = ctx.embedder.embed(
+        [c.for_embedding() if prefixed else c.text for c in chunks])
     for chunk, vector in zip(chunks, vectors):
         chunk.embedding = vector
 
     state.setdefault("stats", {})["embed"] = {
         "embedded": len(vectors),
         "dimension": ctx.embedder.dimension,
+        "context_prefix": prefixed,
     }
     return state

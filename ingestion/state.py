@@ -92,6 +92,28 @@ class Chunk:
     lesson_title: Optional[str] = None
     lesson_order: Optional[int] = None
 
+    def for_embedding(self) -> str:
+        """What this chunk is searched by — never what a student reads.
+
+        A chunk carries no sign of where it came from. "مهدت لنهضة علمية" is
+        four words that name no lesson, no unit and no page, so a query naming
+        any of them has nothing in the vector to match. Prefixing the context
+        the chunk already knows about itself puts it there.
+
+        The prefix is built here rather than at the call sites that embed, so a
+        second one cannot embed the bare text and quietly index a chunk the
+        rest of the corpus is not comparable to.
+        """
+        parts = [self.subject_name, self.lesson_title]
+        if self.heading_path:
+            parts.append(f"Section: {self.heading_path}")
+        if self.page_from:
+            parts.append(f"Page {self.page_from}")
+        named = [p for p in parts if p]
+        if not named:
+            return self.text
+        return ". ".join(named) + ".\n" + self.text
+
 
 @dataclass
 class Topic:

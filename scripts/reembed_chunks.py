@@ -34,6 +34,7 @@ from agent.config import Config
 from shared.postgres import connect
 from shared.vector_store import upsert_client
 from shared.matching import looks_like_contents
+from ingestion.state import Chunk
 
 PAYLOAD_ONLY_FIELDS = ("subject_name", "lesson_title", "lesson_order")
 
@@ -62,12 +63,35 @@ def _with_kind(payload: dict, text: str) -> dict:
     return payload
 
 
-def _chunk_texts(config: Config, chunk_ids: list[str]) -> dict[str, str]:
+def _chunk_rows(config: Config, chunk_ids: list[str]) -> dict[str, dict]:
     with connect(config, connect_timeout=15, statement_timeout_ms=0) as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT chunk_id::text, text FROM ai.chunks "
+            "SELECT chunk_id::text, text, heading_path, page_from, page_to, "
+            "lecture_id::text, language FROM ai.chunks "
             "WHERE chunk_id::text = ANY(%s)", (chunk_ids,))
-        return dict(cur.fetchall())
+        return {r[0]: {"text": r[1], "heading_path": r[2] or "", "page_from": r[3] or 0,
+                       "page_to": r[4] or 0, "lecture_id": r[5] or "",
+                       "language": r[6] or ""} for r in cur.fetchall()}
+
+
+def _embedding_text(row: dict, payload: dict, prefixed: bool) -> str:
+    """What this point is embedded as, built the one way the pipeline builds it.
+
+    The context a chunk carries is split across the two stores — the heading and
+    page sit in ``ai.chunks``, the subject and lesson title only on the Qdrant
+    point — so both are read back and handed to the same ``Chunk.for_embedding``
+    the ingest uses. A second prefix written here would index chunks the rest of
+    the corpus is not comparable to.
+    """
+    if not prefixed:
+        return row["text"]
+    return Chunk(
+        lecture_id=row["lecture_id"], text=row["text"],
+        heading_path=row["heading_path"], page_from=row["page_from"],
+        page_to=row["page_to"], language=row["language"], order_index=0,
+        subject_name=payload.get("subject_name"),
+        lesson_title=payload.get("lesson_title"),
+    ).for_embedding()
 
 
 def main() -> int:
@@ -88,14 +112,16 @@ def main() -> int:
     if not payloads:
         return 0
 
-    texts = _chunk_texts(config, list(payloads))
-    missing = [cid for cid in payloads if cid not in texts]
+    rows = _chunk_rows(config, list(payloads))
+    prefixed = bool(config.get("ingestion.context_prefix"))
+    print(f"  context prefix: {'on' if prefixed else 'off'}")
+    missing = [cid for cid in payloads if cid not in rows]
     if missing:
         # A point with no row behind it cannot be re-embedded from source. Leave
         # it exactly as it is rather than guessing at its text.
         print(f"  {len(missing)} point(s) have no ai.chunks row — leaving untouched")
 
-    todo = [cid for cid in payloads if cid in texts]
+    todo = [cid for cid in payloads if cid in rows]
     print(f"  {len(todo)} to re-embed")
     if not args.apply:
         print("\nreport only — pass --apply to write")
@@ -107,10 +133,11 @@ def main() -> int:
     written = 0
     for start in range(0, len(todo), args.batch):
         batch = todo[start:start + args.batch]
-        vectors = embedder.embed([texts[cid] for cid in batch])
+        vectors = embedder.embed(
+            [_embedding_text(rows[cid], payloads[cid], prefixed) for cid in batch])
         client.upsert(collection, points=[
             models.PointStruct(id=cid, vector=vector,
-                               payload=_with_kind(payloads[cid], texts[cid]))
+                               payload=_with_kind(payloads[cid], rows[cid]["text"]))
             for cid, vector in zip(batch, vectors)
         ], wait=True)
         written += len(batch)

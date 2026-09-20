@@ -1290,3 +1290,53 @@ def test_a_failed_caption_is_counted_not_indexed_as_empty(tmp_path):
     result = run_extract(st, ctx)
 
     assert "caption_failed" in result["stats"]["extract"]
+
+# --- what a chunk is embedded as --------------------------------------------
+
+def _chunk(**kw):
+    from ingestion.state import Chunk
+    base = dict(lecture_id="lec1", text="الكيمياء التجريبية مهدت لنهضة علمية.",
+                heading_path="", page_from=3, page_to=3, language="ar", order_index=0)
+    base.update(kw)
+    return Chunk(**base)
+
+
+def test_a_chunk_is_embedded_with_the_lesson_it_came_from():
+    """A short chunk is unfindable on its own. "مهدت لنهضة علمية" says nothing
+    about which lesson, unit or page it belongs to, so a query naming the lesson
+    has nothing in the vector to match."""
+    chunk = _chunk(subject_name="اللغة العربية",
+                   lesson_title="Unit 2 · Lesson 2: Jabir ibn Hayyan",
+                   heading_path="ثقافة النجاح")
+    embedded = chunk.for_embedding()
+
+    assert embedded.endswith(chunk.text)
+    assert "اللغة العربية" in embedded
+    assert "Unit 2 · Lesson 2: Jabir ibn Hayyan" in embedded
+    assert "ثقافة النجاح" in embedded
+    assert "3" in embedded.split(chunk.text)[0]
+
+
+def test_the_text_a_student_reads_is_never_the_prefixed_one():
+    """The prefix exists to be searched, not to be read. It must not reach the
+    stored row, the citation, or the passage handed to the answering model."""
+    chunk = _chunk(subject_name="Science", lesson_title="Unit 1: Matter")
+
+    assert chunk.for_embedding() != chunk.text
+    assert chunk.text == "الكيمياء التجريبية مهدت لنهضة علمية."
+
+
+def test_a_chunk_that_knows_nothing_about_itself_is_embedded_as_it_is():
+    """A prefix of empty fields would embed punctuation, which is worse than
+    no prefix at all."""
+    bare = _chunk(page_from=0, page_to=0)
+    assert bare.for_embedding() == bare.text
+
+
+def test_the_prefix_names_only_the_parts_that_exist():
+    chunk = _chunk(lesson_title="Unit 1: Matter", page_from=0)
+    prefix = chunk.for_embedding().split(chunk.text)[0]
+
+    assert "Unit 1: Matter" in prefix
+    assert "Section" not in prefix
+    assert "0" not in prefix
