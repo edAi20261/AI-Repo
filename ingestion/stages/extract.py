@@ -23,9 +23,10 @@ from ..state import Element, Figure, IngestionState, PageResult
 from ..utils import is_garbage, normalise_text, pdf
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
-from ..layout import TEXT_LAYER, VISION, PageMeta, ParsedPage, choose_tier, parse_page
+from ..layout import TEXT_LAYER, PageMeta, ParsedPage, choose_tier, parse_page, tier3
+from ..layout.chunker import content_blocks
 from ..layout.page_cache import PageCache
-from ..prompts import PAGE_TRANSCRIPTION_PROMPT
+from ..prompts.page_layout import PAGE_LAYOUT_PROMPT
 from ..utils.source import materialise
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,8 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
 
         if layout_on:
             parsed = _parse_layout(
-                page, page_no, state, layout_cfg, char_count, counts, cache)
+                page, page_no, state, layout_cfg, char_count, counts, cache,
+                render_dpi=render_dpi, config=cfg)
             if parsed is not None:
                 parsed_pages.append(parsed)
 
@@ -298,16 +300,18 @@ def _extract_body_text(state: IngestionState, ctx: PipelineContext) -> Ingestion
 
 
 def _page_cache(cfg: Any, layout_cfg: dict) -> Optional[PageCache]:
-    """The cache for this run, or ``None`` when it is switched off.
+    """The cache for the pages this run has to pay a model to read.
 
-    Keyed on the tier that produced a page and on the prompt's own digest, so a
-    change to either sends the page back to a model without anyone having to
-    remember to invalidate anything.
+    Keyed on the model that read the page and on the prompt's own digest, so
+    changing either sends the page back to a model without anyone having to
+    remember to invalidate anything. Text-layer pages are never stored: they
+    cost nothing to parse, and a cache of free work is a table no one saves
+    anything by reading.
     """
     if not layout_cfg.get("cache", True):
         return None
-    return PageCache(cfg, model="text-layer",
-                     prompt_version=PAGE_TRANSCRIPTION_PROMPT.fingerprint)
+    return PageCache(cfg, model=cfg.get("vision.model"),
+                     prompt_version=PAGE_LAYOUT_PROMPT.fingerprint)
 
 
 def _parse_layout(
@@ -317,7 +321,10 @@ def _parse_layout(
     layout_cfg: dict,
     char_count: int,
     counts: dict,
-    cache: Optional[PageCache] = None,
+    cache: Optional[PageCache],
+    *,
+    render_dpi: int,
+    config: Any,
 ) -> Optional[dict]:
     """This page as typed blocks in reading order, or ``None`` when no tier can.
 
@@ -332,36 +339,65 @@ def _parse_layout(
         height=float(page.rect.height),
         reading_direction=layout_cfg.get("reading_direction", "ltr"),
     )
-    if cache is not None:
-        stored = cache.get(state["lecture_id"], page_no)
-        if stored is not None:
-            return stored.model_dump()
-
     blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
     wanted = choose_tier(page, char_count=char_count, blocks=blocks)
     counts[f"layout_wants_tier{wanted}"] = counts.get(f"layout_wants_tier{wanted}", 0) + 1
 
-    if wanted == VISION and not blocks:
-        # No text to read. Nothing the text-layer parser can do with this page,
-        # and the vision tier does not yet emit blocks, so the page falls back
-        # to the older path rather than being indexed empty.
+    if wanted == TEXT_LAYER:
+        return ParsedPage(meta=meta, blocks=blocks).model_dump()
+
+    # A model call is worth paying for exactly when the text layer has nothing
+    # to offer. A page the router wants a richer parser for, but whose text
+    # layer does read, is left alone until someone measures that vision beats
+    # it: on a 40-page magazine textbook 39 pages ask for a richer tier, and
+    # the text layer already chunks them cleanly.
+    if not content_blocks(blocks):
+        read = _read_page_with_vision(
+            page, page_no, state, meta, render_dpi, config, cache, counts)
+        if read is not None:
+            return read.model_dump()
+        if not blocks:
+            # Nothing the text layer can see and nothing a model could read:
+            # leave the page to the older extract path rather than index it empty.
+            return None
+
+    counts["layout_downgraded"] = counts.get("layout_downgraded", 0) + 1
+    logger.info("page read by the text layer though it wants a richer parser",
+                extra={"lecture_id": state["lecture_id"], "page": page_no,
+                       "wanted_tier": wanted})
+    return ParsedPage(meta=meta, blocks=blocks).model_dump()
+
+
+def _read_page_with_vision(
+    page: Any,
+    page_no: int,
+    state: IngestionState,
+    meta: PageMeta,
+    render_dpi: int,
+    config: Any,
+    cache: Optional[PageCache],
+    counts: dict,
+) -> Optional[ParsedPage]:
+    """The page as a model read it, from the cache when it has been read before."""
+    if cache is not None:
+        stored = cache.get(state["lecture_id"], page_no)
+        if stored is not None:
+            return stored
+
+    parsed = tier3.parse_page(
+        pdf.render_page_png(page, dpi=render_dpi), meta,
+        config=config,
+        language_hint=state.get("language_hint"),
+        direction=meta.reading_direction,
+    )
+    if parsed is None:
+        counts["layout_unread"] = counts.get("layout_unread", 0) + 1
         return None
 
-    if wanted != TEXT_LAYER:
-        # The page would be read better by a parser that is not wired yet. Using
-        # the text layer anyway beats the alternative — falling back to splitting
-        # text by length, which is what layout parsing exists to replace — but
-        # the gap is counted so the histogram says how much a richer tier would
-        # be worth before anyone builds one.
-        counts["layout_downgraded"] = counts.get("layout_downgraded", 0) + 1
-        logger.info("page read by the text layer though it wants a richer parser",
-                    extra={"lecture_id": state["lecture_id"], "page": page_no,
-                           "wanted_tier": wanted})
-
-    parsed = ParsedPage(meta=meta, blocks=blocks)
+    counts["layout_read_by_vision"] = counts.get("layout_read_by_vision", 0) + 1
     if cache is not None:
-        cache.put(state["lecture_id"], page_no, parsed)
-    return parsed.model_dump()
+        cache.put(state["lecture_id"], page_no, parsed, dpi=render_dpi)
+    return parsed
 
 
 def _clear_previous_figures(ctx: PipelineContext, lecture_id: str) -> None:
