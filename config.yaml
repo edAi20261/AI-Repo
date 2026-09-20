@@ -213,6 +213,27 @@ agent:
                                # recover what the dense stage never returned
     rrf_k: 60                  # Cormack et al.'s published constant
 
+  scope:
+    # When the student has selected one lesson, the turn answers from that lesson
+    # or refuses by name. The similarity floor cannot make that call: filtered to
+    # a single lesson there is nothing to lose to, so its best chunk clears the
+    # floor whatever was asked — "explain the Youth poem" scores 0.503 against the
+    # Jabir lesson, against 0.472 for "who was Jabir ibn Hayyan".
+    #
+    # The rest of the corpus is what separates them. Measured over 15 questions
+    # across three lessons, as the scoped best score over the unscoped best:
+    #   in-scope      0.952 - 1.000
+    #   out-of-scope  0.324 - 0.872
+    # At 0.90 all 7 in-scope questions are answered and all 8 out-of-scope ones
+    # refused. Costs one extra vector search (~100ms) and no model call.
+    #
+    # It cannot catch a question the corpus answers nowhere: "اشرح لي الطرح" is
+    # answered inside every Arabic lesson because the only subtraction material
+    # indexed is two English paragraphs, so no lesson answers it better and the
+    # ratio is 1.0. That is a gap in the corpus, not in the rule — it closes when
+    # the real curriculum is indexed. Re-measure then.
+    relevance_ratio: 0.90
+
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
   min_score: 0.44            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.

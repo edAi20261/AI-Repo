@@ -471,7 +471,7 @@ def dispatch(state) -> list:
     # the adapters run in parallel without sharing MainState. A Send per task = the fan-out.
     ctx = {k: state.get(k) for k in
            ("namespaces", "style", "language", "subject_id", "lecture_ids", "grade",
-            "user_id", "session_id", "pathway")}
+            "user_id", "session_id", "pathway", "study_scope")}
     sends = []
     for task in state.get("tasks", []):
         node = _ADAPTER.get(task.get("type"))

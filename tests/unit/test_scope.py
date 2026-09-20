@@ -1,0 +1,141 @@
+"""A turn is bounded by what the student selected, and says so when it refuses.
+
+A lesson id has always been able to narrow retrieval. What it could not do is
+change the answer when nothing was found: a student sitting in "Photosynthesis"
+who asked about the Second World War was told "there isn't enough syllabus
+material" — which reads as a hole in the product rather than as the boundary
+doing its job. The tutor knew it had been scoped and had no way to say so.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from agent.scope import StudyScope, lecture_filter, scope_of
+from shared.language import written_in
+
+LESSON = "11111111-1111-1111-1111-111111111111"
+OTHER = "22222222-2222-2222-2222-222222222222"
+
+
+# --- reading the selection --------------------------------------------------
+
+def test_a_declared_scope_is_used_as_given():
+    scope = scope_of({"study_scope": {"lecture_id": LESSON, "lesson_title": "Photosynthesis"}})
+    assert scope.lecture_id == LESSON
+    assert scope.is_narrow
+    assert scope.label() == "Photosynthesis"
+
+
+def test_a_single_legacy_lecture_id_still_reads_as_a_lesson_selection():
+    """The platform sent lecture_ids long before this field existed, and still
+    does. Requiring every caller to move at once would have meant no scoping at
+    all until they did."""
+    scope = scope_of({"lecture_ids": [LESSON]})
+    assert scope.lecture_id == LESSON
+    assert scope.is_narrow
+
+
+def test_several_lessons_are_not_a_lesson_selection():
+    """"Search these three lessons" is a filter, not a place the student is
+    sitting — there is no single lesson to name in a refusal."""
+    scope = scope_of({"lecture_ids": [LESSON, OTHER]})
+    assert scope.lecture_id is None
+    assert not scope.is_narrow
+
+
+def test_a_multi_lesson_filter_survives_the_scope():
+    """The regression this guards: reading the selection as one lesson must not
+    quietly discard the other lessons a caller asked to search."""
+    assert lecture_filter({"lecture_ids": [LESSON, OTHER]}) == [LESSON, OTHER]
+    assert lecture_filter({"study_scope": {"lecture_id": LESSON}}) == [LESSON]
+    assert lecture_filter({}) is None
+
+
+def test_a_declared_scope_outranks_the_legacy_field():
+    """Two sources for one decision disagree eventually; the declared one wins."""
+    assert lecture_filter({
+        "study_scope": {"lecture_id": LESSON},
+        "lecture_ids": [OTHER],
+    }) == [LESSON]
+
+
+def test_a_blank_lesson_title_is_not_a_lesson_title():
+    assert StudyScope(lecture_id=LESSON, lesson_title="   ").label() is None
+
+
+# --- what the student is told -----------------------------------------------
+
+def _refusal(scope: StudyScope, language: str) -> str:
+    from agent.graph.subgraphs.explain_summarize_sg import _declined
+
+    return _declined(scope, language)
+
+
+def test_inside_a_lesson_the_refusal_names_the_lesson():
+    text = _refusal(StudyScope(lecture_id=LESSON, lesson_title="Photosynthesis"), "en")
+    assert "Photosynthesis" in text
+    assert "syllabus material" not in text
+
+
+@pytest.mark.parametrize("language", ["ar", "en", "fr", "de"])
+def test_the_refusal_is_written_in_the_student_s_language(language):
+    text = _refusal(StudyScope(lecture_id=LESSON, lesson_title="البناء الضوئي"), language)
+    assert "البناء الضوئي" in text
+    assert written_in(text.replace("البناء الضوئي", ""), language)
+
+
+def test_without_a_lesson_the_refusal_is_the_ordinary_one():
+    """Outside a lesson there is no boundary to explain, and claiming one would
+    be a lie: the material genuinely is not in the syllabus."""
+    text = _refusal(StudyScope(subject_id="s"), "en")
+    assert "syllabus material" in text
+
+
+def test_a_lesson_we_cannot_name_falls_back_rather_than_naming_nothing():
+    """The platform may scope by id without sending a title. "We're studying
+    **** right now" is worse than the generic message."""
+    text = _refusal(StudyScope(lecture_id=LESSON), "en")
+    assert "syllabus material" in text
+
+
+# --- does the selected lesson actually answer this? -------------------------
+
+class _Hit:
+    def __init__(self, score: float):
+        self.score = score
+
+
+def _within(monkeypatch, scoped: float, unscoped: float | None, ratio: float = 0.90) -> bool:
+    from agent import retrieval
+
+    monkeypatch.setattr(
+        retrieval, "rag_search",
+        lambda *a, **k: [_Hit(unscoped)] if unscoped is not None else [])
+    return retrieval.answers_within_scope("q", ["syllabus"], scoped, ratio=ratio)
+
+
+def test_a_question_the_lesson_owns_scores_the_same_with_or_without_the_filter(monkeypatch):
+    """Measured: in-scope questions score 0.952 to 1.000 of the unscoped best."""
+    assert _within(monkeypatch, scoped=0.600, unscoped=0.600)
+    assert _within(monkeypatch, scoped=0.472, unscoped=0.496)
+
+
+def test_a_question_another_lesson_answers_better_is_out_of_scope(monkeypatch):
+    """Measured: out-of-scope questions reach at most 0.872 of the unscoped best.
+
+    Inside one lesson the similarity floor cannot make this call — with the rest
+    of the corpus filtered out there is nothing to lose to, so the lesson's own
+    best chunk clears the floor whatever was asked."""
+    assert not _within(monkeypatch, scoped=0.503, unscoped=0.650)   # the Youth poem
+    assert not _within(monkeypatch, scoped=0.312, unscoped=0.652)   # electronic games
+
+
+def test_nothing_retrieved_in_scope_is_not_in_scope(monkeypatch):
+    assert not _within(monkeypatch, scoped=0.0, unscoped=0.650)
+
+
+def test_a_corpus_with_nowhere_better_keeps_the_answer(monkeypatch):
+    """If the unscoped search finds nothing at all there is no elsewhere to
+    prefer, so the lesson is as good an answer as exists."""
+    assert _within(monkeypatch, scoped=0.45, unscoped=None)

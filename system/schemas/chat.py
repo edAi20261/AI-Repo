@@ -6,6 +6,8 @@ from typing import Any, Optional
 
 from pydantic import Field
 
+from agent.scope import StudyScope
+
 from .common import GradeReference, Language, Pathway, Schema, Visual
 
 
@@ -18,6 +20,12 @@ class ChatRequest(Schema):
     )
     lecture_ids: Optional[list[str]] = Field(
         default=None, description="Narrows retrieval to specific lessons."
+    )
+    study_scope: Optional[StudyScope] = Field(
+        default=None,
+        description=("What the student has selected in the UI. With a lecture_id the "
+                     "turn answers from that lesson only, and a question outside it is "
+                     "refused by name rather than as a missing-material message."),
     )
     session_id: Optional[str] = Field(
         default=None, description="Conversation id; also the ephemeral upload namespace."
@@ -48,6 +56,8 @@ class ChatRequest(Schema):
         }
         if self.grade_ref:
             state["grade_ref"] = self.grade_ref.model_dump()
+        if self.study_scope:
+            state["study_scope"] = self.study_scope.model_dump()
         if self.language:
             state["language"] = self.language
         return {key: value for key, value in state.items() if value is not None}

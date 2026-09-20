@@ -131,6 +131,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "fr": "Aucune réponse de référence ni contenu suffisant du programme pour évaluer cette réponse.",
         "de": "Es gibt keine Musterlösung oder ausreichenden Lehrplaninhalt, um diese Antwort zu bewerten.",
     },
+    "explain.out_of_scope": {
+        "ar": "نحن ندرس الآن درس «{lesson}». اسألني عن هذا الدرس.",
+        "en": "We're studying **{lesson}** right now. Ask me about this lesson.",
+        "fr": "Nous étudions **{lesson}** en ce moment. Pose-moi une question sur cette leçon.",
+        "de": "Wir behandeln gerade **{lesson}**. Stell mir eine Frage zu dieser Lektion.",
+    },
     "explain.no_context": {
         "ar": "لا توجد مادة كافية في المنهج للإجابة عن هذا السؤال.",
         "en": "There isn't enough syllabus material to answer this yet.",
