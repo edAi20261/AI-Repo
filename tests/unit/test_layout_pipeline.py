@@ -265,3 +265,124 @@ def test_a_page_that_could_not_be_read_at_all_says_so():
     from ingestion.layout.tier3 import problems
 
     assert problems(None, ink=0.3) == ["unreadable"]
+
+
+# --- choosing a parser, and paying for it once ------------------------------
+
+class _FakeCache:
+    """Records what was looked up and what was stored."""
+
+    def __init__(self, stored=None):
+        self.stored = stored
+        self.gets: list[tuple] = []
+        self.puts: list[tuple] = []
+
+    def get(self, lecture_id, page):
+        self.gets.append((lecture_id, page))
+        return self.stored
+
+    def put(self, lecture_id, page, parsed, **kw):
+        self.puts.append((lecture_id, page, parsed))
+
+
+def _parse(monkeypatch, *, blocks, tier, vision=None, cache=None, char_count=900):
+    """Run _parse_layout with the router and the vision tier both stubbed."""
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+
+    monkeypatch.setattr(ex, "parse_page",
+                        lambda page, meta, direction="ltr": ParsedPage(meta=meta, blocks=blocks))
+    monkeypatch.setattr(ex, "choose_tier", lambda *a, **k: tier)
+    monkeypatch.setattr(ex.pdf, "render_page_png", lambda page, dpi: b"png")
+    monkeypatch.setattr(
+        ex.tier3, "parse_page",
+        vision if callable(vision) else (lambda *a, **k: vision))
+
+    counts: dict = {}
+    got = ex._parse_layout(
+        _Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+        {"reading_direction": "ltr"}, char_count, counts, cache,
+        render_dpi=200, config=None)
+    return got, counts
+
+
+def test_a_page_with_no_text_layer_is_read_by_the_vision_tier(monkeypatch):
+    """Tier 3 was written, tested and then never called: every page the router
+    sent to vision was read by the text layer anyway, or dropped when it had no
+    text at all. A scanned page has no text layer by definition, so the whole
+    point of routing it was lost."""
+    read = _page(7, [_block("الدرس الأول", "heading", y=40), _block(PROSE)])
+    got, counts = _parse(monkeypatch, blocks=[], tier=VISION, vision=read, char_count=0)
+
+    assert got is not None
+    assert [b["text"] for b in got["blocks"]] == ["الدرس الأول", PROSE.strip()]
+    assert counts.get("layout_downgraded") is None
+
+
+def test_a_page_the_text_layer_still_reads_is_not_sent_to_a_model(monkeypatch):
+    """Wanting a richer parser is not the same as needing one. Over a 40-page
+    magazine textbook 39 pages ask for tier 2 or 3 while the text layer already
+    chunks them cleanly; paying for all 39 buys an unmeasured difference."""
+    def _explode(*a, **k):
+        raise AssertionError("a page the text layer reads must not cost a model call")
+
+    got, counts = _parse(monkeypatch, blocks=[_block(PROSE)], tier=2, vision=_explode)
+
+    assert [b["text"] for b in got["blocks"]] == [PROSE.strip()]
+    assert counts["layout_downgraded"] == 1
+
+
+def test_a_page_vision_could_not_read_falls_back_to_what_the_text_layer_saw(monkeypatch):
+    """A vision failure is not a reason to index nothing when there is anything
+    on the page. The downgrade is counted so the run says how often it happened."""
+    got, counts = _parse(monkeypatch, blocks=[_block("p. 41", "page_number")],
+                         tier=VISION, vision=None, char_count=0)
+
+    assert got is not None
+    assert [b["text"] for b in got["blocks"]] == ["p. 41"]
+    assert counts["layout_unread"] == 1
+    assert counts["layout_downgraded"] == 1
+
+
+def test_a_page_the_text_layer_can_read_is_never_stored(monkeypatch):
+    """The cache exists to avoid paying for vision. Storing a parse that cost
+    nothing fills the table with rows no one saves anything by reading."""
+    cache = _FakeCache()
+    got, _ = _parse(monkeypatch, blocks=[_block(PROSE)], tier=TEXT_LAYER, cache=cache)
+
+    assert got is not None
+    assert cache.gets == []
+    assert cache.puts == []
+
+
+def test_a_page_read_by_vision_is_stored_so_it_is_read_once(monkeypatch):
+    read = _page(7, [_block(PROSE)])
+    cache = _FakeCache()
+    _parse(monkeypatch, blocks=[], tier=VISION, vision=read, cache=cache, char_count=0)
+
+    assert cache.gets == [("11111111-1111-1111-1111-111111111111", 7)]
+    assert len(cache.puts) == 1
+
+
+def test_a_stored_vision_parse_is_not_paid_for_again(monkeypatch):
+    stored = _page(7, [_block("from the cache")])
+    cache = _FakeCache(stored=stored)
+
+    def _explode(*a, **k):
+        raise AssertionError("a cached page must not be sent to a model")
+
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    monkeypatch.setattr(ex.tier3, "parse_page", _explode)
+    monkeypatch.setattr(ex, "parse_page",
+                        lambda page, meta, direction="ltr": ParsedPage(meta=meta, blocks=[]))
+    monkeypatch.setattr(ex, "choose_tier", lambda *a, **k: VISION)
+
+    got = ex._parse_layout(
+        _Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+        {"reading_direction": "ltr"}, 0, {}, cache, render_dpi=200, config=None)
+
+    assert [b["text"] for b in got["blocks"]] == ["from the cache"]
+    assert cache.puts == []
