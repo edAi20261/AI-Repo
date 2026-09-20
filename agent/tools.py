@@ -361,6 +361,31 @@ def get_topic_labels(
             return {r[0]: r[1] or "" for r in cur.fetchall()}
 
 
+def get_lecture_topics(
+    lecture_ids: Sequence[str],
+    *,
+    limit: int = 20,
+    config: Config | None = None,
+) -> list[ResolvedTopic]:
+    """Every topic belonging to ``lecture_ids``, in lesson order.
+
+    A lookup, not a search: ``score`` is 0.0. It is what a lesson is *about*
+    when the request itself says nothing — "quiz me on this lesson" carries no
+    subject matter for an embedding to match, and the lesson the student is
+    sitting in is the answer.
+    """
+    if not lecture_ids:
+        return []
+    config = config or Config.load()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT topic_id::text, label, subject_id::text FROM ai.topics "
+            "WHERE lecture_id::text = ANY(%s) ORDER BY created_at LIMIT %s",
+            ([str(x) for x in lecture_ids], limit))
+        return [ResolvedTopic(topic_id=r[0], label=r[1] or "", score=0.0, subject_id=r[2])
+                for r in cur.fetchall()]
+
+
 def get_topic_lectures(
     topic_ids: Sequence[str],
     *,
