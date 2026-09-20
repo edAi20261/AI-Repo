@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from functools import lru_cache
-from typing import Any
+from typing import Any, Optional
 
 from shared.language import LanguagePolicy
 
@@ -23,6 +23,9 @@ from ..state import Element, Figure, IngestionState, PageResult
 from ..utils import is_garbage, normalise_text, pdf
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
+from ..layout import TEXT_LAYER, VISION, PageMeta, ParsedPage, choose_tier, parse_page
+from ..layout.page_cache import PageCache
+from ..prompts import PAGE_TRANSCRIPTION_PROMPT
 from ..utils.source import materialise
 
 logger = logging.getLogger(__name__)
@@ -72,6 +75,11 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             page_blocks[page_no] = pdf.extract_blocks(page, page_no)
     body_size = _body_font_size(page_blocks)
 
+    layout_cfg = ing.get("layout", {})
+    layout_on = bool(layout_cfg.get("enabled"))
+    parsed_pages: list[dict] = []
+    cache = _page_cache(cfg, layout_cfg) if layout_on else None
+
     pages: list[PageResult] = []
     elements: list[Element] = []
     figures: list[Figure] = []
@@ -83,6 +91,12 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
 
     for page_no, page in pdf.iter_pages(doc):
         char_count = pdf.page_char_count(page)
+
+        if layout_on:
+            parsed = _parse_layout(
+                page, page_no, state, layout_cfg, char_count, counts, cache)
+            if parsed is not None:
+                parsed_pages.append(parsed)
 
         # --- scanned page: one vision call -> text + figure boxes -----------
         if char_count < min_chars:
@@ -203,6 +217,10 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     state["pages"] = pages
     state["elements"] = elements
     state["figures"] = figures
+    if layout_on:
+        state["parsed_pages"] = parsed_pages
+        if cache is not None:
+            counts.update(cache.report())
     state.setdefault("stats", {})["extract"] = {
         "pages": len(pages),
         **counts,
@@ -277,6 +295,73 @@ def _extract_body_text(state: IngestionState, ctx: PipelineContext) -> Ingestion
         extra={"lecture_id": state["lecture_id"], "elements": len(elements)},
     )
     return state
+
+
+def _page_cache(cfg: Any, layout_cfg: dict) -> Optional[PageCache]:
+    """The cache for this run, or ``None`` when it is switched off.
+
+    Keyed on the tier that produced a page and on the prompt's own digest, so a
+    change to either sends the page back to a model without anyone having to
+    remember to invalidate anything.
+    """
+    if not layout_cfg.get("cache", True):
+        return None
+    return PageCache(cfg, model="text-layer",
+                     prompt_version=PAGE_TRANSCRIPTION_PROMPT.fingerprint)
+
+
+def _parse_layout(
+    page: Any,
+    page_no: int,
+    state: IngestionState,
+    layout_cfg: dict,
+    char_count: int,
+    counts: dict,
+    cache: Optional[PageCache] = None,
+) -> Optional[dict]:
+    """This page as typed blocks in reading order, or ``None`` when no tier can.
+
+    The router decides per page rather than per document: one PDF holds clean
+    text-layer pages, magazine spreads whose drawing order is not their reading
+    order, and scans with no text at all.
+    """
+    meta = PageMeta(
+        doc_id=state["lecture_id"],
+        page=page_no,
+        width=float(page.rect.width),
+        height=float(page.rect.height),
+        reading_direction=layout_cfg.get("reading_direction", "ltr"),
+    )
+    if cache is not None:
+        stored = cache.get(state["lecture_id"], page_no)
+        if stored is not None:
+            return stored.model_dump()
+
+    blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
+    wanted = choose_tier(page, char_count=char_count, blocks=blocks)
+    counts[f"layout_wants_tier{wanted}"] = counts.get(f"layout_wants_tier{wanted}", 0) + 1
+
+    if wanted == VISION and not blocks:
+        # No text to read. Nothing the text-layer parser can do with this page,
+        # and the vision tier does not yet emit blocks, so the page falls back
+        # to the older path rather than being indexed empty.
+        return None
+
+    if wanted != TEXT_LAYER:
+        # The page would be read better by a parser that is not wired yet. Using
+        # the text layer anyway beats the alternative — falling back to splitting
+        # text by length, which is what layout parsing exists to replace — but
+        # the gap is counted so the histogram says how much a richer tier would
+        # be worth before anyone builds one.
+        counts["layout_downgraded"] = counts.get("layout_downgraded", 0) + 1
+        logger.info("page read by the text layer though it wants a richer parser",
+                    extra={"lecture_id": state["lecture_id"], "page": page_no,
+                           "wanted_tier": wanted})
+
+    parsed = ParsedPage(meta=meta, blocks=blocks)
+    if cache is not None:
+        cache.put(state["lecture_id"], page_no, parsed)
+    return parsed.model_dump()
 
 
 def _clear_previous_figures(ctx: PipelineContext, lecture_id: str) -> None:

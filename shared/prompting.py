@@ -83,6 +83,19 @@ class Prompt:
                 f"{self.name}: declares a {self.language_rule.value} language rule "
                 f"but has no {{{self.slot}}} for the directive to go in.")
 
+    @property
+    def fingerprint(self) -> str:
+        """A short digest of this prompt's text.
+
+        What a cache of model output keys on. A hand-maintained version string
+        is a step someone forgets, and the cache then serves pages the previous
+        prompt produced — which is the failure a cache exists to be trusted not
+        to have. Changing a word here invalidates the cache on its own.
+        """
+        import hashlib
+
+        return hashlib.sha256(self.template.encode()).hexdigest()[:12]
+
     def placeholders(self) -> set[str]:
         """Every ``{name}`` the template expects to be filled."""
         return {field for _, field, _, _ in string.Formatter().parse(self.template)
