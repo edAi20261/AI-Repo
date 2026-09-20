@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 
-from shared.metering import record_usage
+from shared.vision import read_image
 
 from .config import Config
 from .prompts import (
@@ -18,7 +18,7 @@ from .prompts import (
     MATH_PAGE_TRANSCRIPTION_PROMPT,
     PAGE_TRANSCRIPTION_PROMPT,
 )
-from .schemas import FigureBox, FigureCaption, PageTranscription
+from .schemas import FigureCaption, PageTranscription
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +100,7 @@ class OpenRouterVisionClient(VisionClient):
     """
 
     def __init__(self, config: Config) -> None:
-        self._model = config.get("vision.model")
-        self._fallback_model = config.get("vision.fallback_model")
-        self._base_url = config.get("vision.base_url", "https://openrouter.ai/api/v1")
-        self._api_key = config.secret("OPENROUTER_API_KEY")
-        self._timeout = config.get("vision.timeout_seconds", 180)
-        self._max_tokens = config.get("vision.max_tokens", 4096)
+        self._config = config
 
     def transcribe_page(
         self,
@@ -115,11 +110,11 @@ class OpenRouterVisionClient(VisionClient):
         math: bool = False,
     ) -> PageTranscription:
         template = MATH_PAGE_TRANSCRIPTION_PROMPT if math else PAGE_TRANSCRIPTION_PROMPT
-        prompt = template.render(language_hint=language_hint or "")
-        data = self._complete_json(prompt, image_png)
-        if data is None:
-            return PageTranscription(text="", figures=[], unreadable=True)
-        return _page_from_json(data)
+        page = read_image(
+            image_png, template.render(language_hint=language_hint or ""),
+            PageTranscription, config=self._config, label="transcribe_page")
+        # A page nothing could read is flagged, never indexed blank.
+        return page or PageTranscription(text="", figures=[], unreadable=True)
 
     def caption_figure(
         self,
@@ -131,107 +126,8 @@ class OpenRouterVisionClient(VisionClient):
         # A caption is read by a student, so it follows the page's language.
         prompt = FIGURE_CAPTION_PROMPT.render(
             language=language_hint or "en", heading_path=heading_path)
-        data = self._complete_json(prompt, image_png)
-        if data is None:
-            # An empty caption used to be indistinguishable from a model that had
-            # nothing to say, and captions are what make a figure findable.
-            logger.warning("figure caption failed", extra={"model": self._model})
-            return None
-        return _caption_from_json(data)
-
-    # -- transport -----------------------------------------------------------
-
-    def _complete_json(self, prompt: str, image_png: bytes) -> dict | None:
-        content = self._post(prompt, image_png, self._model)
-        data = _strip_json(content)
-        if data is None and self._fallback_model:
-            content = self._post(prompt, image_png, self._fallback_model)
-            data = _strip_json(content)
-        return data
-
-    def _post(self, prompt: str, image_png: bytes, model: str) -> str | None:
-        import base64
-
-        import httpx  # lazy
-
-        img_b64 = base64.b64encode(image_png).decode()
-        try:
-            resp = httpx.post(
-                f"{self._base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "model": model,
-                    "max_tokens": self._max_tokens,
-                    "temperature": 0,
-                    "usage": {"include": True},  # OpenRouter: return per-call cost
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/png;base64,{img_b64}"
-                                    },
-                                },
-                            ],
-                        }
-                    ],
-                },
-                timeout=self._timeout,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            record_usage(payload.get("usage"))
-            return payload["choices"][0]["message"]["content"]
-        except Exception:
-            return None
-
-
-def _strip_json(text: str | None) -> dict | None:
-    """Recover a JSON object from a response that may wrap it in a ```json fence
-    or prose."""
-    import json
-    import re
-
-    if not text:
-        return None
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fenced:
-        text = fenced.group(1)
-    else:
-        bare = re.search(r"\{.*\}", text, re.DOTALL)
-        if bare:
-            text = bare.group(0)
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _page_from_json(data: dict) -> PageTranscription:
-    figures: list[FigureBox] = []
-    for fig in data.get("figures") or []:
-        bbox = fig.get("bbox") if isinstance(fig, dict) else None
-        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-            try:
-                figures.append(FigureBox(bbox=tuple(float(v) for v in bbox)))
-            except (TypeError, ValueError):
-                continue
-    return PageTranscription(
-        text=str(data.get("text") or ""),
-        figures=figures,
-        unreadable=bool(data.get("unreadable", False)),
-    )
-
-
-def _caption_from_json(data: dict) -> FigureCaption:
-    return FigureCaption(
-        caption=str(data.get("caption") or ""),
-        alt_text=str(data.get("alt_text") or ""),
-    )
+        return read_image(image_png, prompt, FigureCaption,
+                          config=self._config, label="caption_figure")
 
 
 # Vision gateways implemented. Only OpenRouter (OpenAI-compatible) is wired.

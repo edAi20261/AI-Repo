@@ -20,7 +20,7 @@ from .errors import register_exception_handlers
 from .ingestion_jobs import IngestionJobManager
 from .middleware import RequestContextMiddleware
 from .notifier import build_notifier
-from .routers import chat, grading, health, ingestion, reports
+from .routers import chat, grading, health, homework, ingestion, reports
 from .runtime import AgentRuntime
 from .security import assert_stores_configured, assert_token_configured
 from .settings import Settings
@@ -66,7 +66,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         )
 
     register_exception_handlers(app)
-    for module in (health, chat, grading, reports, ingestion):
+    for module in (health, chat, grading, homework, reports, ingestion):
         app.include_router(module.router)
     return app
 

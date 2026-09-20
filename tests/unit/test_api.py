@@ -503,3 +503,67 @@ def test_unusable_source_material_is_not_a_server_error():
 
     assert issubclass(SourceError, ServiceError)
     assert SourceError("source file not found").status_code == 422
+
+
+# --- homework capture -------------------------------------------------------
+
+def _photo(client, content=b"\x89PNG\r\n", content_type="image/png"):
+    return client.post(
+        "/ai/homework/capture",
+        files={"image": ("page.png", content, content_type)},
+        headers=auth(),
+    )
+
+
+def test_a_homework_photo_comes_back_as_questions(client, monkeypatch):
+    from agent.homework import HomeworkCapture
+
+    import system.routers.homework as router
+    monkeypatch.setattr(router, "capture", lambda *a, **k: HomeworkCapture.model_validate(
+        {"questions": [{"number": "1", "question": "ما هو السجع؟",
+                        "student_answer": "تشابه"}]}))
+
+    body = _photo(client).json()
+    assert body["questions"][0]["question"] == "ما هو السجع؟"
+    assert body["questions"][0]["student_answer"] == "تشابه"
+    assert body["unreadable"] is False
+    assert body["request_id"]
+
+
+def test_an_unreadable_photo_is_reported_not_treated_as_empty(client, monkeypatch):
+    from agent.homework import HomeworkCapture
+
+    import system.routers.homework as router
+    monkeypatch.setattr(router, "capture", lambda *a, **k: HomeworkCapture(unreadable=True))
+
+    body = _photo(client).json()
+    assert body["unreadable"] is True
+    assert body["questions"] == []
+
+
+def test_a_pdf_is_refused_before_a_vision_call_is_paid_for(client):
+    response = _photo(client, content_type="application/pdf")
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "unprocessable"
+
+
+def test_a_scanned_booklet_is_refused_by_size(client):
+    from shared.config import Config
+
+    limit = Config.load().get("api.homework.max_upload_bytes")
+    response = _photo(client, content=b"x" * (limit + 1))
+    assert response.status_code == 422
+    assert response.json()["error"]["details"]["limit"] == limit
+
+
+def test_an_empty_upload_is_refused(client):
+    assert _photo(client, content=b"").status_code == 422
+
+
+def test_capture_needs_the_service_token(client):
+    response = client.post(
+        "/ai/homework/capture",
+        files={"image": ("page.png", b"\x89PNG", "image/png")},
+        headers={"x-service-token": "nope"},
+    )
+    assert response.status_code == 401
