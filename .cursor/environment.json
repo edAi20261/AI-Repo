@@ -1,0 +1,11 @@
+{
+  "name": "EduAI — AI Workflows",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "api",
+      "command": "APP_ENV=local .venv/bin/uvicorn system.asgi:app --host 0.0.0.0 --port 8000"
+    }
+  ],
+  "ports": [8000]
+}
