@@ -25,7 +25,13 @@ from ... import retrieval
 from ...models import QUESTION_TYPES, AssessmentItem, AssessmentOption, DraftBatch
 from ...prompts import ASSESSMENT_BATCH_PROMPT
 from ...retrieval import DEFAULT_MIN_SCORE
-from ...tools import get_mastery, get_question_bank, resolve_topics
+from ...tools import (
+    get_lecture_topics,
+    get_mastery,
+    get_question_bank,
+    get_topic_chunks,
+    resolve_topics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,8 +188,17 @@ def _enforce_type_mix(
 def _resolve(state: AssessmentState) -> dict:
     if state.get("topic_ids"):
         return {}
+    lecture_ids = state.get("lecture_ids") or None
     hits = resolve_topics(state.get("query") or "", state.get("subject_id"),
-                          lecture_ids=state.get("lecture_ids") or None)
+                          lecture_ids=lecture_ids)
+    # Resolution is a similarity search over topic labels, so "quiz me on this
+    # lesson" resolves nothing, and neither does an English request over Arabic
+    # labels. Bounded to one lesson there is nothing to disambiguate: the lesson
+    # is what the quiz is about.
+    if not hits and lecture_ids:
+        hits = get_lecture_topics(lecture_ids)
+        logger.info("resolve fell back to the lesson's topics",
+                    extra={"lectures": len(lecture_ids), "topics": len(hits)})
     return {"topic_ids": [h.topic_id for h in hits]}
 
 
@@ -211,6 +226,7 @@ def _retrieve_batch(state: AssessmentState) -> dict:
     k = state.get("k_per_topic", 4)
     topics = {slot["topic_id"] for slot in state.get("coverage", [])}
     by_topic: dict[str, list] = {}
+    fallbacks = 0
     for topic in topics:
         chunks = retrieval.retrieve(
             state.get("query") or "",
@@ -221,9 +237,18 @@ def _retrieve_batch(state: AssessmentState) -> dict:
             k=k,
             min_score=state.get("min_score", DEFAULT_MIN_SCORE),
         )
+        # The slot's topic_id is already an exact filter, so a similarity floor
+        # against the request text only decides whether the student phrased the
+        # request with any subject matter in it. "Quiz me on this lesson" has
+        # none, and an English request over an Arabic lesson has none the
+        # embedding can see; both used to retrieve nothing and yield no quiz.
+        if not chunks and topic:
+            chunks = get_topic_chunks([topic], namespaces, per_topic=k)
+            fallbacks += 1
         by_topic[topic or ""] = chunks
     logger.info("retrieve_batch", extra={
-        "topics": len(by_topic), "chunks": sum(len(v) for v in by_topic.values())})
+        "topics": len(by_topic), "chunks": sum(len(v) for v in by_topic.values()),
+        "topic_fallbacks": fallbacks})
     return {"chunks_by_topic": by_topic}
 
 

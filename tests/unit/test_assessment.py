@@ -246,6 +246,80 @@ def test_assessment_sg_resolves_topics_when_absent(monkeypatch):
     assert out["assessment"]["items"][0]["topic_id"] == "t9"
 
 
+def test_a_quiz_falls_back_to_the_topic_when_the_request_has_nothing_to_match(monkeypatch):
+    """'Quiz me on this lesson' produced no questions at all.
+
+    A quiz slot already carries a topic_id, which is an exact filter. Requiring
+    the slot's chunks to also clear a similarity floor against the request text
+    meant a request with no subject matter in it — "quiz me on this lesson", or
+    an English request over an Arabic lesson — retrieved nothing and the student
+    got "there isn't enough syllabus material" instead of their quiz.
+    """
+    from agent.models import ResolvedTopic
+
+    monkeypatch.setattr(
+        qmod, "resolve_topics",
+        lambda query, subject_id=None, **k: [ResolvedTopic("t9", "Fire", 0.9, "sub1")])
+    monkeypatch.setattr(qmod.retrieval, "retrieve", lambda *a, **k: [])
+    monkeypatch.setattr(qmod, "get_topic_chunks", lambda *a, **k: [_chunk("t9")])
+
+    graph = build_assessment_sg(config=get_config(), llm=None)
+    out = graph.invoke({
+        "query": "quiz me on this lesson", "subject_id": "sub1",
+        "namespaces": ["syllabus"], "language": "en", "item_source": "generated",
+        "type_mix": {"mcq": 1}, "k_per_topic": 1, "adaptive": False,
+    })
+    assert out["assessment"]["items"], "the lesson's own chunks should still ground a quiz"
+    assert out["assessment"]["items"][0]["topic_id"] == "t9"
+
+
+def test_a_quiz_in_a_lesson_uses_that_lesson_when_the_request_names_no_topic(monkeypatch):
+    """An English "quiz me on this lesson" over an Arabic lesson produced nothing.
+
+    Topic resolution is a similarity search over topic labels, so a request that
+    names no topic — and a request in a language the labels are not written in —
+    resolves nothing, leaves the coverage plan empty, and the student gets no
+    questions. Inside one lesson there is no ambiguity about what to ask about.
+    """
+    from agent.models import ResolvedTopic
+
+    monkeypatch.setattr(qmod, "resolve_topics", lambda *a, **k: [])
+    monkeypatch.setattr(
+        qmod, "get_lecture_topics",
+        lambda lecture_ids, **k: [ResolvedTopic("t9", "السجع", 0.0, "sub1")])
+    monkeypatch.setattr(qmod.retrieval, "retrieve", lambda *a, **k: [_chunk("t9")])
+
+    graph = build_assessment_sg(config=get_config(), llm=None)
+    out = graph.invoke({
+        "query": "give me a quiz on this lesson", "subject_id": "sub1",
+        "lecture_ids": ["lec1"], "namespaces": ["syllabus"], "language": "en",
+        "item_source": "generated", "type_mix": {"mcq": 1}, "k_per_topic": 1,
+        "adaptive": False,
+    })
+    assert out["assessment"]["items"], "the lesson's own topics should carry the quiz"
+    assert out["assessment"]["items"][0]["topic_id"] == "t9"
+
+
+def test_a_quiz_across_a_whole_subject_still_needs_the_request_to_resolve(monkeypatch):
+    """Without a lesson there is no lesson to fall back to — resolution still rules."""
+    monkeypatch.setattr(qmod, "resolve_topics", lambda *a, **k: [])
+    called = {"lecture_topics": False}
+
+    def _spy(lecture_ids, **k):
+        called["lecture_topics"] = True
+        return []
+
+    monkeypatch.setattr(qmod, "get_lecture_topics", _spy)
+    monkeypatch.setattr(qmod.retrieval, "retrieve", lambda *a, **k: [])
+    graph = build_assessment_sg(config=get_config(), llm=None)
+    graph.invoke({
+        "query": "quiz me", "subject_id": "sub1", "namespaces": ["syllabus"],
+        "language": "en", "item_source": "generated", "type_mix": {"mcq": 1},
+        "k_per_topic": 1, "adaptive": False,
+    })
+    assert not called["lecture_topics"]
+
+
 # --- dispatch wiring --------------------------------------------------------
 
 def test_dispatch_routes_assessment_and_forwards_user_id():
