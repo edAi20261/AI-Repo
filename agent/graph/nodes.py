@@ -48,6 +48,7 @@ from ..prompts import (
     PLAN_PROMPT,
     TASK_DESCRIPTIONS,
 )
+from ..scope import lecture_filter
 from ..tools import resolve_topics
 from .pathways import build_namespaces, resolve_style
 
@@ -375,7 +376,7 @@ def build_plan(config, llm, client=None):
 
         # (3) build each task's params: resolve topic_ids (invariant 8) + carry any
         # task-specific spec (assessment shape / grade reference / visual spec).
-        lecture_ids = state.get("lecture_ids") or None
+        lecture_ids = lecture_filter(state)
         tasks: list[dict] = []
         for t in raw_tasks:
             resolved = resolve_topics(t["query"], subject_id, lecture_ids=lecture_ids,

@@ -139,3 +139,62 @@ def test_a_corpus_with_nowhere_better_keeps_the_answer(monkeypatch):
     """If the unscoped search finds nothing at all there is no elsewhere to
     prefer, so the lesson is as good an answer as exists."""
     assert _within(monkeypatch, scoped=0.45, unscoped=None)
+
+
+# --- the plan node must obey the declared scope too -------------------------
+
+class _PlanCfg:
+    """Minimal config for build_plan with no default subject."""
+
+    def get(self, key, default=None):
+        if key == "agent.default_tasks":
+            return ["assessment"]
+        if key == "language.supported":
+            return ["ar", "en", "fr", "de"]
+        return default
+
+
+def test_planning_resolves_topics_inside_the_declared_lesson(monkeypatch):
+    """A quiz inside a lesson came back empty because plan ignored study_scope.
+
+    ``plan`` scoped topic resolution to the legacy ``lecture_ids`` only, so a turn
+    carrying a declared ``study_scope`` resolved topics across the whole subject.
+    The assessment adapter then narrowed retrieval to the selected lesson, the
+    two filters intersected to nothing, and the student got "there isn't enough
+    syllabus material" instead of their quiz.
+    """
+    from agent.graph import nodes as nmod
+
+    seen: dict = {}
+
+    def _spy(query, subject_id=None, *, lecture_ids=None, **kwargs):
+        seen["lecture_ids"] = lecture_ids
+        return []
+
+    monkeypatch.setattr(nmod, "resolve_topics", _spy)
+    plan = nmod.build_plan(_PlanCfg(), None)
+    plan({
+        "pathway": "student",
+        "message": "اختبرني في هذا الدرس",
+        "subject_id": "subjX",
+        "study_scope": {"subject_id": "subjX", "lecture_id": LESSON,
+                        "lesson_title": "Photosynthesis"},
+    })
+    assert seen["lecture_ids"] == [LESSON]
+
+
+def test_planning_still_honours_a_multi_lesson_legacy_filter(monkeypatch):
+    """Several lecture_ids and no declared scope stays a multi-lesson filter."""
+    from agent.graph import nodes as nmod
+
+    seen: dict = {}
+
+    def _spy(query, subject_id=None, *, lecture_ids=None, **kwargs):
+        seen["lecture_ids"] = lecture_ids
+        return []
+
+    monkeypatch.setattr(nmod, "resolve_topics", _spy)
+    plan = nmod.build_plan(_PlanCfg(), None)
+    plan({"pathway": "student", "message": "quiz me",
+          "subject_id": "subjX", "lecture_ids": [LESSON, OTHER]})
+    assert seen["lecture_ids"] == [LESSON, OTHER]
