@@ -25,6 +25,7 @@ from shared.embeddings import get_embedder
 logger = logging.getLogger(__name__)
 
 from .mastery import Mastery, MasteryParams, status
+from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
 from .models import PrereqTopic, ResolvedTopic, RetrievedChunk
 
 __all__ = [
@@ -129,22 +130,16 @@ def rag_search(
         key="chunk_kind", match=models.MatchValue(value="contents"))]
 
     collection = config.vector_store.get("collection", "eduai_chunks")
-    client = query_client(config)
     # Over-fetch for two reasons: ready_only may drop hits, and the lexical
     # stage can only reorder what the dense stage brought back.
     fetch = k * 3 if ready_only else k
     if config.get("agent.hybrid.enabled"):
         fetch = max(fetch, config.get("agent.hybrid.candidates"))
-    hits = client.query_points(
-        collection, query=vector,
-        query_filter=models.Filter(must=must, must_not=must_not),
-        limit=fetch, with_payload=True,
-    ).points
-    if not hits:
+    scores, meta = _candidate_scores(
+        query, [models.Filter(must=must, must_not=must_not)], config,
+        collection=collection, limit=fetch, vector=vector, with_meta=True)
+    if not scores:
         return []
-    scores = {str(h.id): h.score for h in hits}
-    # Readable citation labels ride the payload; keyed by chunk_id (== point id).
-    meta = {str(h.id): (h.payload or {}) for h in hits}
 
     ready_clause = ""
     if ready_only:
@@ -176,6 +171,86 @@ def rag_search(
     if config.get("agent.hybrid.enabled"):
         out = _fuse_lexically(query, out, config)
     return out[:k]
+
+
+
+def _candidate_scores(
+    query: str,
+    filters: list,
+    config: Config,
+    *,
+    collection: str,
+    limit: int,
+    vector: list[float] | None = None,
+    with_meta: bool = False,
+):
+    """Candidate chunk ids with their DENSE cosine, however they were found.
+
+    A collection holding both vectors is searched twice: once by meaning, once
+    by the words themselves. The second is what earns the round trip — a chunk
+    the dense vector averaged away was never a candidate before, so no amount of
+    re-ranking could surface it. A student typing a name, a formula or a date is
+    exactly that case.
+
+    What comes back is always a similarity. ``agent.min_score`` is measured
+    against one, and a fused rank score in its place would read as "everything
+    clears the floor" — the tutor would stop declining what the syllabus cannot
+    answer. So a chunk only the sparse half found is scored by asking the dense
+    half about it, not by its sparse score.
+    """
+    client = query_client(config)
+    query_filter = filters[0] if filters else None
+    vector = vector if vector is not None else get_embedder(config).embed_query(query)
+    hybrid = bool(config.get("vector_store.hybrid"))
+
+    # A collection with named vectors has to be told which one to search; the
+    # collection we have today has one unnamed vector, and naming it finds
+    # nothing. Same call, one argument apart.
+    named = {"using": DENSE_VECTOR} if hybrid else {}
+    dense = client.query_points(
+        collection, query=vector, query_filter=query_filter,
+        limit=limit, with_payload=True, **named,
+    ).points
+    scores = {str(h.id): h.score for h in dense}
+    meta = {str(h.id): (h.payload or {}) for h in dense}
+
+    if hybrid:
+        terms = get_embedder(config).embed_sparse([query])[0]
+        if terms:
+            scores, meta = _add_lexical_candidates(
+                client, collection, terms, vector, query_filter, limit,
+                scores, meta, config)
+
+    return (scores, meta) if with_meta else scores
+
+
+def _add_lexical_candidates(
+    client, collection, terms, vector, query_filter, limit, scores, meta, config,
+):
+    """Chunks the words found, scored by meaning so the floor still applies."""
+    from qdrant_client import models
+
+    lexical = client.query_points(
+        collection,
+        query=models.SparseVector(indices=list(terms), values=list(terms.values())),
+        using=SPARSE_VECTOR, query_filter=query_filter,
+        limit=limit, with_payload=True,
+    ).points
+    unseen = [str(h.id) for h in lexical if str(h.id) not in scores]
+    if not unseen:
+        return scores, meta
+
+    rescored = client.query_points(
+        collection, query=vector, using=DENSE_VECTOR,
+        query_filter=models.Filter(must=[models.HasIdCondition(has_id=unseen)]),
+        limit=len(unseen), with_payload=True,
+    ).points
+    logger.info("lexical candidates", extra={
+        "found_only_by_words": len(unseen), "rescored": len(rescored)})
+    for hit in rescored:
+        scores[str(hit.id)] = hit.score
+        meta[str(hit.id)] = hit.payload or {}
+    return scores, meta
 
 
 def _fuse_lexically(

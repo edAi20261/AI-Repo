@@ -76,6 +76,15 @@ vector_store:
   # production cluster from outside it: a k=8 search over eduai_chunks runs
   # 99-100ms, k=24 the same, topics the same, with one 273ms cold outlier.
   # 5s is ~18x the worst measured call: a search that slow is broken, not busy.
+  # Keep a sparse vector beside the dense one, so the lexical half of a search
+  # can FIND a chunk rather than only re-rank what the dense half returned: a
+  # name, a formula or a date a student types exactly is what an average over
+  # 1024 dimensions loses. Terms come from the embedding model's own
+  # multilingual tokenizer, so a Chinese or Hindi page is as searchable as an
+  # English one.
+  # Off until the collection is rebuilt — naming a vector in a query finds none
+  # of the points already written without a name.
+  hybrid: false
   query_timeout_seconds: 5
   upsert_batch_size: 64
   collection: eduai_chunks
