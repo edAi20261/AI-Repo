@@ -163,6 +163,13 @@ ingestion:
     detect_direction: true
     reading_direction: ltr        # used only when detect_direction is false
     cache: true                   # store what a model read, keyed on model + prompt digest
+  # How much of a lesson has to be unreadable before it is held back from
+  # retrieval. A share, not a count: any-page-failed does not scale. A 371-page
+  # textbook read into 545 good chunks answered nothing, because one page came
+  # back unreadable and rag_search only reads lectures marked ready — while a
+  # three-page lesson with the same one bad page went through. A share also
+  # needs no special case for a short lesson: one page of three is a third of it.
+  needs_review_ratio: 0.05
   ocr:
     min_chars_per_page: 40       # fewer characters than this: treat page as scanned
     render_dpi: 300

@@ -509,3 +509,39 @@ def test_pages_that_parsed_but_yielded_nothing_fall_back_to_the_elements(monkeyp
 
     assert out["chunks"], "the vision transcription must not be thrown away"
     assert out["stats"]["chunk"]["source"] == "length"
+
+
+# --- how much of a lesson has to be unreadable before it is held back -------
+
+def _status(unreadable: int, pages: int, ratio: float = 0.05):
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    return ex.review_status(unreadable=unreadable, pages=pages, ratio=ratio)
+
+
+def test_one_bad_page_in_a_textbook_does_not_hold_back_the_whole_book():
+    """A 371-page textbook ingested into 545 good chunks and then answered
+    nothing: one page came back unreadable, the lesson was flagged needs_review,
+    and rag_search only reads lectures marked ready. At that length a bad page
+    is near-certain, so the rule quarantined every long document it was given."""
+    assert _status(unreadable=1, pages=371) == "ready"
+
+
+def test_a_lesson_mostly_nobody_could_read_is_held_back():
+    assert _status(unreadable=40, pages=371) == "needs_review"
+
+
+def test_a_short_lesson_needs_no_special_case():
+    """One page of three is a third of the lesson. The same ratio catches it
+    without a second rule for short documents."""
+    assert _status(unreadable=1, pages=3) == "needs_review"
+
+
+def test_a_lesson_nothing_could_be_read_from_is_held_back():
+    assert _status(unreadable=2, pages=2) == "needs_review"
+    assert _status(unreadable=0, pages=0) == "needs_review"
+
+
+def test_a_lesson_read_end_to_end_is_ready():
+    assert _status(unreadable=0, pages=371) == "ready"
