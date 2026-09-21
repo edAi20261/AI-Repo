@@ -117,6 +117,16 @@ ingestion:
     max_candidates: 40           # cap candidates per topic to the K nearest (0 = no cap)
     drop_self_edges: true
     break_cycles: true
+  # Embed each chunk as "subject. lesson. Section: heading. Page n." + the text,
+  # never the text alone: a four-word chunk names no lesson, unit or page, so a
+  # query naming one has nothing in the vector to match. Measured over the 154
+  # indexed chunks against scripts/eval_retrieval.json, dense only:
+  #   off  precision@1 0.750  MRR 0.833  answerable/unanswerable gap +0.084
+  #   on   precision@1 0.833  MRR 0.882  answerable/unanswerable gap +0.107
+  # Off until the index is re-embedded — a prefixed chunk and a bare one are not
+  # comparable, so a half-converted index ranks by which half a chunk is in.
+  # Flip this, then run scripts/reembed_chunks.py --apply.
+  context_prefix: false
   normalise:                     # NFKC + tatweel strip, before chunking
     nfkc: true
     strip_tatweel: true
