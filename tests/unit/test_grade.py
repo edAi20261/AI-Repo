@@ -336,6 +336,35 @@ def test_grade_sg_no_user_id_feedback_only(monkeypatch):
     assert out["result"]["mastery_events"] == 0      # no user -> graded, no mastery
 
 
+def test_the_grade_endpoint_grounds_a_keyless_answer_in_the_syllabus(monkeypatch):
+    """Every answer sent to POST /ai/grade with no reference key was declined.
+
+    grade_sg grounds a keyless answer by retrieving the syllabus, and returns
+    early when no namespaces were given. The chat path passes them; run_grade,
+    the endpoint's entrypoint, never did — so a student pasting their own
+    homework question got "there is no model answer or enough syllabus content"
+    even where the syllabus answers it plainly.
+    """
+    from agent.graph import grade as grade_entrypoint
+
+    seen: dict = {}
+
+    class _Sg:
+        def invoke(self, state):
+            seen.update(state)
+            return {"result": {}}
+
+    monkeypatch.setattr(grade_entrypoint, "build_grade_sg", lambda **k: _Sg())
+    monkeypatch.setattr(grade_entrypoint, "get_backend_client", lambda config: None)
+    grade_entrypoint.run_grade(
+        {"submissions": [{"question": "ما معنى ريادة الأعمال؟", "student_answer": "..."}],
+         "user_id": "u1", "subject_id": "s1"},
+        config=get_config())
+
+    assert seen["namespaces"] == ["syllabus"]
+    assert seen["min_score"] == get_config().get("agent.min_score")
+
+
 # --- source: student practice vs teacher assigned ---------------------------
 
 def test_grade_adapter_source_by_pathway():
