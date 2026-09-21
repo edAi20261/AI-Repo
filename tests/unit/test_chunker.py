@@ -140,6 +140,49 @@ def test_a_fragment_with_nothing_before_it_survives_only_if_it_is_findable():
     assert dropped == []
 
 
+def test_a_fragment_under_its_own_heading_joins_what_the_heading_introduces():
+    """A fragment only folded backward when it shared the previous heading. In a
+    workbook every activity box carries its own heading — "Visualize It!",
+    "Active Reading 9", "Unit 1 Review" — so nothing ever merged and 14% of a
+    371-page textbook came out under the size floor. A heading with a stub under
+    it introduces what comes next; that is where it belongs."""
+    from ingestion.layout.chunker import PageChunk
+
+    merged = merge_undersized([
+        PageChunk(text=PROSE, heading="Watersheds", page=7, doc_id="d"),
+        PageChunk(text="Unit 1 Review\nName", heading="Unit 1 Review", page=7, doc_id="d"),
+        PageChunk(text=PROSE, heading="Review questions", page=7, doc_id="d"),
+    ])
+    assert len(merged) == 2
+    assert merged[1].text.startswith("Unit 1 Review")
+    assert merged[1].heading == "Review questions"
+
+
+def test_a_fragment_at_the_end_joins_the_chunk_before_it_whatever_its_heading():
+    """Nothing follows it, so backward is the only place left. Keeping it alone
+    indexes five tokens that answer nothing."""
+    from ingestion.layout.chunker import PageChunk
+
+    merged = merge_undersized([
+        PageChunk(text=PROSE, heading="Watersheds", page=7, doc_id="d"),
+        PageChunk(text="Name", heading="Unit 1 Review", page=7, doc_id="d"),
+    ])
+    assert len(merged) == 1
+    assert merged[0].text.endswith("Name")
+
+
+def test_a_question_stays_its_own_chunk_however_short_it_is():
+    """Someone searches for a question directly, so a short one is not a
+    fragment — it is the thing being looked for."""
+    from ingestion.layout.chunker import PageChunk
+
+    merged = merge_undersized([
+        PageChunk(text="What is a watershed?", block_type="question", page=7, doc_id="d"),
+        PageChunk(text=PROSE, heading="Watersheds", page=7, doc_id="d"),
+    ])
+    assert len(merged) == 2
+
+
 # --- whole pages ------------------------------------------------------------
 
 def test_a_page_of_labels_becomes_one_chunk_not_a_hundred():
