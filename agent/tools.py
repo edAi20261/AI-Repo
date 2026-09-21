@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 from .mastery import Mastery, MasteryParams, status
 from shared.matching import NOT_CONTENT
-from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
+from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR, has_named_vectors
 from .models import PrereqTopic, ResolvedTopic, RetrievedChunk
 
 __all__ = [
@@ -202,7 +202,7 @@ def _candidate_scores(
     client = query_client(config)
     query_filter = filters[0] if filters else None
     vector = vector if vector is not None else get_embedder(config).embed_query(query)
-    hybrid = bool(config.get("vector_store.hybrid"))
+    hybrid = has_named_vectors(client, collection)
 
     # A collection with named vectors has to be told which one to search; the
     # collection we have today has one unnamed vector, and naming it finds

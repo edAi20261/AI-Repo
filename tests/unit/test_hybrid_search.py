@@ -27,9 +27,16 @@ class _Hit:
 class _FakeQdrant:
     """Answers a dense query, a sparse query, and a dense query by id."""
 
-    def __init__(self, dense: list[_Hit], sparse: list[_Hit], by_id: list[_Hit]) -> None:
+    def __init__(self, dense: list[_Hit], sparse: list[_Hit], by_id: list[_Hit],
+                 named: bool = True) -> None:
         self._dense, self._sparse, self._by_id = dense, sparse, by_id
+        self._named = named
         self.queries: list[dict[str, Any]] = []
+
+    def get_collection(self, _name):
+        params = type("P", (), {"vectors": {"dense": object()} if self._named
+                                else object()})()
+        return type("Info", (), {"config": type("C", (), {"params": params})()})()
 
     def query_points(self, collection, **kwargs):
         self.queries.append(kwargs)
@@ -43,6 +50,9 @@ class _FakeQdrant:
 
 
 def _config(hybrid: bool):
+    from shared import vectors
+
+    vectors.has_named_vectors.cache_clear()
     config = get_config(reload=True)
     config._data.setdefault("vector_store", {})["hybrid"] = hybrid
     return config
@@ -94,7 +104,7 @@ def test_a_collection_with_one_vector_is_searched_the_way_it_always_was(monkeypa
     finds none of them."""
     from agent import tools
 
-    fake = _FakeQdrant(dense=[_Hit("a", 0.61)], sparse=[], by_id=[])
+    fake = _FakeQdrant(dense=[_Hit("a", 0.61)], sparse=[], by_id=[], named=False)
     monkeypatch.setattr(tools, "query_client", lambda config: fake)
     monkeypatch.setattr(tools, "get_embedder",
                         lambda config: type("E", (), {
@@ -105,3 +115,64 @@ def test_a_collection_with_one_vector_is_searched_the_way_it_always_was(monkeypa
 
     assert len(fake.queries) == 1
     assert "using" not in fake.queries[0]
+
+
+# --- the collection knows its own shape -------------------------------------
+
+class _Shaped:
+    """A client whose collection reports how its vectors are configured."""
+
+    def __init__(self, named: bool) -> None:
+        self.named = named
+        self.queries: list[dict] = []
+
+    def get_collection(self, _name):
+        params = type("P", (), {"vectors": {"dense": object()} if self.named
+                                else object()})()
+        return type("Info", (), {"config": type("C", (), {"params": params})()})()
+
+    def query_points(self, collection, **kwargs):
+        self.queries.append(kwargs)
+        return type("R", (), {"points": []})()
+
+
+def test_a_collection_without_named_vectors_is_not_queried_by_name(monkeypatch):
+    """APP_ENV=local points at eduai_chunks_dev, which has one unnamed vector.
+    vector_store.hybrid is true in the base config, so every query named a
+    vector that collection does not have and Qdrant answered 400 — a 500 on
+    every turn, where the honest outcome was "nothing found". A setting cannot
+    be the authority on a collection's shape; the collection is."""
+    from agent import tools
+    from shared import vectors
+
+    vectors.has_named_vectors.cache_clear()
+    fake = _Shaped(named=False)
+    monkeypatch.setattr(tools, "query_client", lambda config: fake)
+    monkeypatch.setattr(tools, "get_embedder",
+                        lambda config: type("E", (), {
+                            "embed_query": lambda self, q: [0.1] * 8,
+                            "embed_sparse": lambda self, t: [{7: 1.0}]})())
+
+    tools._candidate_scores("q", [], _config(True),
+                            collection="eduai_chunks_dev", limit=10)
+
+    assert "using" not in fake.queries[0]
+    assert len(fake.queries) == 1, "no sparse query against a collection without one"
+
+
+def test_a_collection_with_named_vectors_is_queried_by_name(monkeypatch):
+    from agent import tools
+    from shared import vectors
+
+    vectors.has_named_vectors.cache_clear()
+    fake = _Shaped(named=True)
+    monkeypatch.setattr(tools, "query_client", lambda config: fake)
+    monkeypatch.setattr(tools, "get_embedder",
+                        lambda config: type("E", (), {
+                            "embed_query": lambda self, q: [0.1] * 8,
+                            "embed_sparse": lambda self, t: [{7: 1.0}]})())
+
+    tools._candidate_scores("q", [], _config(True),
+                            collection="eduai_chunks_v2", limit=10)
+
+    assert fake.queries[0]["using"] == "dense"
