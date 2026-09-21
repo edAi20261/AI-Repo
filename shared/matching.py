@@ -78,3 +78,80 @@ def looks_like_contents(text: str) -> bool:
     if not text:
         return False
     return len(_NAVIGATION_MARKER.findall(text)) >= MIN_NAVIGATION_MARKERS
+
+
+# What separates the apparatus of a book from its content, measured over a
+# 371-page Grade 6 science module. The signal is the shape of an index entry —
+# a term, a comma, a page number — per word of the chunk:
+#
+#                         chunks   entries/word mean   median    max
+#   front matter              11         0.0002        0.0000   0.0022
+#   body                     473         0.0003        0.0000   0.0381
+#   back-of-book index        61         0.0661        0.0000   0.4444
+#
+# Digit density was the first thing tried and it is wrong: a science page is
+# full of figures, and two pages of bathymetric map exercises — real content,
+# with depth readings down an axis — came out looking exactly like an index at
+# 0.129 digits per character. They score 0.0000 on this one, because a
+# thousands separator sits between two digits and an index entry sits between a
+# word and a digit.
+#
+# Dotted leaders are their own signal: rows of full stops carry no meaning and
+# nothing else produces them. Both are structural, so they read the same in any
+# script.
+INDEX_ENTRIES_PER_WORD = 0.04
+LEADER_STOPS_PER_WORD = 0.5
+LEADER_MIN_WORDS = 4
+INDEX_MIN_WORDS = 12
+
+# A term, a comma, a page number: "adhesion, 10". Never "-1,000".
+_INDEX_ENTRY = re.compile(r"[^\W\d_]\s*,\s*\d")
+_TOKEN = re.compile(r"[^\W\d_]+", re.UNICODE)
+_STOP = re.compile(r"[.!?]")
+
+
+def looks_like_apparatus(text: str) -> bool:
+    """Whether a chunk is part of finding the content rather than being it.
+
+    A back-of-book index or a table of contents: a dense list of terms and page
+    numbers that shares a word with almost any question and answers none of
+    them. The same failure as a contents page, arriving by a different route.
+
+    Deliberately narrow. A glossary is not apparatus — it defines the terms a
+    student asks about — and neither is a page of equations. Losing content
+    costs more than carrying a little apparatus.
+    """
+    words = _TOKEN.findall(text)
+    if len(words) < LEADER_MIN_WORDS:
+        return False
+    # Two signals, two minimums. Rows of dots are unambiguous and a contents
+    # line is short by nature, so a handful of words is enough to judge one. An
+    # entry rate over a few words is noise, so that one waits for a chunk worth
+    # measuring.
+    if len(_STOP.findall(text)) / len(words) >= LEADER_STOPS_PER_WORD:
+        return True
+    if len(words) < INDEX_MIN_WORDS:
+        return False
+    return len(_INDEX_ENTRY.findall(text)) / len(words) >= INDEX_ENTRIES_PER_WORD
+
+
+def chunk_kind(text: str) -> str | None:
+    """What a chunk is, when it is not something to answer from.
+
+    ``None`` means content. Anything else is navigation or apparatus, and
+    retrieval excludes it: a contents page or an index shares a word with
+    almost any question and answers none of them.
+
+    One function because three places decide this — the index stage, the
+    re-embed script and the query filter — and a chunk written as one kind and
+    excluded as another is excluded by accident.
+    """
+    if looks_like_contents(text):
+        return "contents"
+    if looks_like_apparatus(text):
+        return "apparatus"
+    return None
+
+
+# The kinds retrieval will not answer from.
+NOT_CONTENT = ("contents", "apparatus")

@@ -34,7 +34,7 @@ from agent.config import Config
 from shared.postgres import connect
 from shared.vector_store import upsert_client
 from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
-from shared.matching import looks_like_contents
+from shared.matching import chunk_kind
 from ingestion.state import Chunk
 
 PAYLOAD_ONLY_FIELDS = ("subject_name", "lesson_title", "lesson_order")
@@ -57,8 +57,9 @@ def _existing_points(client: QdrantClient, collection: str) -> dict[str, dict]:
 def _with_kind(payload: dict, text: str) -> dict:
     """Stamp contents pages so retrieval can skip them, without a re-ingest."""
     payload = dict(payload)
-    if looks_like_contents(text):
-        payload["chunk_kind"] = "contents"
+    kind = chunk_kind(text)
+    if kind:
+        payload["chunk_kind"] = kind
     else:
         payload.pop("chunk_kind", None)
     return payload

@@ -163,3 +163,73 @@ def test_latin_accents_are_not_folded_away():
 
     assert "é" in fold_for_match("café")
     assert fold_for_match("café") != fold_for_match("cafe")
+
+
+# --- the parts of a book that are not content -------------------------------
+
+def test_a_back_of_book_index_is_apparatus():
+    """The last pages of a textbook are terms and page numbers. They share a
+    word with almost any question and answer none of them. Measured over a
+    371-page module, index entries per word: 0.066 through the back matter
+    against 0.0003 through the body."""
+    from shared.matching import looks_like_apparatus
+
+    assert looks_like_apparatus(
+        "adhesion, 10 climate and, 232 cohesion, 10 conduction and, 125 "
+        "conservation, 2-3 temperate zone, 234 temperature, 116 atmosphere "
+        "and, 107, 108, 110 climate and, 226, 231 subduction, 61")
+
+
+def test_a_contents_page_of_dotted_leaders_is_apparatus():
+    """Rows of dots carry no meaning and inflate every full-stop count."""
+    from shared.matching import looks_like_apparatus
+
+    assert looks_like_apparatus(
+        "Program Overview . . . . . . . . . . . . . . . . 1\n"
+        "Earth's Water . . . . . . . . . . . . . . . . . . 5\n"
+        "The Water Cycle . . . . . . . . . . . . . . . . 20")
+
+
+def test_prose_is_never_apparatus():
+    """Whatever it is about, and in whatever script."""
+    from shared.matching import looks_like_apparatus
+
+    assert not looks_like_apparatus(
+        "A watershed is the area of land that is drained by a river system. "
+        "Watersheds are separated from one another by divides, which are ridges "
+        "of higher land. Water flows downhill from the divide into the river.")
+    assert not looks_like_apparatus(
+        "جابر بن حيان عالم عربي بارز اشتهر في مجال الكيمياء، وقد لقبه علماء "
+        "الغرب بأبي الكيمياء. عاش في القرن الثاني الهجري وترك إرثا علميا كبيرا.")
+    assert not looks_like_apparatus(
+        "水循环在海洋和天空之间移动水。太阳提供能量。水蒸发后形成云，然后降雨回到地面。")
+
+
+def test_prose_carrying_figures_is_not_apparatus():
+    """A science page is full of numbers. Digit density was the first signal
+    tried and it flagged two pages of real bathymetric map exercises, whose
+    depth readings run 0.129 digits per character."""
+    from shared.matching import looks_like_apparatus
+
+    assert not looks_like_apparatus(
+        "The highest temperature ever recorded on Earth was 58 degrees Celsius, "
+        "measured in Libya in 1922. The lowest was minus 89 degrees Celsius at "
+        "Vostok Station in Antarctica in 1983, some 3488 metres above sea level.")
+
+
+def test_a_chart_axis_is_not_an_index():
+    """A thousands separator sits between two digits; an index entry sits
+    between a word and a digit. That is the whole difference."""
+    from shared.matching import looks_like_apparatus
+
+    assert not looks_like_apparatus(
+        "You Try It! Now follow the steps below to draw the profile for this "
+        "bathymetric map of a region near Monterey Bay, California. Depth in "
+        "metres 0 10 20 30 40 50 -1,000 -2,000 -3,000 -4,000 -2,500 Area of "
+        "profile NORTH Use the grid to plot each depth reading in turn.")
+
+
+def test_an_empty_chunk_is_not_apparatus():
+    from shared.matching import looks_like_apparatus
+
+    assert not looks_like_apparatus("")

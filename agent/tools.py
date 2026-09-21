@@ -25,6 +25,7 @@ from shared.embeddings import get_embedder
 logger = logging.getLogger(__name__)
 
 from .mastery import Mastery, MasteryParams, status
+from shared.matching import NOT_CONTENT
 from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
 from .models import PrereqTopic, ResolvedTopic, RetrievedChunk
 
@@ -127,7 +128,7 @@ def rag_search(
     # A contents page lists every lesson title, so it beats the lessons
     # themselves whenever a student names one. It can never be an answer.
     must_not = [models.FieldCondition(
-        key="chunk_kind", match=models.MatchValue(value="contents"))]
+        key="chunk_kind", match=models.MatchAny(any=list(NOT_CONTENT)))]
 
     collection = config.vector_store.get("collection", "eduai_chunks")
     # Over-fetch for two reasons: ready_only may drop hits, and the lexical

@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
 
-from shared.matching import looks_like_contents
+from shared.matching import chunk_kind
 from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
 from shared.vector_store import upsert_client
 
@@ -442,7 +442,7 @@ def _payload(c: Chunk) -> dict[str, Any]:
         "lesson_order": c.lesson_order,
         # Navigation, not material. A contents page is a list of lesson titles
         # and so outmatches the lessons themselves on any title-shaped question.
-        "chunk_kind": "contents" if looks_like_contents(c.text) else None,
+        "chunk_kind": chunk_kind(c.text),
     }
     return {k: v for k, v in payload.items() if v is not None}
 
