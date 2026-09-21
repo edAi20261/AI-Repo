@@ -14,6 +14,9 @@ from typing import Any, Optional
 from shared.backend import get_backend_client
 from shared.llm import maybe_llm
 
+from .. import retrieval
+from .pathways import build_namespaces
+
 from ..config import Config, get_config
 from .graph import (
     _kind_source, _subject_facts, _subject_instructions)
@@ -52,5 +55,10 @@ def run_grade(payload: dict[str, Any], *, config: Optional[Config] = None) -> di
         "assessment_id": payload.get("assessment_id"),
         "source": payload.get("source") or _kind_source(payload.get("kind"), g),
         "pass_threshold": g.get("pass_threshold", 0.5),
+        # Without these a keyless answer is never grounded, and grade_sg declines
+        # every one of them: the chat path supplied both and this one did not.
+        "namespaces": payload.get("namespaces") or build_namespaces(
+            session_id=payload.get("session_id")),
+        "min_score": config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE),
     })
     return result.get("result", {})

@@ -22,7 +22,11 @@ from .middleware import RequestContextMiddleware
 from .notifier import build_notifier
 from .routers import chat, grading, health, homework, ingestion, reports
 from .runtime import AgentRuntime
-from .security import assert_stores_configured, assert_token_configured
+from .security import (
+    assert_stores_configured,
+    assert_token_configured,
+    warn_if_index_empty,
+)
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -43,6 +47,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     setup_logging(config)
     assert_token_configured(settings)
     assert_stores_configured(settings)
+    warn_if_index_empty(config)
 
     app = FastAPI(
         title=API_TITLE,
