@@ -151,9 +151,10 @@ ingestion:
     # 40-page magazine-style textbook: 25 chunks at a 546-token median, 4% over
     # the size limit and the copyright line welded into 25 of 25, against 52
     # chunks at a 243-token median, none oversized and none contaminated.
-    # Off until the corpus is re-ingested — chunks written by the two paths do
-    # not line up, so a half-converted lecture retrieves against itself.
-    enabled: false
+    # On. Chunks written by the two paths do not line up, so a lecture takes
+    # the new path only when it is next ingested; the 11 already indexed keep
+    # the chunks they have until someone re-ingests them deliberately.
+    enabled: true
     # Which side of a column a page is read from. Detected per page from what
     # the page is written in, because one direction for a whole corpus reads
     # every Latin, Cyrillic and CJK page backwards the moment the corpus stops

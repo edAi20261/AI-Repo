@@ -8,6 +8,14 @@ the router that decides which parser a page needs.
 from __future__ import annotations
 
 from ingestion.layout.blocks import Block, PageMeta, ParsedPage
+from ingestion.state import Element
+from shared.config import get_config
+
+
+class _Ctx:
+    """Just the config the chunk stage reads."""
+
+    config = get_config()
 from ingestion.layout.bridge import chunks_for, payload_for
 from ingestion.layout.chunker import PageChunk
 from ingestion.layout.router import TEXT_LAYER, VISION, choose_tier
@@ -459,3 +467,45 @@ def test_a_direction_set_by_hand_still_wins(monkeypatch):
                      {"reading_direction": "rtl", "detect_direction": False}, 900, {}, None,
                      render_dpi=200, config=None)
     assert seen["direction"] == "rtl"
+
+
+# --- a document the layout path could not read ------------------------------
+
+def test_a_document_the_layout_path_cannot_read_still_gets_chunked(monkeypatch):
+    """Turning layout parsing on emptied a maths lesson: every page goes to
+    vision, the layout tier could not read one, parsed_pages came back empty,
+    and the chunk stage took the layout branch anyway and wrote nothing. Zero
+    chunks looks exactly like a lesson with nothing in it."""
+    from importlib import import_module
+
+    chunk = import_module("ingestion.stages.chunk")
+    state = {
+        "lecture_id": "11111111-1111-1111-1111-111111111111",
+        "parsed_pages": [],
+        "elements": [Element(text="Subtraction borrows from the next column.", page=1)],
+        "subject_id": "s1", "version": 1, "namespace": "syllabus",
+    }
+    out = chunk.run(state, _Ctx())
+
+    assert out["chunks"], "the elements the extract stage did produce must still be chunked"
+    assert out["stats"]["chunk"]["source"] == "length"
+
+
+def test_pages_that_parsed_but_yielded_nothing_fall_back_to_the_elements(monkeypatch):
+    """A maths book routes every page to vision and drops the text layer. The
+    layout parser still reads that empty text layer, produces pages with no
+    content blocks, and the chunk stage took its zero chunks over the ones the
+    vision transcription had already produced — the lesson indexed empty."""
+    from importlib import import_module
+
+    chunk = import_module("ingestion.stages.chunk")
+    state = {
+        "lecture_id": "11111111-1111-1111-1111-111111111111",
+        "parsed_pages": [_page(1, [_block("p. 41", "page_number")]).model_dump()],
+        "elements": [Element(text="Subtraction borrows from the next column.", page=1)],
+        "subject_id": "s1", "version": 1, "namespace": "syllabus",
+    }
+    out = chunk.run(state, _Ctx())
+
+    assert out["chunks"], "the vision transcription must not be thrown away"
+    assert out["stats"]["chunk"]["source"] == "length"
