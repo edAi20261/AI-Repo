@@ -23,6 +23,12 @@ class _Rect:
 class _Page:
     rect = _Rect()
 
+    def __init__(self, text=PROSE):
+        self._text = text
+
+    def get_text(self, *_args, **_kwargs):
+        return self._text
+
 
 def _block(text, type="body", y=100, x=50, **kw):
     return Block(text=text, type=type, bbox=(x, y, x + 300, y + 40), **kw)
@@ -386,3 +392,70 @@ def test_a_stored_vision_parse_is_not_paid_for_again(monkeypatch):
 
     assert [b["text"] for b in got["blocks"]] == ["from the cache"]
     assert cache.puts == []
+
+
+# --- a page is read the way it is written -----------------------------------
+
+def test_a_latin_page_is_read_left_to_right_whatever_the_setting_says(monkeypatch):
+    """ingestion.layout.reading_direction was one value for the whole corpus.
+    Set to rtl for the Arabic pilot, it would read every column of an English
+    or French textbook from the wrong side — the second customer's bug."""
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    seen: dict = {}
+
+    def _parse(page, meta, direction="ltr"):
+        seen["direction"] = meta.reading_direction
+        return ParsedPage(meta=meta, blocks=[_block(PROSE)])
+
+    monkeypatch.setattr(ex, "parse_page", _parse)
+    monkeypatch.setattr(ex, "choose_tier", lambda *a, **k: TEXT_LAYER)
+    monkeypatch.setattr(ex.pdf, "page_text", lambda page: PROSE)
+
+    ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+                     {"reading_direction": "rtl"}, 900, {}, None,
+                     render_dpi=200, config=None)
+    assert seen["direction"] == "ltr"
+
+
+def test_an_arabic_page_is_read_right_to_left_without_being_told(monkeypatch):
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    seen: dict = {}
+
+    def _parse(page, meta, direction="ltr"):
+        seen["direction"] = meta.reading_direction
+        return ParsedPage(meta=meta, blocks=[_block("نص عربي")])
+
+    monkeypatch.setattr(ex, "parse_page", _parse)
+    monkeypatch.setattr(ex, "choose_tier", lambda *a, **k: TEXT_LAYER)
+    monkeypatch.setattr(ex.pdf, "page_text",
+                        lambda page: "جابر بن حيان عالم عربي اشتهر في الكيمياء")
+
+    ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+                     {}, 900, {}, None, render_dpi=200, config=None)
+    assert seen["direction"] == "rtl"
+
+
+def test_a_direction_set_by_hand_still_wins(monkeypatch):
+    """An operator who knows the document overrides the detector; auto is the
+    default, not the only option."""
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    seen: dict = {}
+
+    def _parse(page, meta, direction="ltr"):
+        seen["direction"] = meta.reading_direction
+        return ParsedPage(meta=meta, blocks=[_block(PROSE)])
+
+    monkeypatch.setattr(ex, "parse_page", _parse)
+    monkeypatch.setattr(ex, "choose_tier", lambda *a, **k: TEXT_LAYER)
+    monkeypatch.setattr(ex.pdf, "page_text", lambda page: PROSE)
+
+    ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+                     {"reading_direction": "rtl", "detect_direction": False}, 900, {}, None,
+                     render_dpi=200, config=None)
+    assert seen["direction"] == "rtl"

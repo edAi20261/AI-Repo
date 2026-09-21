@@ -144,3 +144,22 @@ def test_fusion_uses_rank_not_score():
 
     fused = reciprocal_rank_fusion([1, 2, 3], [3, 1, 2], k=60)
     assert fused[1] > fused[0] > fused[2]
+
+
+# --- folding is not only for Arabic -----------------------------------------
+
+def test_hebrew_points_fold_the_way_arabic_vowels_do():
+    """A pointed Hebrew textbook against an unpointed query is the same
+    mismatch tashkeel was: the page carries the marks, nobody types them."""
+    from shared.matching import fold_for_match
+
+    assert fold_for_match("מַחֲזוֹר הַמַּיִם") == fold_for_match("מחזור המים")
+
+
+def test_latin_accents_are_not_folded_away():
+    """French and Vietnamese marks carry meaning — folding them would merge
+    words the writer distinguished."""
+    from shared.matching import fold_for_match
+
+    assert "é" in fold_for_match("café")
+    assert fold_for_match("café") != fold_for_match("cafe")

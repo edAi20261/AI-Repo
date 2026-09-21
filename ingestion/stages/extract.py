@@ -16,10 +16,12 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from shared.language import LanguagePolicy
+from shared.language.script import reading_direction
 
 from ..context import PipelineContext
 from ..schemas import FigureCaption
 from ..state import Element, Figure, IngestionState, PageResult
+
 from ..utils import is_garbage, normalise_text, pdf
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
@@ -314,6 +316,19 @@ def _page_cache(cfg: Any, layout_cfg: dict) -> Optional[PageCache]:
                      prompt_version=PAGE_LAYOUT_PROMPT.fingerprint)
 
 
+def _page_direction(page: Any, layout_cfg: dict) -> str:
+    """Which side this page's columns are read from.
+
+    Read off the page itself, because one direction for a whole corpus reads
+    every Latin, Cyrillic and CJK page backwards the moment the corpus stops
+    being Arabic — and a single document can hold both. ``detect_direction:
+    false`` hands the decision back to whoever set it.
+    """
+    if layout_cfg.get("detect_direction", True):
+        return reading_direction(pdf.page_text(page))
+    return layout_cfg.get("reading_direction", "ltr")
+
+
 def _parse_layout(
     page: Any,
     page_no: int,
@@ -337,7 +352,7 @@ def _parse_layout(
         page=page_no,
         width=float(page.rect.width),
         height=float(page.rect.height),
-        reading_direction=layout_cfg.get("reading_direction", "ltr"),
+        reading_direction=_page_direction(page, layout_cfg),
     )
     blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
     wanted = choose_tier(page, char_count=char_count, blocks=blocks)

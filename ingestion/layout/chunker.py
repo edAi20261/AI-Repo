@@ -52,7 +52,11 @@ LABEL_MIN_BLOCKS = 8
 # A sentence longer than this is not carried across a split as overlap.
 OVERLAP_MAX = MAX_TOKENS // 4
 
-_SENTENCE_END = re.compile(r"(?<=[.!?؟۔])\s+")
+# Where a sentence ends, across the scripts a syllabus arrives in: Latin,
+# Arabic (؟), Urdu (۔), Devanagari (।॥), Armenian (։), Ethiopic (።) and the CJK
+# full stops. CJK sets no space after its stop, so there the mark itself is the
+# break rather than the whitespace that follows one.
+_SENTENCE_END = re.compile(r"(?<=[\u3002\uFF01\uFF1F])|(?<=[.!?؟۔।॥։።])\s+")
 
 # Types that never become a chunk on their own: page furniture, and the image
 # itself, which carries no text.

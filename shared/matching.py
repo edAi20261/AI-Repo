@@ -21,8 +21,14 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# Fathatan..sukun, superscript alef, and the hamza/madda marks above and below.
-DIACRITICS = re.compile(r"[ً-ٰٕ]")
+# Marks a writer sets above and below a letter that a reader supplies from
+# knowledge and a searcher never types: Arabic tashkeel (fathatan..sukun,
+# superscript alef, the hamza and madda marks) and Hebrew niqqud and
+# cantillation. Latin, Vietnamese and Cyrillic marks are deliberately absent —
+# there they separate words rather than decorate them, so folding café into
+# cafe would merge what the writer distinguished.
+DIACRITICS = re.compile(r"[\u064B-\u0652\u0670\u0653-\u0655"
+                        r"\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]")
 TATWEEL = "ـ"
 
 # Letters an Arabic writer treats as interchangeable and a tokeniser does not.

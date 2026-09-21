@@ -140,7 +140,13 @@ ingestion:
     # Off until the corpus is re-ingested — chunks written by the two paths do
     # not line up, so a half-converted lecture retrieves against itself.
     enabled: false
-    reading_direction: rtl        # which column a spread is read from first
+    # Which side of a column a page is read from. Detected per page from what
+    # the page is written in, because one direction for a whole corpus reads
+    # every Latin, Cyrillic and CJK page backwards the moment the corpus stops
+    # being Arabic — and a single book can hold both. Set detect_direction
+    # false to force the value below for every page.
+    detect_direction: true
+    reading_direction: ltr        # used only when detect_direction is false
     cache: true                   # store what a model read, keyed on model + prompt digest
   ocr:
     min_chars_per_page: 40       # fewer characters than this: treat page as scanned

@@ -241,3 +241,29 @@ def test_short_sentences_still_overlap_so_a_statement_survives_the_join():
     assert len(pieces) > 1
     # The last sentence of one piece opens the next.
     assert pieces[1].startswith(pieces[0].rstrip().split(".")[-2].strip()[:20])
+
+
+# --- sentences exist outside Latin and Arabic --------------------------------
+
+def test_a_chinese_page_is_split_into_sentences():
+    """Sentence enders were [.!?؟۔] followed by whitespace. CJK ends a sentence
+    with 。！？ and puts no space after it, so a Chinese or Japanese page was one
+    unbroken run and the size guard cut it mid-word."""
+    from ingestion.layout.chunker import _sentences
+
+    text = "水循环在海洋和天空之间移动水。太阳提供能量。水蒸发后形成云。"
+    assert len(_sentences(text, 800)) == 3
+
+
+def test_a_hindi_page_is_split_on_its_own_full_stop():
+    from ingestion.layout.chunker import _sentences
+
+    text = "जल चक्र समुद्र और आकाश के बीच जल ले जाता है। सूर्य ऊर्जा देता है।"
+    assert len(_sentences(text, 800)) == 2
+
+
+def test_latin_and_arabic_sentences_still_split_as_they_did():
+    from ingestion.layout.chunker import _sentences
+
+    assert len(_sentences("Water moves. The sun heats it. Clouds form.", 800)) == 3
+    assert len(_sentences("ما هي الكيمياء؟ هي علم المادة. وهي قديمة.", 800)) == 3
