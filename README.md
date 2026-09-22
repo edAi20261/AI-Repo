@@ -34,26 +34,38 @@ The system has three independently deployable parts:
 
 ```
 START
-  → classify            deterministic, no LLM. Picks the pathway and the language.
-  → load_context        one node, parallel fetches. Also the authorisation point.
-  → plan                LLM, structured output. Runs once, no back-edge.
-  → dispatch            conditional fan-out
-      ├── explain_sg      DAG
-      ├── summarize_sg    DAG
-      ├── assessment_sg   DAG, batch item generation over the chunk index
-      ├── grade_sg        DAG, the only writer to mastery
-      ├── report_sg       DAG, walks prerequisites to find root causes
-      └── visual_sg       DAG, deterministic renderers (mind map, chart, math, PDF, slides)
-  → render_visuals      renders every collected visual spec, deduped, capped per turn
-  → compose             LLM. Merges artifacts and citations, applies voice.
-  → persist             deterministic writes, drops the session namespace.
+  → classify            the role, and the conversation so far (turns, summary, state)
+  → load_context        retrieval namespaces and the pathway's voice
+  → understand          LLM, structured output. Reads the new message against the
+                        conversation: does it need the syllabus, which tasks, a
+                        self-contained query for each, is it carrying the last answer
+                        on, did the student ask to be answered in a language
+      ├── converse      social turns: a model reply, no retrieval, no canned text
+      └── plan          subject (request → conversation → found by search), topics,
+                        reply language, the last answer's passages when continuing
+            → dispatch  conditional fan-out
+                ├── explain_sg / summarize_sg   retrieve → answer → prerequisites
+                ├── assessment_sg               batch item generation over the chunk index
+                ├── grade_sg                    the only writer to mastery
+                ├── report_sg                   walks prerequisites to find root causes
+                └── visual_sg                   deterministic renderers
+            → render_visuals → compose
+  → verify_language     the answer is in the language decided, or is repaired once
+  → persist             remembers the turn; folds old turns into a running summary
 END
 ```
 
-Session uploads, export (PDF / DOCX), and the open-ended Q&A loop land in later sprints.
+**A conversation is remembered.** Each turn is stored with the passages its answer
+cited, and the next turn is read with the recent turns in view and the older ones
+summarised. There are no keyword lists, seed phrases or canned replies deciding
+what a message is: one model reads it in context.
 
-Rendered diagrams of the runtime graph and each subgraph are in
-[`demos/graphs/`](demos/graphs/) (`.png` alongside the `.mmd` source).
+**A subject is taught in its own language.** The reply language is, in order: a
+language the student asked for in this conversation (it holds until they change
+it), the subject's language, the language they wrote in. `language.reply_follows`
+swaps the last two for a deployment that answers in the student's language.
+
+Session uploads, export (PDF / DOCX), and the open-ended Q&A loop land in later sprints.
 
 Each subgraph is a **separately compiled `StateGraph` with its own private state**. It does
 not inherit the parent state and has no idea pathways exist — the parent wraps each one in
@@ -159,15 +171,13 @@ Order is not optional: **lectures → assessments → teaching card.**
 │   ├── middleware.py       request id + access logging
 │   ├── routers/            chat · grading · reports · ingestion · health
 │   └── schemas/            request/response contracts
-├── demos/                  per-sprint demo write-ups + runnable demos
-│   └── graphs/             rendered runtime + subgraph diagrams (.png + .mmd source)
 ├── config.yaml             behavioural configuration, committed
 ├── scripts/                dev/test bootstrap + maintenance
 │   ├── dev_ai_schema.sql   creates the ai.* tables for a local Postgres
-│   ├── demo_db_align.sql   aligns a partial ai.*-only dev DB for the demo (artifacts + mistake-tag column)
 │   ├── bootstrap.py        applies the SQL + creates the Qdrant collection
 │   ├── verify_ingest.py    checks the live-store invariants per lecture
-│   └── backfill_ingestion_records.py   fills ai.lecture_ingestion from existing rows
+│   ├── reembed_chunks.py   re-embeds the indexed chunks in place
+│   └── eval_*.py           retrieval, RAG, answer and conversation evaluations
 ├── tests/
 └── data/                   syllabus material — not committed
 ```
@@ -340,21 +350,25 @@ print(result["response"])       # grounded answer + Sources + Prerequisite topic
 
 **How a question is answered:**
 
-1. `classify` — detect the language (`ar`/`en`/`fr`/`de`) and pick the pathway. No LLM.
+1. `classify` — pick the pathway and load the conversation. No LLM.
 2. `load_context` — resolve the retrieval namespaces and style for the pathway.
-3. `plan` — an LLM turns the message into one or more tasks (explain, summarise, assessment,
-   grade, visual, report), and records an explicit answer-language if the user asked for one.
-   `subject_id` is optional on the request; when it's absent the agent **infers the subject**
-   from the message (the best-matching topic's subject). `resolve_topics` then maps the query
-   to `topic_id`s **within that subject**.
-4. `dispatch` — fan each task out to its subgraph.
-5. the task subgraphs run in parallel — `explain_sg` / `summarize_sg` answer from retrieved
+3. `understand` — an LLM reads the message against the conversation and returns the tasks
+   (explain, summarise, assessment, grade, visual, report), a self-contained query for each,
+   whether the turn carries the last answer on, and any language request. A purely social
+   turn goes to `converse` instead.
+4. `plan` — settle the subject: the request's, else the conversation's, else the subject whose
+   material answers the query best (found by searching it, confined to a student's enrolled
+   subjects). `resolve_topics` maps each query to `topic_id`s **within that subject**, and the
+   reply language is decided.
+5. `dispatch` — fan each task out to its subgraph.
+6. the task subgraphs run in parallel — `explain_sg` / `summarize_sg` answer from retrieved
    context with inline citations; `assessment_sg` generates items from the chunk index;
    `grade_sg` grades against a rubric or the syllabus and updates mastery; `report_sg` builds
    a progress note; `visual_sg` renders any requested visuals.
-6. `render_visuals` — render every collected visual spec (deduped, capped per turn).
-7. `compose` — merge the tasks, apply the voice, append the prerequisite-topics list.
-8. `persist` — checkpoint the turn.
+7. `render_visuals` — render every collected visual spec (deduped, capped per turn).
+8. `compose` — merge the tasks, apply the voice, append the prerequisites of the cited passages.
+9. `verify_language` — check the reply's language, repair it once if it drifted.
+10. `persist` — remember the turn and its cited passages; fold old turns into the summary.
 
 The **subject scopes** the search — supplied on the request (optional) or **inferred from
 the question** when absent; the **lecture is discovered by similarity**, not chosen up
@@ -423,18 +437,6 @@ Every failure returns one envelope, and every response carries `x-request-id`
 Behaviour is configured under `api:` in `config.yaml` — concurrency, ingestion
 workers, whether `/docs` is served (off in production), and the completion
 callback. Interactive API docs are at `/docs`.
-
-### Demos
-
-Each sprint ships a runnable demo with its own write-up under `demos/` (see
-[`demos/README.md`](demos/README.md)). Both need the ingested stores up and an OpenRouter key.
-
-- **[Sprint 1](demos/sprint-1/README.md)** — grounded, cited answers across subjects and
-  languages (same-language and cross-lingual; explain / summarise).
-- **[Sprint 2](demos/sprint2/README.md)** — a guided tour of assessments, grading, the
-  per-skill mastery loop, study visuals, and progress reports. Its README lists the two extra
-  items the demo uses (the backend fixtures file and the local database-alignment script) and
-  the exact run commands.
 
 ---
 
