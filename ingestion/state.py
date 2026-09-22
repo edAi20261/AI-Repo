@@ -84,6 +84,9 @@ class Chunk:
     topic_ids: list[str] = field(default_factory=list)
     chunk_id: Optional[str] = None       # set at write; keys row, manifest and point
     embedding: Optional[list[float]] = None
+    # {term_id: weight} — the lexical half of a hybrid search. Transient, like
+    # embedding: it goes to Qdrant and never to ai.chunks.
+    sparse: Optional[dict[int, float]] = None
     namespace: str = "syllabus"          # below: carried for indexing, not on ai.chunks
     subject_id: Optional[str] = None
     grade: Optional[str] = None

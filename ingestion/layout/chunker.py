@@ -52,7 +52,11 @@ LABEL_MIN_BLOCKS = 8
 # A sentence longer than this is not carried across a split as overlap.
 OVERLAP_MAX = MAX_TOKENS // 4
 
-_SENTENCE_END = re.compile(r"(?<=[.!?؟۔])\s+")
+# Where a sentence ends, across the scripts a syllabus arrives in: Latin,
+# Arabic (؟), Urdu (۔), Devanagari (।॥), Armenian (։), Ethiopic (።) and the CJK
+# full stops. CJK sets no space after its stop, so there the mark itself is the
+# break rather than the whitespace that follows one.
+_SENTENCE_END = re.compile(r"(?<=[\u3002\uFF01\uFF1F])|(?<=[.!?؟۔।॥։።])\s+")
 
 # Types that never become a chunk on their own: page furniture, and the image
 # itself, which carries no text.
@@ -327,22 +331,47 @@ def split_oversized(chunks: list[PageChunk], limit: int = MAX_TOKENS) -> list[Pa
 
 
 def merge_undersized(chunks: list[PageChunk], floor: int = MIN_TOKENS) -> list[PageChunk]:
-    """Fold a fragment into the chunk before it, under the same heading.
+    """Fold a fragment into the chunk it belongs with.
 
-    A fragment with nothing before it survives only if it is the kind of thing
-    someone searches for.
+    Backward when it continues what came before, forward when it introduces what
+    comes next, and backward regardless of heading when nothing follows it.
+
+    Folding only backward-under-the-same-heading was too narrow for a workbook:
+    every activity box there carries its own heading — "Visualize It!", "Active
+    Reading 9", "Unit 1 Review" — so no two consecutive fragments ever matched
+    and 14% of a 371-page textbook came out under the floor. Five tokens reading
+    "Unit 1 Review / Name" retrieve nothing and dilute what they sit beside.
+
+    A fragment that stands alone — a question someone searches for directly — is
+    never a fragment, however short.
     """
-    out: list[PageChunk] = []
-    for chunk in chunks:
-        if chunk.tokens >= floor:
-            out.append(chunk)
+    kept: list[PageChunk] = []
+    for index, chunk in enumerate(chunks):
+        if chunk.tokens >= floor or chunk.block_type in STANDS_ALONE:
+            kept.append(chunk)
             continue
-        if out and out[-1].heading == chunk.heading:
-            out[-1].text += "\n" + chunk.text
+        if kept and kept[-1].heading == chunk.heading:
+            kept[-1].text += "\n" + chunk.text
+            continue
+        following = _next_above_floor(chunks, index, floor)
+        if following is not None:
+            following.text = chunk.text + "\n" + following.text
+            continue
+        if kept:
+            kept[-1].text += "\n" + chunk.text
             continue
         if chunk.heading or chunk.block_type != "section":
-            out.append(chunk)
-    return out
+            kept.append(chunk)
+    return kept
+
+
+def _next_above_floor(chunks: list[PageChunk], index: int, floor: int):
+    """The next chunk big enough to carry a fragment, or ``None`` if there is
+    none left on the page. Fragments in between are left for their own turn."""
+    for candidate in chunks[index + 1:]:
+        if candidate.tokens >= floor or candidate.block_type in STANDS_ALONE:
+            return candidate
+    return None
 
 
 def _split_text(text: str, limit: int) -> list[str]:

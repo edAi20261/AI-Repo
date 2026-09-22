@@ -140,6 +140,49 @@ def test_a_fragment_with_nothing_before_it_survives_only_if_it_is_findable():
     assert dropped == []
 
 
+def test_a_fragment_under_its_own_heading_joins_what_the_heading_introduces():
+    """A fragment only folded backward when it shared the previous heading. In a
+    workbook every activity box carries its own heading — "Visualize It!",
+    "Active Reading 9", "Unit 1 Review" — so nothing ever merged and 14% of a
+    371-page textbook came out under the size floor. A heading with a stub under
+    it introduces what comes next; that is where it belongs."""
+    from ingestion.layout.chunker import PageChunk
+
+    merged = merge_undersized([
+        PageChunk(text=PROSE, heading="Watersheds", page=7, doc_id="d"),
+        PageChunk(text="Unit 1 Review\nName", heading="Unit 1 Review", page=7, doc_id="d"),
+        PageChunk(text=PROSE, heading="Review questions", page=7, doc_id="d"),
+    ])
+    assert len(merged) == 2
+    assert merged[1].text.startswith("Unit 1 Review")
+    assert merged[1].heading == "Review questions"
+
+
+def test_a_fragment_at_the_end_joins_the_chunk_before_it_whatever_its_heading():
+    """Nothing follows it, so backward is the only place left. Keeping it alone
+    indexes five tokens that answer nothing."""
+    from ingestion.layout.chunker import PageChunk
+
+    merged = merge_undersized([
+        PageChunk(text=PROSE, heading="Watersheds", page=7, doc_id="d"),
+        PageChunk(text="Name", heading="Unit 1 Review", page=7, doc_id="d"),
+    ])
+    assert len(merged) == 1
+    assert merged[0].text.endswith("Name")
+
+
+def test_a_question_stays_its_own_chunk_however_short_it_is():
+    """Someone searches for a question directly, so a short one is not a
+    fragment — it is the thing being looked for."""
+    from ingestion.layout.chunker import PageChunk
+
+    merged = merge_undersized([
+        PageChunk(text="What is a watershed?", block_type="question", page=7, doc_id="d"),
+        PageChunk(text=PROSE, heading="Watersheds", page=7, doc_id="d"),
+    ])
+    assert len(merged) == 2
+
+
 # --- whole pages ------------------------------------------------------------
 
 def test_a_page_of_labels_becomes_one_chunk_not_a_hundred():
@@ -241,3 +284,29 @@ def test_short_sentences_still_overlap_so_a_statement_survives_the_join():
     assert len(pieces) > 1
     # The last sentence of one piece opens the next.
     assert pieces[1].startswith(pieces[0].rstrip().split(".")[-2].strip()[:20])
+
+
+# --- sentences exist outside Latin and Arabic --------------------------------
+
+def test_a_chinese_page_is_split_into_sentences():
+    """Sentence enders were [.!?؟۔] followed by whitespace. CJK ends a sentence
+    with 。！？ and puts no space after it, so a Chinese or Japanese page was one
+    unbroken run and the size guard cut it mid-word."""
+    from ingestion.layout.chunker import _sentences
+
+    text = "水循环在海洋和天空之间移动水。太阳提供能量。水蒸发后形成云。"
+    assert len(_sentences(text, 800)) == 3
+
+
+def test_a_hindi_page_is_split_on_its_own_full_stop():
+    from ingestion.layout.chunker import _sentences
+
+    text = "जल चक्र समुद्र और आकाश के बीच जल ले जाता है। सूर्य ऊर्जा देता है।"
+    assert len(_sentences(text, 800)) == 2
+
+
+def test_latin_and_arabic_sentences_still_split_as_they_did():
+    from ingestion.layout.chunker import _sentences
+
+    assert len(_sentences("Water moves. The sun heats it. Clouds form.", 800)) == 3
+    assert len(_sentences("ما هي الكيمياء؟ هي علم المادة. وهي قديمة.", 800)) == 3

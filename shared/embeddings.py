@@ -15,6 +15,15 @@ from typing import Sequence
 from .config import Config
 from .matching import fold_for_match
 
+# BM25's term-frequency saturation, applied per document rather than per corpus:
+# a passage that repeats a word ten times is not ten times the answer. The
+# length normalisation uses a fixed expected length because a document is
+# encoded before the corpus it joins exists — the alternative is re-encoding
+# every chunk whenever another is added.
+BM25_K1 = 1.2
+BM25_B = 0.75
+EXPECTED_TOKENS = 220
+
 
 class Embedder(ABC):
     """Embedder behind a thin interface so callers never name a provider.
@@ -38,6 +47,32 @@ class Embedder(ABC):
     def embed_query(self, text: str) -> list[float]:
         return self.embed([text])[0]
 
+    def _terms(self, text: str) -> list[int]:
+        """The text as term ids. Subclasses that can do better than whitespace
+        override this; the fold has already been applied."""
+        return [abs(hash(word)) % 250_000 for word in text.split()]
+
+    def embed_sparse(self, texts: Sequence[str]) -> list[dict[int, float]]:
+        """Each text as ``{term_id: weight}``, folded the same way ``embed`` folds.
+
+        The lexical half of a hybrid search. A dense vector finds a passage that
+        means the same thing; this finds the passage that uses the same words —
+        a name, a formula, a date, the things a student types exactly and that
+        an average over 1024 dimensions loses.
+        """
+        return [self._weigh(self._terms(fold_for_match(t))) for t in texts]
+
+    @staticmethod
+    def _weigh(terms: Sequence[int]) -> dict[int, float]:
+        if not terms:
+            return {}
+        counts: dict[int, int] = {}
+        for term in terms:
+            counts[term] = counts.get(term, 0) + 1
+        norm = BM25_K1 * (1 - BM25_B + BM25_B * len(terms) / EXPECTED_TOKENS)
+        return {term: (count * (BM25_K1 + 1)) / (count + norm)
+                for term, count in counts.items()}
+
 
 class LocalSentenceTransformerEmbedder(Embedder):
     """BGE-M3 (or any sentence-transformers model) run locally. torch is imported
@@ -54,9 +89,20 @@ class LocalSentenceTransformerEmbedder(Embedder):
         from sentence_transformers import SentenceTransformer  # lazy, heavy
 
         self._model = SentenceTransformer(model_name, device=device)
+        self._tokenizer = self._model.tokenizer
         self._normalize = normalize
         self._batch_size = batch_size
         self.dimension = self._model.get_embedding_dimension()
+
+    def _terms(self, text: str) -> list[int]:
+        """Term ids from the embedding model's own tokenizer.
+
+        Splitting on whitespace gives a Chinese sentence one term and an Arabic
+        page far fewer than it has words. The model's tokenizer is trained
+        across a hundred languages, so the same code covers a corpus in any of
+        them, and the ids are stable for the life of the model.
+        """
+        return self._tokenizer(text, add_special_tokens=False)["input_ids"]
 
     def _encode(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:

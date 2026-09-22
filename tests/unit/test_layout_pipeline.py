@@ -8,6 +8,14 @@ the router that decides which parser a page needs.
 from __future__ import annotations
 
 from ingestion.layout.blocks import Block, PageMeta, ParsedPage
+from ingestion.state import Element
+from shared.config import get_config
+
+
+class _Ctx:
+    """Just the config the chunk stage reads."""
+
+    config = get_config()
 from ingestion.layout.bridge import chunks_for, payload_for
 from ingestion.layout.chunker import PageChunk
 from ingestion.layout.router import TEXT_LAYER, VISION, choose_tier
@@ -22,6 +30,12 @@ class _Rect:
 
 class _Page:
     rect = _Rect()
+
+    def __init__(self, text=PROSE):
+        self._text = text
+
+    def get_text(self, *_args, **_kwargs):
+        return self._text
 
 
 def _block(text, type="body", y=100, x=50, **kw):
@@ -386,3 +400,148 @@ def test_a_stored_vision_parse_is_not_paid_for_again(monkeypatch):
 
     assert [b["text"] for b in got["blocks"]] == ["from the cache"]
     assert cache.puts == []
+
+
+# --- a page is read the way it is written -----------------------------------
+
+def test_a_latin_page_is_read_left_to_right_whatever_the_setting_says(monkeypatch):
+    """ingestion.layout.reading_direction was one value for the whole corpus.
+    Set to rtl for the Arabic pilot, it would read every column of an English
+    or French textbook from the wrong side — the second customer's bug."""
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    seen: dict = {}
+
+    def _parse(page, meta, direction="ltr"):
+        seen["direction"] = meta.reading_direction
+        return ParsedPage(meta=meta, blocks=[_block(PROSE)])
+
+    monkeypatch.setattr(ex, "parse_page", _parse)
+    monkeypatch.setattr(ex, "choose_tier", lambda *a, **k: TEXT_LAYER)
+    monkeypatch.setattr(ex.pdf, "page_text", lambda page: PROSE)
+
+    ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+                     {"reading_direction": "rtl"}, 900, {}, None,
+                     render_dpi=200, config=None)
+    assert seen["direction"] == "ltr"
+
+
+def test_an_arabic_page_is_read_right_to_left_without_being_told(monkeypatch):
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    seen: dict = {}
+
+    def _parse(page, meta, direction="ltr"):
+        seen["direction"] = meta.reading_direction
+        return ParsedPage(meta=meta, blocks=[_block("نص عربي")])
+
+    monkeypatch.setattr(ex, "parse_page", _parse)
+    monkeypatch.setattr(ex, "choose_tier", lambda *a, **k: TEXT_LAYER)
+    monkeypatch.setattr(ex.pdf, "page_text",
+                        lambda page: "جابر بن حيان عالم عربي اشتهر في الكيمياء")
+
+    ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+                     {}, 900, {}, None, render_dpi=200, config=None)
+    assert seen["direction"] == "rtl"
+
+
+def test_a_direction_set_by_hand_still_wins(monkeypatch):
+    """An operator who knows the document overrides the detector; auto is the
+    default, not the only option."""
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    seen: dict = {}
+
+    def _parse(page, meta, direction="ltr"):
+        seen["direction"] = meta.reading_direction
+        return ParsedPage(meta=meta, blocks=[_block(PROSE)])
+
+    monkeypatch.setattr(ex, "parse_page", _parse)
+    monkeypatch.setattr(ex, "choose_tier", lambda *a, **k: TEXT_LAYER)
+    monkeypatch.setattr(ex.pdf, "page_text", lambda page: PROSE)
+
+    ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+                     {"reading_direction": "rtl", "detect_direction": False}, 900, {}, None,
+                     render_dpi=200, config=None)
+    assert seen["direction"] == "rtl"
+
+
+# --- a document the layout path could not read ------------------------------
+
+def test_a_document_the_layout_path_cannot_read_still_gets_chunked(monkeypatch):
+    """Turning layout parsing on emptied a maths lesson: every page goes to
+    vision, the layout tier could not read one, parsed_pages came back empty,
+    and the chunk stage took the layout branch anyway and wrote nothing. Zero
+    chunks looks exactly like a lesson with nothing in it."""
+    from importlib import import_module
+
+    chunk = import_module("ingestion.stages.chunk")
+    state = {
+        "lecture_id": "11111111-1111-1111-1111-111111111111",
+        "parsed_pages": [],
+        "elements": [Element(text="Subtraction borrows from the next column.", page=1)],
+        "subject_id": "s1", "version": 1, "namespace": "syllabus",
+    }
+    out = chunk.run(state, _Ctx())
+
+    assert out["chunks"], "the elements the extract stage did produce must still be chunked"
+    assert out["stats"]["chunk"]["source"] == "length"
+
+
+def test_pages_that_parsed_but_yielded_nothing_fall_back_to_the_elements(monkeypatch):
+    """A maths book routes every page to vision and drops the text layer. The
+    layout parser still reads that empty text layer, produces pages with no
+    content blocks, and the chunk stage took its zero chunks over the ones the
+    vision transcription had already produced — the lesson indexed empty."""
+    from importlib import import_module
+
+    chunk = import_module("ingestion.stages.chunk")
+    state = {
+        "lecture_id": "11111111-1111-1111-1111-111111111111",
+        "parsed_pages": [_page(1, [_block("p. 41", "page_number")]).model_dump()],
+        "elements": [Element(text="Subtraction borrows from the next column.", page=1)],
+        "subject_id": "s1", "version": 1, "namespace": "syllabus",
+    }
+    out = chunk.run(state, _Ctx())
+
+    assert out["chunks"], "the vision transcription must not be thrown away"
+    assert out["stats"]["chunk"]["source"] == "length"
+
+
+# --- how much of a lesson has to be unreadable before it is held back -------
+
+def _status(unreadable: int, pages: int, ratio: float = 0.05):
+    from importlib import import_module
+
+    ex = import_module("ingestion.stages.extract")
+    return ex.review_status(unreadable=unreadable, pages=pages, ratio=ratio)
+
+
+def test_one_bad_page_in_a_textbook_does_not_hold_back_the_whole_book():
+    """A 371-page textbook ingested into 545 good chunks and then answered
+    nothing: one page came back unreadable, the lesson was flagged needs_review,
+    and rag_search only reads lectures marked ready. At that length a bad page
+    is near-certain, so the rule quarantined every long document it was given."""
+    assert _status(unreadable=1, pages=371) == "ready"
+
+
+def test_a_lesson_mostly_nobody_could_read_is_held_back():
+    assert _status(unreadable=40, pages=371) == "needs_review"
+
+
+def test_a_short_lesson_needs_no_special_case():
+    """One page of three is a third of the lesson. The same ratio catches it
+    without a second rule for short documents."""
+    assert _status(unreadable=1, pages=3) == "needs_review"
+
+
+def test_a_lesson_nothing_could_be_read_from_is_held_back():
+    assert _status(unreadable=2, pages=2) == "needs_review"
+    assert _status(unreadable=0, pages=0) == "needs_review"
+
+
+def test_a_lesson_read_end_to_end_is_ready():
+    assert _status(unreadable=0, pages=371) == "ready"
