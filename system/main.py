@@ -8,12 +8,14 @@ half-configured service.
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from shared.config import Config, get_config
+from shared.embeddings import warm_embedder
 from shared.logging import setup_logging
 
 from .errors import register_exception_handlers
@@ -89,6 +91,9 @@ async def _lifespan(app: FastAPI):
     app.state.jobs = IngestionJobManager(
         config, settings.ingestion, notifier=build_notifier(settings)
     )
+    if config.get("embeddings.warm_on_start", True):
+        threading.Thread(target=warm_embedder, args=(config,),
+                         name="embedder-warm-up", daemon=True).start()
     logger.info("service ready", extra={"environment": settings.app_env})
 
     try:

@@ -7,13 +7,17 @@ by the same model. Provider is a config change, not a code change; heavy imports
 from __future__ import annotations
 
 import hashlib  # for fake embeddings (testing only)
+import logging
 import struct
 import threading
+import time
 from abc import ABC, abstractmethod
 from typing import Sequence
 
 from .config import Config
 from .matching import fold_for_match
+
+logger = logging.getLogger(__name__)
 
 # BM25's term-frequency saturation, applied per document rather than per corpus:
 # a passage that repeats a word ten times is not ten times the answer. The
@@ -197,3 +201,14 @@ def get_embedder(config: Config) -> Embedder:
             cached = _build_embedder(provider, emb)
             _CACHE[key] = cached
         return cached
+
+
+def warm_embedder(config: Config) -> None:
+    """Load the embedder and run it once, so no student's question pays for it."""
+    started = time.monotonic()
+    try:
+        get_embedder(config).embed_query("warm-up")
+    except Exception:
+        logger.error("embedder warm-up failed; the first question will load it", exc_info=True)
+        return
+    logger.info("embedder ready", extra={"seconds": round(time.monotonic() - started, 1)})
