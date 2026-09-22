@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "Multi-turn conversations over the indexed Grade 6 science textbook.",
+    "Single-turn evals cannot see the failure these exist to measure: a turn",
+    "is only wrong relative to the turns before it.",
+    "",
+    "expect: answers  -> grounded, cites the syllabus, and stays on `about`",
+    "        refuses  -> no citations; the syllabus does not cover it",
+    "        chats    -> answered without searching at all",
+    "about:  a word the answer must contain, which is how continuity is checked",
+    "        without asking a model whether two answers are about the same thing"
+  ],
+  "subject_id": "b9ec8535-7c88-40a2-a1a3-251a2b7cdb45",
+  "lecture_id": "aaaaaaaa-0000-4000-8000-00000000f001",
+  "conversations": [
+    {
+      "name": "a student who does not understand",
+      "turns": [
+        {"say": "Can you explain to me evaporation, please?", "expect": "answers", "about": "evaporation"},
+        {"say": "Can you explain more?", "expect": "answers", "about": "evaporation"},
+        {"say": "Give me an example.", "expect": "answers", "about": "evaporation"},
+        {"say": "I feel that I still don't understand. Would you explain to me in layman's language, in a simpler way, maybe using bullets or making it easier for me to understand?", "expect": "answers", "about": "evaporation"}
+      ]
+    },
+    {
+      "name": "short follow-ups",
+      "turns": [
+        {"say": "What is a watershed?", "expect": "answers", "about": "watershed"},
+        {"say": "tell me more", "expect": "answers", "about": "watershed"},
+        {"say": "why?", "expect": "answers", "about": "water"},
+        {"say": "can you break that down into bullet points", "expect": "answers", "about": "water"}
+      ]
+    },
+    {
+      "name": "changing the subject",
+      "turns": [
+        {"say": "How do hurricanes form?", "expect": "answers", "about": "hurricane"},
+        {"say": "explain more simply", "expect": "answers", "about": "hurricane"},
+        {"say": "What about tornadoes?", "expect": "answers", "about": "tornado"},
+        {"say": "and why are those dangerous?", "expect": "answers", "about": "tornado"}
+      ]
+    },
+    {
+      "name": "small talk in the middle of a lesson",
+      "turns": [
+        {"say": "hello good moring", "expect": "chats"},
+        {"say": "What causes ocean waves?", "expect": "answers", "about": "wave"},
+        {"say": "thanks, that helped", "expect": "chats"},
+        {"say": "ok now explain the layers of the atmosphere", "expect": "answers", "about": "atmosphere"}
+      ]
+    },
+    {
+      "name": "asking for what the book does not have",
+      "turns": [
+        {"say": "What is photosynthesis?", "expect": "refuses"},
+        {"say": "What is a watershed?", "expect": "answers", "about": "watershed"},
+        {"say": "Who was Napoleon?", "expect": "refuses"},
+        {"say": "ok, back to watersheds — give me an example", "expect": "answers", "about": "watershed"}
+      ]
+    },
+    {
+      "name": "following up in another language",
+      "turns": [
+        {"say": "ما هي دورة الماء؟", "expect": "answers", "about": "ماء"},
+        {"say": "اشرح لي أكثر", "expect": "answers", "about": "ماء"},
+        {"say": "مثال من فضلك", "expect": "answers", "about": "ماء"}
+      ]
+    }
+  ]
+}

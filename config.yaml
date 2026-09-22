@@ -31,6 +31,11 @@ llm:
     extract_topics:  { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
     derive_deps:     { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
     plan:            { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1000 }
+    # Reads the previous question and the new message and says whether the new one
+    # names a subject or points back at the last answer. On the critical path of every
+    # turn that follows another, so it is the light model; temperature 0 because the
+    # same pair of messages must decide the same way twice.
+    search_decision: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 500 }
     explain:         { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     summarize:       { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     compose:         { provider: openrouter, model: google/gemini-2.5-flash-lite, max_tokens: 2000 }
@@ -242,6 +247,33 @@ database:
   connect_timeout_seconds: 5
   statement_timeout_ms: 5000
 
+  # Connections are pooled and reused. Opening one costs a 486ms handshake
+  # against a read that takes 65ms, so an unpooled turn spent 86% of its
+  # database time saying hello — and two overlapping turns opened two.
+  #
+  # These come from a sweep, 8 concurrent reads against production, ms:
+  #
+  #                              median   p95   worst
+  #   a connection per call         650   719     723
+  #   pooled min=0, checked         243   474     603
+  #   pooled min=4, unchecked       177   350     408
+  #   pooled min=8, checked         235   239     246   <- this
+  #
+  # The unchecked pool has the better median and a tail three times as wide.
+  # Predictable beats fast here: an intermittent 500 is what sent us looking.
+  # min == max, so the pool is full and a burst never pays for a handshake;
+  # a 9th caller waits a bounded pool_wait_seconds rather than opening a 9th.
+  #
+  # The pool is built the first time something asks for a connection, never at
+  # import — /health and /ready touch no database, so a probe cannot build it.
+  pool_size: 8                 # per process; ECS runs one pool per task
+  pool_wait_seconds: 5         # waiting for a free connection is a bounded error, not a hang
+  pool_max_lifetime_seconds: 900   # recycle, so a connection the server has since dropped is not held forever
+  # One round trip per checkout to prove the connection is alive. It is the
+  # difference between p95 239ms and p95 350ms, and it is what stops a
+  # connection the server dropped from failing inside a student's turn.
+  pool_check_connections: true
+
 agent:
   # Retrieval is two-stage. A dense search finds candidates; BM25 over those same
   # candidates reorders them, and the two rankings are fused by reciprocal rank.
@@ -283,6 +315,17 @@ agent:
     # the real curriculum is indexed. Re-measure then.
     relevance_ratio: 0.90
 
+  evidence:
+    # What an answer was built from, kept for the turn that follows it. A
+    # student saying "explain that more simply" is asking about the passages
+    # the last answer used, and their words name nothing to search for.
+    ttl_hours: 12              # a follow-up arrives in the same sitting or not at all
+    # Read and written on turns a student is waiting through, so the same
+    # limits as language.sticky: refuse rather than hang.
+    connect_timeout_seconds: 2
+    statement_timeout_ms: 500
+    failure_threshold: 3       # consecutive failures before the store is paused
+    breaker_seconds: 30
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
   min_score: 0.47            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.

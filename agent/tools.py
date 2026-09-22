@@ -437,6 +437,61 @@ def get_topic_labels(
             return {r[0]: r[1] or "" for r in cur.fetchall()}
 
 
+def get_chunks_by_id(
+    chunk_ids: Sequence[str],
+    *,
+    ready_only: bool = True,
+    config: Config | None = None,
+) -> list[RetrievedChunk]:
+    """The named chunks, in the order they were named.
+
+    A lookup, not a search: ``score`` is 0.0 because nothing was ranked. It is
+    how a turn that continues the one before it reaches the passages that
+    answer already used — by pointer, rather than by searching for words that
+    name nothing.
+
+    Order is preserved because it is the order the previous answer read them
+    in, and a re-presentation that reshuffles its evidence reads as a different
+    answer to the same question.
+    """
+    if not chunk_ids:
+        return []
+    config = config or Config.load()
+    wanted = [str(c) for c in chunk_ids]
+
+    ready_clause = ""
+    if ready_only:
+        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
+                        "ai.lecture_ingestion WHERE status = 'ready')")
+    sql = (
+        "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
+        "c.lecture_id::text, c.language, c.topic_ids "
+        "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
+    )
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (wanted,))
+        rows = {r[0]: r for r in cur.fetchall()}
+
+    found = [rows[cid] for cid in wanted if cid in rows]
+    chunks = [
+        RetrievedChunk(
+            chunk_id=r[0], score=0.0, text=r[1], heading_path=r[2],
+            page_from=r[3], page_to=r[4], lecture_id=r[5], language=r[6],
+            topic_ids=[str(t) for t in (r[7] or [])],
+        )
+        for r in found
+    ]
+    labelled = _apply_labels(
+        chunks, _citation_labels([c.chunk_id for c in chunks], config))
+    if len(labelled) < len(wanted):
+        # A lecture re-ingested since the last turn re-mints every chunk_id, so
+        # the evidence points at rows that no longer exist. Saying so beats a
+        # re-presentation that quietly drops half of what it is re-presenting.
+        logger.info("evidence partly gone", extra={
+            "asked": len(wanted), "found": len(labelled)})
+    return labelled
+
+
 def get_lecture_topics(
     lecture_ids: Sequence[str],
     *,
