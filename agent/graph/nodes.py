@@ -48,8 +48,8 @@ from ..prompts import (
     PLAN_PROMPT,
     TASK_DESCRIPTIONS,
 )
-from ..continuation import Relation, relation_of
 from ..evidence import EvidenceStore
+from ..search_decision import decide
 from ..scope import lecture_filter
 from ..tools import resolve_topics
 from .pathways import build_namespaces, resolve_style
@@ -184,8 +184,8 @@ def _follows_an_answer(message: str, state, config) -> bool:
     evidence = store.recall()
     if not (evidence and evidence.chunk_ids):
         return False
-    return relation_of(message, answered_before=True,
-                       mode=state.get("study_mode")) is Relation.CONTINUES
+    return not decide(message, previous_question=evidence.query, config=config,
+                      mode=state.get("study_mode")).opens_new_subject
 
 
 def _after_route(state) -> str:

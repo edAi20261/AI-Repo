@@ -31,6 +31,11 @@ llm:
     extract_topics:  { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
     derive_deps:     { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
     plan:            { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1000 }
+    # Reads the previous question and the new message and says whether the new one
+    # names a subject or points back at the last answer. On the critical path of every
+    # turn that follows another, so it is the light model; temperature 0 because the
+    # same pair of messages must decide the same way twice.
+    search_decision: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 500 }
     explain:         { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     summarize:       { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     compose:         { provider: openrouter, model: google/gemini-2.5-flash-lite, max_tokens: 2000 }

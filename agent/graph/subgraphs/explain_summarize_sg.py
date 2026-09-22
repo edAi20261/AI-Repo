@@ -27,8 +27,8 @@ from ...citations import cited_numbers, has_citation, keep_cited
 from ...models import Citation, MathFigureSpec, PrereqTopic, RetrievedChunk, Style
 from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, SUMMARIZE_PROMPT
 from ...retrieval import DEFAULT_MIN_SCORE, DEFAULT_SCOPE_RATIO
-from ...continuation import Relation, carried_query, relation_of
 from ...evidence import EvidenceSet
+from ...search_decision import decide
 from ...scope import StudyScope, lecture_filter, scope_of
 from ...tools import get_chunks_by_id
 
@@ -71,23 +71,45 @@ class ExplainSummarizeState(TypedDict, total=False):
     visual_spec: dict[str, Any]     # a figure request the parent's visual_sg renders
 
 
-def _retrieve(state: ExplainSummarizeState) -> dict:
+def _retrieve(state: ExplainSummarizeState, config) -> dict:
     """The passages this turn answers from.
 
     A turn that carries on the one before it does not search. "Explain that
     more simply" names nothing to search for, and the passages that answer it
     are the ones the last answer already used — reached by pointer rather than
     by embedding words that mean nothing on their own.
+
+    Which of the two a turn is gets decided in ``search_decision``. What any
+    turn is allowed to see gets decided here, and the same way either way: a
+    decision to search still passes through the lesson scope, the score floor
+    and the relevance ratio below.
     """
-    reused = _reuse_previous_evidence(state)
-    if reused is not None:
-        evidence = state["evidence"]
-        return {"chunks": reused,
-                "query": carried_query(evidence.query, state.get("message") or "")}
+    evidence = state.get("evidence")
+    decision = decide(
+        state.get("message") or state.get("query") or "",
+        previous_question=evidence.query if evidence else "",
+        config=config,
+        mode=state.get("mode_chosen"),
+    )
+
+    if not decision.opens_new_subject and evidence:
+        reused = _reuse_previous_evidence(evidence)
+        if reused is not None:
+            # The subject and topics come back with the chunks. A follow-up
+            # names neither, so re-deriving them from its words sent an English
+            # science answer to the Arabic corpus — prerequisites in Arabic
+            # under an English explanation, and sources from a lesson about
+            # Jabir ibn Hayyan.
+            return {
+                "chunks": reused,
+                "query": decision.question,
+                "topic_ids": evidence.topic_ids,
+                "subject_id": evidence.subject_id or state.get("subject_id"),
+            }
 
     scope = scope_of(state)
     subject_id = scope.subject_id or state.get("subject_id")
-    query = state.get("query") or ""
+    query = decision.question or state.get("query") or ""
     chunks = retrieval.retrieve(
         query,
         state["namespaces"],
@@ -111,21 +133,14 @@ def _retrieve(state: ExplainSummarizeState) -> dict:
 
 
 
-def _reuse_previous_evidence(state: ExplainSummarizeState) -> list | None:
-    """The last answer's passages, when this turn is carrying it on.
+def _reuse_previous_evidence(evidence: EvidenceSet) -> list | None:
+    """The last answer's passages, for a turn that carries it on.
 
-    ``None`` means search: either the turn opened something new, or the
-    evidence no longer resolves. A lecture re-ingested between turns re-mints
-    every chunk_id, and answering from passages that have gone is worse than
-    the search the turn would otherwise have done.
+    ``None`` means search after all: a lecture re-ingested between turns
+    re-mints every chunk_id, and answering from passages that have gone is
+    worse than the search the turn would otherwise have done.
     """
-    evidence = state.get("evidence")
-    relation = relation_of(
-        state.get("message") or state.get("query") or "",
-        answered_before=bool(evidence and evidence.chunk_ids),
-        mode=state.get("mode_chosen"),
-    )
-    if relation is Relation.OPENS or not evidence:
+    if not evidence.chunk_ids:
         return None
 
     chunks = get_chunks_by_id(evidence.chunk_ids)
@@ -305,7 +320,7 @@ def _build(mode: str, *, config, llm=None):
     from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(ExplainSummarizeState)
-    graph.add_node("retrieve", _retrieve)
+    graph.add_node("retrieve", lambda state: _retrieve(state, config))
     graph.add_node("resolve_prereqs", _resolve_prereqs)
     graph.add_node("answer", _build_answer(mode, llm, config))
     graph.add_edge(START, "retrieve")

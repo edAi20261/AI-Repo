@@ -10,7 +10,19 @@ from __future__ import annotations
 
 from agent.evidence import EvidenceSet
 from agent.models import RetrievedChunk
+from agent.search_decision import SearchDecision
 from shared.config import get_config
+
+
+def _decides(monkeypatch, sg, *, opens: bool, question: str = "carried question"):
+    """Fix what the decision says, so these tests measure the wiring under it.
+
+    Whether the decision itself is right on real phrasings is not something a
+    fake can answer — that is measured against a live model over whole
+    conversations in scripts/eval_conversations.py.
+    """
+    monkeypatch.setattr(sg, "decide", lambda *a, **k: SearchDecision(
+        opens_new_subject=opens, question=question))
 
 
 def _chunk(chunk_id: str, text: str = "Evaporation is …") -> RetrievedChunk:
@@ -19,10 +31,12 @@ def _chunk(chunk_id: str, text: str = "Evaporation is …") -> RetrievedChunk:
                           lecture_id="lec1", language="en", topic_ids=[])
 
 
-def _retrieve(monkeypatch, *, message, evidence, searched=None, remembered=None):
+def _retrieve(monkeypatch, *, message, evidence, searched=None, remembered=None,
+              opens=False):
     """Run the retrieve node with the search and the lookup both observable."""
     from agent.graph.subgraphs import explain_summarize_sg as sg
 
+    _decides(monkeypatch, sg, opens=opens, question=message)
     calls = {"searched": 0, "looked_up": []}
 
     def _search(*a, **k):
@@ -41,7 +55,7 @@ def _retrieve(monkeypatch, *, message, evidence, searched=None, remembered=None)
         "namespaces": ["syllabus"], "subject_id": "sub1", "k": 8,
         "min_score": get_config().get("agent.min_score"),
     }
-    return sg._retrieve(state), calls
+    return sg._retrieve(state, get_config()), calls
 
 
 def test_a_follow_up_reuses_the_last_answers_passages_without_searching(monkeypatch):
@@ -60,7 +74,7 @@ def test_a_follow_up_reuses_the_last_answers_passages_without_searching(monkeypa
 def test_a_new_question_searches_the_way_it_always_did(monkeypatch):
     evidence = EvidenceSet(chunk_ids=["c1"], query="What is evaporation?")
     out, calls = _retrieve(monkeypatch, message="What about tornadoes?",
-                           evidence=evidence, searched=[_chunk("t9")])
+                           evidence=evidence, searched=[_chunk("t9")], opens=True)
 
     assert calls["searched"] == 1
     assert calls["looked_up"] == []
@@ -69,7 +83,7 @@ def test_a_new_question_searches_the_way_it_always_did(monkeypatch):
 
 def test_the_first_turn_searches(monkeypatch):
     _, calls = _retrieve(monkeypatch, message="explain more", evidence=None,
-                         searched=[_chunk("c1")])
+                         searched=[_chunk("c1")], opens=True)
 
     assert calls["searched"] == 1
 
@@ -176,24 +190,59 @@ def test_a_follow_up_is_answered_about_the_subject_it_follows(monkeypatch):
 
     evidence = EvidenceSet(chunk_ids=["c1"], query="What is evaporation?")
     monkeypatch.setattr(sg, "get_chunks_by_id", lambda ids, **k: [_chunk("c1")])
+    _decides(monkeypatch, sg, opens=False,
+             question="Give an example of evaporation")
 
     out = sg._retrieve({
         "message": "Can you give me an example?",
         "query": "example",                     # what the planner made of it
         "evidence": evidence, "namespaces": ["syllabus"], "k": 8,
-    })
+    }, get_config())
 
-    assert "evaporation" in out["query"].lower(), "the subject must survive"
-    assert "example" in out["query"].lower(), "so must what was asked for"
+    assert out["query"] == "Give an example of evaporation", (
+        "the answering model is asked the restated question, not the planner's "
+        "subjectless rewrite")
 
 
 def test_a_new_question_is_answered_about_itself(monkeypatch):
     from agent.graph.subgraphs import explain_summarize_sg as sg
 
-    monkeypatch.setattr(sg.retrieval, "retrieve", lambda *a, **k: [_chunk("t9")])
+    searched = {}
+
+    def _search(query, *a, **k):
+        searched["q"] = query
+        return [_chunk("t9")]
+
+    monkeypatch.setattr(sg.retrieval, "retrieve", _search)
+    _decides(monkeypatch, sg, opens=True, question="How do tornadoes form?")
     out = sg._retrieve({
         "message": "What about tornadoes?", "query": "tornadoes",
         "evidence": EvidenceSet(chunk_ids=["c1"], query="evaporation"),
         "namespaces": ["syllabus"], "k": 8,
-    })
-    assert "query" not in out, "an opening turn keeps the query it was planned with"
+    }, get_config())
+    assert searched["q"] == "How do tornadoes form?", (
+        "an opening turn is searched for what it asked, standing on its own")
+    assert [c.chunk_id for c in out["chunks"]] == ["t9"]
+
+
+# --- a follow-up inherits where the answer came from ------------------------
+
+def test_a_follow_up_keeps_the_subject_the_answer_came_from(monkeypatch):
+    """Subject and topics were re-derived from every message. "Can you explain
+    more?" names no subject, so an English science answer was followed by
+    prerequisite topics in Arabic and sources from a lesson about Jabir ibn
+    Hayyan — the wrong corpus entirely, under the right explanation."""
+    from agent.graph.subgraphs import explain_summarize_sg as sg
+
+    monkeypatch.setattr(sg, "get_chunks_by_id", lambda ids, **k: [_chunk("c1")])
+    _decides(monkeypatch, sg, opens=False)
+    out = sg._retrieve({
+        "message": "Can you explain more?", "query": "more",
+        "evidence": EvidenceSet(chunk_ids=["c1"], query="What is evaporation?",
+                                subject_id="science", topic_ids=["t1", "t2"]),
+        "subject_id": "arabic",          # what this turn's words inferred
+        "namespaces": ["syllabus"], "k": 8,
+    }, get_config())
+
+    assert out["subject_id"] == "science", "the subject travels with the evidence"
+    assert out["topic_ids"] == ["t1", "t2"], "and so do the topics the prereqs walk"
