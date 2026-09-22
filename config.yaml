@@ -420,6 +420,8 @@ logging:
   format: json
   third_party_level: WARNING   # cap HTTP/LLM client loggers so a DEBUG app level
                                # never logs request/response bodies (prompts, PII)
+  file: null
+  file_max_bytes: 10000000
 
 # Overlays merged over the base, selected by APP_ENV.
 environments:

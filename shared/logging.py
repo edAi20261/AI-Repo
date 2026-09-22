@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
@@ -126,12 +127,28 @@ def setup_logging(
     root.setLevel(lvl)
     root.addHandler(handler)
 
+    path = os.environ.get("LOG_FILE") or _cfg(config, "logging.file")
+    if path:
+        root.addHandler(_file_handler(path, config))
+
     # Keep third-party HTTP/LLM clients from logging request/response bodies when
     # the app level is DEBUG. Default WARNING; raise via logging.third_party_level.
     tp_level = (_cfg(config, "logging.third_party_level") or "WARNING").upper()
     for name in _THIRD_PARTY:
         logging.getLogger(name).setLevel(tp_level)
     return root
+
+
+def _file_handler(path: str, config: Any) -> logging.Handler:
+    """A size-bounded JSON log file beside stdout, for reading a run after the fact."""
+    from logging.handlers import RotatingFileHandler
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    max_bytes = int(_cfg(config, "logging.file_max_bytes") or 10_000_000)
+    handler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=3, encoding="utf-8")
+    handler.addFilter(RequestIdFilter())
+    handler.setFormatter(JsonFormatter())
+    return handler
 
 
 def _cfg(config: Any, dotted: str) -> Optional[str]:
