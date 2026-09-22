@@ -1340,3 +1340,26 @@ def test_the_prefix_names_only_the_parts_that_exist():
     assert "Unit 1: Matter" in prefix
     assert "Section" not in prefix
     assert "0" not in prefix
+
+
+def test_a_direct_run_labels_its_chunks_like_a_resolved_one(monkeypatch):
+    """A lecture ingested from the command line carried no lesson title or
+    subject name, so every citation from it was labelled by whatever the layout
+    parser took for a heading: "Visualize It!", "is a straight line"."""
+    import ingestion.__main__ as cli
+
+    captured = {}
+
+    class _Backend:
+        def get_subject(self, subject_id):
+            return {"name": "Biology", "language": "en"}
+
+    monkeypatch.setattr(cli, "get_backend_client", lambda config, **k: _Backend())
+    monkeypatch.setattr(cli, "run_ingestion",
+                        lambda state, **k: captured.update(state) or {"stats": {}})
+    cli.main(["lesson.pdf", "--lecture-id", "l1", "--subject-id", "s1",
+              "--lesson-title", "The Water Cycle", "--lesson-order", "4"])
+    assert captured["subject_name"] == "Biology"
+    assert captured["lesson_title"] == "The Water Cycle"
+    assert captured["lesson_order"] == 4
+    assert captured["language_hint"] == "en"
