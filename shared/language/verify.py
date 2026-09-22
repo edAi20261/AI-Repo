@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_ANSWER_CHARS = 40
 DEFAULT_MIN_CONFIDENCE = 0.60
 
-_CITATION = re.compile(r"\[\d+(?:,\s*\d+)*\]")
+_CITATION = re.compile(r"\[\s*\d+(?:\s*[,،、，]\s*\d+)*\s*\]")
 _FENCED = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`]*`")
 _LATEX = re.compile(r"\$[^$]*\$|\\\(.*?\\\)|\\\[.*?\\]", re.DOTALL)

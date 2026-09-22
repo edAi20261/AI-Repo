@@ -38,6 +38,7 @@ __all__ = [
     "get_item",
     "get_mastery",
     "get_mastery_rollup",
+    "get_neighbours",
     "get_question_bank",
     "get_topic_chunks",
     "get_topic_deps",
@@ -148,7 +149,7 @@ def rag_search(
                         "ai.lecture_ingestion WHERE status = 'ready')")
     sql = (
         "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
-        "c.lecture_id::text, c.language, c.topic_ids "
+        "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
         "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
     )
 
@@ -166,6 +167,7 @@ def rag_search(
             lesson_title=meta.get(r[0], {}).get("lesson_title"),
             lesson_order=meta.get(r[0], {}).get("lesson_order"),
             subject_id=meta.get(r[0], {}).get("subject_id"),
+            order_index=r[8],
         )
         for r in rows
     ]
@@ -466,7 +468,7 @@ def get_chunks_by_id(
                         "ai.lecture_ingestion WHERE status = 'ready')")
     sql = (
         "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
-        "c.lecture_id::text, c.language, c.topic_ids "
+        "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
         "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
     )
     with connect(config) as conn, conn.cursor() as cur:
@@ -478,7 +480,7 @@ def get_chunks_by_id(
         RetrievedChunk(
             chunk_id=r[0], score=0.0, text=r[1], heading_path=r[2],
             page_from=r[3], page_to=r[4], lecture_id=r[5], language=r[6],
-            topic_ids=[str(t) for t in (r[7] or [])],
+            topic_ids=[str(t) for t in (r[7] or [])], order_index=r[8],
         )
         for r in found
     ]
@@ -491,6 +493,55 @@ def get_chunks_by_id(
         logger.info("evidence partly gone", extra={
             "asked": len(wanted), "found": len(labelled)})
     return labelled
+
+
+def get_neighbours(
+    anchors: Sequence[RetrievedChunk],
+    *,
+    window: int,
+    ready_only: bool = True,
+    config: Config | None = None,
+) -> list[RetrievedChunk]:
+    """The chunks written next to ``anchors`` in their lesson, in reading order.
+
+    A section a student asks about is often split across several chunks — one
+    per sub-heading, one per page — and only the chunk that best matches the
+    question's words is found. Its neighbours hold the rest of the section. A
+    lookup, not a search: ``score`` is 0.0. Navigation and apparatus are left
+    out, as they are from a search.
+    """
+    wanted = [(c.lecture_id, c.order_index) for c in anchors
+              if c.lecture_id and c.order_index is not None]
+    if not wanted or window < 1:
+        return []
+    config = config or Config.load()
+    ready_clause = ""
+    if ready_only:
+        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
+                        "ai.lecture_ingestion WHERE status = 'ready')")
+    ranges = " OR ".join(
+        "(c.lecture_id::text = %s AND c.order_index BETWEEN %s AND %s)" for _ in wanted)
+    params: list[Any] = []
+    for lecture_id, order in wanted:
+        params += [str(lecture_id), order - window, order + window]
+    sql = (
+        "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
+        "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
+        f"FROM ai.chunks c WHERE ({ranges})" + ready_clause
+        + " ORDER BY c.lecture_id, c.order_index"
+    )
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
+    chunks = [
+        RetrievedChunk(
+            chunk_id=r[0], score=0.0, text=r[1], heading_path=r[2],
+            page_from=r[3], page_to=r[4], lecture_id=r[5], language=r[6],
+            topic_ids=[str(t) for t in (r[7] or [])], order_index=r[8],
+        )
+        for r in rows if chunk_kind(r[1] or "") not in NOT_CONTENT
+    ]
+    return _apply_labels(chunks, _citation_labels([c.chunk_id for c in chunks], config))
 
 
 def get_lecture_topics(

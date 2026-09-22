@@ -710,3 +710,36 @@ def test_words_the_student_did_not_write_go_back_to_the_model(monkeypatch):
     with pytest.raises(ValueError):
         check(_reading(needs_syllabus=False, student_words="Hello there"))
     check(_reading(needs_syllabus=False, student_words="hi"))
+
+
+def test_without_a_topic_filter_the_best_match_is_not_excluded(monkeypatch):
+    """"clothes catch fire" guessed "Scientific inquiry skills" and two water-cycle
+    topics; filtered to those, the fire-safety passage was never a candidate."""
+    seen = {}
+
+    def search(query, namespaces, **k):
+        seen["topic_ids"] = k.get("topic_ids")
+        return [_chunk("fire", 0.66)]
+
+    monkeypatch.setattr(rmod, "rag_search", search)
+    rmod.retrieve("q", ["syllabus"], topic_ids=["guessed"], topic_filter="off")
+    assert seen["topic_ids"] is None
+
+
+def _placed(cid, score, order, lecture="L"):
+    return RetrievedChunk(chunk_id=cid, score=score, text=cid, lecture_id=lecture,
+                          topic_ids=[], page_from=1, page_to=1, heading_path="",
+                          language="en", order_index=order)
+
+
+def test_a_section_split_into_chunks_is_read_whole(monkeypatch):
+    """"What causes ocean waves?" found the wind chunk and never the landslide and
+    meteorite chunks two and three places after it on the same page."""
+    section = {o: _placed(f"s{o}", 0.0, o) for o in range(10, 15)}
+    monkeypatch.setattr(rmod, "get_neighbours", lambda seeds, window: [
+        section[o] for s in seeds for o in range(s.order_index - window, s.order_index + window + 1)
+        if o in section])
+    wind, far = _placed("s11", 0.72, 11), _placed("x", 0.60, 90)
+    out = rmod.with_neighbours([far, wind], anchors=1, window=2, limit=10)
+    assert [c.chunk_id for c in out] == ["s10", "s11", "s12", "s13", "x"]
+    assert out[1].score == 0.72

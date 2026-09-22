@@ -311,3 +311,12 @@ def test_the_runtime_ranks_every_strength_ingestion_writes():
     assert DEPENDENCY_STRENGTHS <= set(_STRENGTH_RANK), (
         f"ingestion writes {sorted(DEPENDENCY_STRENGTHS - set(_STRENGTH_RANK))}, "
         "which the prerequisite ordering does not rank")
+
+
+def test_a_marker_written_with_an_arabic_comma_is_a_marker():
+    """An Arabic answer wrote "[2، 3]"; the pattern knew only "," and the
+    markers reached the student as text while the citations went uncounted."""
+    from agent.citations import strip_markers
+
+    assert cited_numbers("غاز غير مرئي [2، 3].") == [2, 3]
+    assert strip_markers("غاز غير مرئي [2، 3].") == "غاز غير مرئي."

@@ -67,7 +67,9 @@ there is nothing in a greeting to explain.
 tasks: only when needs_syllabus is true; at most one task of each type, and only types from
 this list: {allowed}. Every task's "query" must stand on its own, naming the subject matter
 explicitly so it can be understood without the conversation. When the message refers back to
-something discussed earlier, name that thing from the conversation. Write the query in
+something discussed earlier, name that thing from the conversation. The query names only what
+to look up in the lessons; how the student wants it presented (simpler, shorter, as a list, with
+an example or a memory aid) belongs to the answer, not the search. Write the query in
 {material_language}. For "grade", the query is the answer to mark, copied as written.
 level is basic or intermediate; length is short or medium.
 For "assessment", copy only what the student stated: a question count only if they gave one,
@@ -233,7 +235,10 @@ EXPLAIN_PROMPT = Prompt(
     audience=Audience.STUDENT,
     language_rule=LanguageRule.REPLY,
     template="""You are a patient tutor. Explain the concept using ONLY the context
-below. Do not add facts that are not supported by it. If the context is insufficient,
+below. Do not add facts that are not supported by it. When the student asks for an example,
+start with the lesson's own examples if the context has any. An example, comparison or memory
+aid of your own is welcome after them, but say that it is your own and not from their lesson,
+and cite the facts it illustrates as usual. If the context is insufficient,
 say so plainly, and put no citation markers in that reply: a marker says the passage
 answered the question.
 

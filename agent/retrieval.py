@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
-from .tools import get_topic_deps, rag_search
+from .tools import get_neighbours, get_topic_deps, rag_search
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,8 @@ def retrieve(
         # nothing and the answer declines, rather than citing unrelated material.
         return [c for c in chunks if c.score >= min_score] if min_score else chunks
 
+    if topic_filter == "off":
+        topic_ids = None
     kept = _search(topic_ids)
     # Soft topic scoping: if the topic-filtered pass grounded NOTHING, the topic guess was
     # likely wrong/partial and hard-filtered out the right chunks (invariant 8 in reverse).
@@ -88,6 +90,49 @@ def answers_within_scope(
     if not unscoped:
         return True
     return scoped_best / unscoped[0].score >= ratio
+
+
+def with_neighbours(
+    chunks: list[RetrievedChunk],
+    *,
+    anchors: int,
+    window: int,
+    limit: int,
+) -> list[RetrievedChunk]:
+    """Search small, read big: the best matches, each with the rest of its section.
+
+    A layout chunker cuts a section at every sub-heading and every page, so
+    "what causes ocean waves?" found the chunk about wind and never the ones
+    about landslides and meteorites, three lines further down the same page.
+    Their words match the question poorly; their place next to the chunk that
+    matched it well is what says they belong to the answer. The ``anchors``
+    closest matches by meaning are read in their lesson's order with ``window``
+    chunks either side, then the remaining matches, up to ``limit``. Closeness
+    is the dense score, not the fused rank: a question's function words lift
+    whole lessons written in its language up the fused order.
+    """
+    if not chunks or anchors < 1 or window < 1:
+        return chunks
+    seeds = sorted(chunks, key=lambda c: c.score, reverse=True)[:anchors]
+    around = get_neighbours(seeds, window=window)
+    scored = {c.chunk_id: c for c in chunks}
+    out: list[RetrievedChunk] = []
+    seen: set[str] = set()
+    for seed in seeds:
+        run = [c for c in around
+               if c.lecture_id == seed.lecture_id and seed.order_index is not None
+               and abs(c.order_index - seed.order_index) <= window]
+        for chunk in run or [seed]:
+            if chunk.chunk_id not in seen:
+                seen.add(chunk.chunk_id)
+                out.append(scored.get(chunk.chunk_id, chunk))
+    for chunk in chunks:
+        if chunk.chunk_id not in seen:
+            seen.add(chunk.chunk_id)
+            out.append(chunk)
+    logger.info("retrieve with neighbours", extra={
+        "matched": len(chunks), "added": len(out) - len(chunks), "kept": min(len(out), limit)})
+    return out[:limit]
 
 
 def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
