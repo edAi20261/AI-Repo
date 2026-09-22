@@ -376,10 +376,13 @@ def test_a_streamed_turn_reaches_the_student(monkeypatch):
     )
 
     async def run():
-        return [stage async for stage, _ in runtime.stream_chat({"message": "hi"})]
+        return [pair async for pair in runtime.stream_chat({"message": "hi"})]
 
-    stages = anyio.run(run)
-    assert stages == ["plan", "compose", "__final__"]
+    updates = anyio.run(run)
+    assert [stage for stage, _ in updates] == ["plan", "compose", "__final__"]
+    # The final payload is the accumulation of every node's update, not the last one.
+    assert updates[-1][1] == {
+        "tasks": ["explain"], "response": "Jabir ibn Hayyan was a chemist."}
 
 
 def test_a_streamed_turn_past_the_timeout_is_abandoned(monkeypatch):
