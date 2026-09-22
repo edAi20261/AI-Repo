@@ -292,3 +292,62 @@ def test_a_vision_failure_says_which_model_and_why(caplog):
     assert {r.label for r in failures} == {"transcribe_page"}
     assert {r.error for r in failures} == {"ConnectError"}
     assert any(r.message == "vision failed on every model" for r in caplog.records)
+
+
+# --- a reply the model ran out of room to finish ----------------------------
+
+class _Truncated:
+    """A client whose first reply is cut off mid-JSON, like a thinking model
+    that spent its budget reasoning."""
+
+    def __init__(self, then=None) -> None:
+        self.calls = 0
+        self.budgets: list = []
+        self._then = then
+
+    def with_structured_output(self, schema, **_kwargs):
+        return self
+
+    def bind(self, **kwargs):
+        self.budgets.append(kwargs.get("max_tokens"))
+        return self
+
+    def invoke(self, _messages):
+        from pydantic import ValidationError
+        self.calls += 1
+        if self.calls == 1:
+            raise ValidationError.from_exception_data(
+                "TopicList",
+                [{"type": "json_invalid", "loc": (), "input": '{"topics": [{"lab',
+                  "ctx": {"error": "EOF while parsing a string"}}])
+        return self._then
+
+
+def test_a_truncated_reply_is_retried_rather_than_raised(monkeypatch):
+    """A 371-page textbook failed to ingest because the topic extractor's reply
+    was cut off mid-string. The parse error was raised out of invoke() instead
+    of becoming a failed attempt, so the retry that exists for exactly this
+    never ran and the whole ingest died at the topics stage."""
+    from shared import structured
+
+    llm = _Truncated(then=Batch(items=[]))
+    out = structured.call_structured(
+        Batch, "list the topics", task="extract_topics",
+        config=Config.load(), llm=llm, attempts=2)
+
+    assert out.items == []
+    assert llm.calls == 2
+
+
+def test_a_truncated_reply_is_retried_with_more_room_not_more_words(monkeypatch):
+    """Feeding "invalid JSON" back to a model that ran out of tokens asks it to
+    fix something it did not get wrong. What it needs is a larger budget."""
+    from shared import structured
+
+    llm = _Truncated(then=Batch(items=[]))
+    structured.call_structured(
+        Batch, "list the topics", task="extract_topics",
+        config=Config.load(), llm=llm, attempts=2)
+
+    assert llm.budgets, "the retry must rebind the model with a bigger budget"
+    assert llm.budgets[-1] > Config.load().llm_for("extract_topics")["max_tokens"]

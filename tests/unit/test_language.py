@@ -474,3 +474,44 @@ def test_asking_for_a_translation_is_still_a_request(policy):
     Arabic" genuinely asks for Arabic."""
     assert policy.resolve("translate hello into Arabic").code == "ar"
     assert policy.resolve("what does مرحبا mean in English?").code == "en"
+
+
+# --- which way a page is read -----------------------------------------------
+
+def test_a_page_of_latin_prose_is_read_left_to_right():
+    """reading_direction was one global config value, set to rtl for the pilot
+    corpus. An English or French textbook parsed under it would have every
+    column read from the wrong side."""
+    from shared.language.script import reading_direction
+
+    assert reading_direction("The water cycle moves water between sea and sky.") == "ltr"
+    assert reading_direction("Le cycle de l'eau déplace l'eau entre la mer et le ciel.") == "ltr"
+    assert reading_direction("Der Wasserkreislauf bewegt Wasser zwischen Meer und Himmel.") == "ltr"
+
+
+def test_a_page_of_right_to_left_script_is_read_right_to_left():
+    """Arabic is not the only right-to-left script, and the pilot corpus being
+    Arabic is not a reason for the others to be read backwards."""
+    from shared.language.script import reading_direction
+
+    assert reading_direction("جابر بن حيان عالم عربي اشتهر في الكيمياء") == "rtl"      # Arabic
+    assert reading_direction("מחזור המים מעביר מים בין הים לשמיים") == "rtl"           # Hebrew
+    assert reading_direction("آب کا چکر سمندر اور آسمان کے درمیان پانی منتقل کرتا ہے") == "rtl"  # Urdu
+
+
+def test_a_page_of_numbers_and_diagrams_falls_back_to_left_to_right():
+    """A maths page may carry no letters at all. Left to right is the safe
+    default: it is what every Latin, Cyrillic and CJK corpus needs, and a page
+    with nothing to go on should not be treated as the exception."""
+    from shared.language.script import reading_direction
+
+    assert reading_direction("81 - 52 = 29") == "ltr"
+    assert reading_direction("") == "ltr"
+
+
+def test_a_page_is_read_by_what_most_of_it_is_written_in():
+    """A page of Arabic prose with an English caption is still an Arabic page."""
+    from shared.language.script import reading_direction
+
+    mixed = "جابر بن حيان عالم عربي اشتهر في الكيمياء. Figure 1: the alembic."
+    assert reading_direction(mixed) == "rtl"

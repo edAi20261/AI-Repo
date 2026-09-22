@@ -76,9 +76,23 @@ vector_store:
   # production cluster from outside it: a k=8 search over eduai_chunks runs
   # 99-100ms, k=24 the same, topics the same, with one 273ms cold outlier.
   # 5s is ~18x the worst measured call: a search that slow is broken, not busy.
+  # Keep a sparse vector beside the dense one, so the lexical half of a search
+  # can FIND a chunk rather than only re-rank what the dense half returned: a
+  # name, a formula or a date a student types exactly is what an average over
+  # 1024 dimensions loses. Terms come from the embedding model's own
+  # multilingual tokenizer, so a Chinese or Hindi page is as searchable as an
+  # English one.
+  # Off until the collection is rebuilt — naming a vector in a query finds none
+  # of the points already written without a name.
+  hybrid: true
   query_timeout_seconds: 5
   upsert_batch_size: 64
-  collection: eduai_chunks
+  # The collection retrieval reads and ingestion writes. Named dense + sparse
+  # vectors cannot be added to a collection that has an unnamed one, so the
+  # hybrid index is built beside the old one and this line makes the switch —
+  # and the way back, if it has to be made.
+  collection: eduai_chunks_v2
+  source_collection: eduai_chunks   # what scripts/reembed_chunks.py copies from
   topics_collection: eduai_topics  # topic-label vectors (resolve_topics ANN); populated on re-ingest
   distance: cosine
   # Payload fields indexed for filtering; namespace is filtered on every query.
@@ -126,7 +140,7 @@ ingestion:
   # Off until the index is re-embedded — a prefixed chunk and a bare one are not
   # comparable, so a half-converted index ranks by which half a chunk is in.
   # Flip this, then run scripts/reembed_chunks.py --apply.
-  context_prefix: false
+  context_prefix: true
   normalise:                     # NFKC + tatweel strip, before chunking
     nfkc: true
     strip_tatweel: true
@@ -137,11 +151,25 @@ ingestion:
     # 40-page magazine-style textbook: 25 chunks at a 546-token median, 4% over
     # the size limit and the copyright line welded into 25 of 25, against 52
     # chunks at a 243-token median, none oversized and none contaminated.
-    # Off until the corpus is re-ingested — chunks written by the two paths do
-    # not line up, so a half-converted lecture retrieves against itself.
-    enabled: false
-    reading_direction: rtl        # which column a spread is read from first
+    # On. Chunks written by the two paths do not line up, so a lecture takes
+    # the new path only when it is next ingested; the 11 already indexed keep
+    # the chunks they have until someone re-ingests them deliberately.
+    enabled: true
+    # Which side of a column a page is read from. Detected per page from what
+    # the page is written in, because one direction for a whole corpus reads
+    # every Latin, Cyrillic and CJK page backwards the moment the corpus stops
+    # being Arabic — and a single book can hold both. Set detect_direction
+    # false to force the value below for every page.
+    detect_direction: true
+    reading_direction: ltr        # used only when detect_direction is false
     cache: true                   # store what a model read, keyed on model + prompt digest
+  # How much of a lesson has to be unreadable before it is held back from
+  # retrieval. A share, not a count: any-page-failed does not scale. A 371-page
+  # textbook read into 545 good chunks answered nothing, because one page came
+  # back unreadable and rag_search only reads lectures marked ready — while a
+  # three-page lesson with the same one bad page went through. A share also
+  # needs no special case for a short lesson: one page of three is a third of it.
+  needs_review_ratio: 0.05
   ocr:
     min_chars_per_page: 40       # fewer characters than this: treat page as scanned
     render_dpi: 300
@@ -257,7 +285,23 @@ agent:
 
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
-  min_score: 0.44            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
+  min_score: 0.47            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
+                             # Re-swept after the context prefix went on: embedding a chunk
+                             # with its subject, lesson, section and page lifts every score a
+                             # little, the unanswerable ones with the rest, and 0.44 stopped
+                             # separating them — "اشرح لي قانون نيوتن الأول" rose from 0.434 to
+                             # 0.444 and was answered from a lesson about electronic games.
+                             # Over the same 12 answerable and 10 unanswerable questions,
+                             # against the dense+sparse index:
+                             #   0.44 -> 11/12 answered,  8/10 declined
+                             #   0.45 -> 11/12 answered,  9/10 declined
+                             #   0.46 -> 11/12 answered, 10/10 declined   <- the knee
+                             #   0.47 -> 11/12 answered, 10/10 declined   <- picked, for margin
+                             #   0.52 -> 11/12 answered, 10/10 declined
+                             # 0.47 sits 0.02 above the best unanswerable (0.450) and 0.03
+                             # below the worst answerable (0.500), rather than on the knee.
+                             # The sweep below is the one that set 0.44, kept because it is
+                             # why the floor is not 0.50:
                              # 0.50 was swept against same-language questions only, and a
                              # cross-lingual question scores systematically lower: the same
                              # lesson answers "ماذا اخترع جابر بن حيان؟" at 0.600 and "what did

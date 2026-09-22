@@ -16,7 +16,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
 
-from shared.matching import looks_like_contents
+from shared.matching import chunk_kind
+from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
 from shared.vector_store import upsert_client
 
 from .config import Config
@@ -441,7 +442,7 @@ def _payload(c: Chunk) -> dict[str, Any]:
         "lesson_order": c.lesson_order,
         # Navigation, not material. A contents page is a list of lesson titles
         # and so outmatches the lessons themselves on any title-shaped question.
-        "chunk_kind": "contents" if looks_like_contents(c.text) else None,
+        "chunk_kind": chunk_kind(c.text),
     }
     return {k: v for k, v in payload.items() if v is not None}
 
@@ -456,6 +457,8 @@ def _topic_payload(t: Any) -> dict[str, Any]:
 DEFAULT_UPSERT_BATCH = 64
 
 
+
+
 class QdrantVectorStore(VectorStore):
     def __init__(self, config: Config, location: str) -> None:
         vs = config.vector_store
@@ -467,6 +470,9 @@ class QdrantVectorStore(VectorStore):
         # A whole lesson in one request times out on a small cluster, so points
         # go up in batches with an explicit budget per request.
         self._batch_size = max(1, int(vs.get("upsert_batch_size", DEFAULT_UPSERT_BATCH)))
+        # Named vectors are a migration, not a switch: every point in an
+        # unnamed collection stops being found the moment a query names one.
+        self._hybrid = bool(vs.get("hybrid", False))
         self._client = upsert_client(config, location)
 
     def _upsert_batched(self, collection: str, points: list) -> int:
@@ -491,14 +497,25 @@ class QdrantVectorStore(VectorStore):
             "euclid": models.Distance.EUCLID,
         }[self._distance]
         if not self._client.collection_exists(self._collection):
-            self._client.create_collection(
-                collection_name=self._collection,
-                vectors_config=models.VectorParams(size=dimension, distance=distance),
-                hnsw_config=models.HnswConfigDiff(
-                    m=self._hnsw.get("m", 16),
-                    ef_construct=self._hnsw.get("ef_construct", 128),
-                ),
+            dense = models.VectorParams(size=dimension, distance=distance)
+            hnsw = models.HnswConfigDiff(
+                m=self._hnsw.get("m", 16),
+                ef_construct=self._hnsw.get("ef_construct", 128),
             )
+            if self._hybrid:
+                self._client.create_collection(
+                    collection_name=self._collection,
+                    vectors_config={DENSE_VECTOR: dense},
+                    sparse_vectors_config={
+                        SPARSE_VECTOR: models.SparseVectorParams()},
+                    hnsw_config=hnsw,
+                )
+            else:
+                self._client.create_collection(
+                    collection_name=self._collection,
+                    vectors_config=dense,
+                    hnsw_config=hnsw,
+                )
         # Ensure every filter field is indexed on each call, not only at creation:
         # a filtered delete or query on an unindexed field fails with 400, and a
         # collection created before a field was added to indexed_payload_fields
@@ -531,11 +548,27 @@ class QdrantVectorStore(VectorStore):
         from qdrant_client import models
 
         points = [
-            models.PointStruct(id=c.chunk_id, vector=c.embedding, payload=_payload(c))
+            models.PointStruct(id=c.chunk_id, vector=self._vector(c, models),
+                               payload=_payload(c))
             for c in chunks
             if c.embedding is not None and c.chunk_id
         ]
         return self._upsert_batched(self._collection, points)
+
+    def _vector(self, chunk: Chunk, models) -> Any:
+        """What goes on the point: one unnamed vector, or the named pair.
+
+        A chunk of pure notation has no words to match on and its sparse half is
+        empty. It is written anyway — findable by meaning rather than dropped.
+        """
+        if not self._hybrid:
+            return chunk.embedding
+        terms = chunk.sparse or {}
+        return {
+            DENSE_VECTOR: chunk.embedding,
+            SPARSE_VECTOR: models.SparseVector(
+                indices=list(terms.keys()), values=list(terms.values())),
+        }
 
     def ensure_topics_collection(self, dimension: int) -> None:
         from qdrant_client import models

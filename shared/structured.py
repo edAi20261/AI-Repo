@@ -20,7 +20,8 @@ from collections.abc import Callable, Sequence
 from typing import Any, Optional, TypeVar
 
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError, ValidationError
 
 from .config import Config
 from .errors import ServiceUnavailableError
@@ -118,8 +119,28 @@ def call_structured(
     failures: list[str] = []
     raw_replies: list[str] = []
 
+    room = settings.get("max_tokens")
     for attempt in range(1, budget + 1):
-        result = runnable.invoke(conversation)
+        try:
+            result = runnable.invoke(conversation)
+        except PARSE_ERRORS as exc:
+            # A reply the provider could not parse arrives as an exception from
+            # inside its own parser, not as a parsing_error on the result — so
+            # the retry this function exists for never ran, and one truncated
+            # reply killed a whole ingest at the topics stage.
+            feedback = _reask(f"the reply could not be parsed: {exc}")
+            failures.append(feedback)
+            logger.warning("structured output could not be parsed",
+                           extra={"task": task, "label": name, "attempt": attempt,
+                                  "error": type(exc).__name__})
+            if attempt >= budget:
+                break
+            # A model that ran out of room did not get anything wrong, so asking
+            # it to try again in the same space asks for the same reply. Give it
+            # more room instead.
+            room = _more_room(room)
+            runnable = _bind(_with_room(client, room), schema, settings)
+            continue
         raw = result.get("raw") if isinstance(result, dict) else None
         parsed = result.get("parsed") if isinstance(result, dict) else result
         raw_text = _text_of(raw)
@@ -221,6 +242,34 @@ def align_by_id(
             f"({', '.join(wanted)}): " + "; ".join(problems)
         )
     return [found[key] for key in wanted]
+
+
+
+# A reply the provider's own parser rejected. Raised from inside `invoke`, so it
+# has to be caught rather than read off the result.
+PARSE_ERRORS = (PydanticValidationError, json.JSONDecodeError, ValueError)
+
+# How much more room a retry gets. Doubling rather than adding a constant: the
+# shortfall is proportional to how much the model chose to reason, not fixed.
+ROOM_MULTIPLIER = 2
+ROOM_CEILING = 16384
+
+
+def _more_room(current: Optional[int]) -> int:
+    """The budget a retry gets after a reply that would not fit in the last one."""
+    if not current:
+        return ROOM_CEILING // 2
+    return min(current * ROOM_MULTIPLIER, ROOM_CEILING)
+
+
+def _with_room(client: Any, room: int) -> Any:
+    """The same client with a larger completion budget, where it can take one."""
+    if not hasattr(client, "bind"):
+        return client
+    try:
+        return client.bind(max_tokens=room)
+    except TypeError:
+        return client
 
 
 def _bind(llm: Any, schema: type[M], settings: dict[str, Any]) -> Any:

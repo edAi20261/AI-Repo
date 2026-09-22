@@ -33,7 +33,8 @@ from qdrant_client import QdrantClient, models
 from agent.config import Config
 from shared.postgres import connect
 from shared.vector_store import upsert_client
-from shared.matching import looks_like_contents
+from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
+from shared.matching import chunk_kind
 from ingestion.state import Chunk
 
 PAYLOAD_ONLY_FIELDS = ("subject_name", "lesson_title", "lesson_order")
@@ -56,8 +57,9 @@ def _existing_points(client: QdrantClient, collection: str) -> dict[str, dict]:
 def _with_kind(payload: dict, text: str) -> dict:
     """Stamp contents pages so retrieval can skip them, without a re-ingest."""
     payload = dict(payload)
-    if looks_like_contents(text):
-        payload["chunk_kind"] = "contents"
+    kind = chunk_kind(text)
+    if kind:
+        payload["chunk_kind"] = kind
     else:
         payload.pop("chunk_kind", None)
     return payload
@@ -94,6 +96,48 @@ def _embedding_text(row: dict, payload: dict, prefixed: bool) -> str:
     ).for_embedding()
 
 
+
+def _point_vector(dense, terms, hybrid):
+    """One unnamed vector, or the named pair a hybrid collection expects."""
+    if not hybrid:
+        return dense
+    terms = terms or {}
+    return {
+        DENSE_VECTOR: dense,
+        SPARSE_VECTOR: models.SparseVector(
+            indices=list(terms.keys()), values=list(terms.values())),
+    }
+
+
+def _ensure_hybrid_collection(client, collection, dimension, payloads):
+    """Create the named-vector collection if it is not there yet.
+
+    Named vectors cannot be added to a collection that has an unnamed one, so
+    this builds beside the old one rather than in place. The old collection
+    keeps serving until vector_store.collection is pointed at the new name,
+    which makes the switch — and the way back — one config line.
+    """
+    if client.collection_exists(collection):
+        return
+    client.create_collection(
+        collection_name=collection,
+        vectors_config={DENSE_VECTOR: models.VectorParams(
+            size=dimension, distance=models.Distance.COSINE)},
+        sparse_vectors_config={SPARSE_VECTOR: models.SparseVectorParams()},
+    )
+    indexed = {key for payload in payloads.values() for key in payload}
+    for field in ("namespace", "subject_id", "lecture_id", "topic_ids",
+                  "language", "grade", "chunk_kind", "version"):
+        if field not in indexed:
+            continue
+        schema = "integer" if field == "version" else "keyword"
+        try:
+            client.create_payload_index(collection, field, field_schema=schema)
+        except Exception:
+            pass
+    print(f"  created {collection} with dense + sparse vectors")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true",
@@ -107,8 +151,11 @@ def main() -> int:
     collection = config.vector_store.get("collection", "eduai_chunks")
     client = upsert_client(config, config.secret("QDRANT_URL"))
 
-    payloads = _existing_points(client, collection)
-    print(f"collection {collection}: {len(payloads)} points")
+    hybrid = bool(config.get("vector_store.hybrid"))
+    source = config.get("vector_store.source_collection") or collection
+    payloads = _existing_points(client, source)
+    print(f"collection {source}: {len(payloads)} points"
+          + (f" -> {collection} (dense + sparse)" if collection != source else ""))
     if not payloads:
         return 0
 
@@ -130,15 +177,19 @@ def main() -> int:
     from shared.embeddings import get_embedder
     embedder = get_embedder(config)
 
+    if hybrid:
+        _ensure_hybrid_collection(client, collection, embedder.dimension, payloads)
+
     written = 0
     for start in range(0, len(todo), args.batch):
         batch = todo[start:start + args.batch]
-        vectors = embedder.embed(
-            [_embedding_text(rows[cid], payloads[cid], prefixed) for cid in batch])
+        texts = [_embedding_text(rows[cid], payloads[cid], prefixed) for cid in batch]
+        vectors = embedder.embed(texts)
+        terms = embedder.embed_sparse(texts) if hybrid else [None] * len(texts)
         client.upsert(collection, points=[
-            models.PointStruct(id=cid, vector=vector,
+            models.PointStruct(id=cid, vector=_point_vector(vector, term, hybrid),
                                payload=_with_kind(payloads[cid], rows[cid]["text"]))
-            for cid, vector in zip(batch, vectors)
+            for cid, vector, term in zip(batch, vectors, terms)
         ], wait=True)
         written += len(batch)
         print(f"  {written}/{len(todo)}")

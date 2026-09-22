@@ -16,10 +16,12 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from shared.language import LanguagePolicy
+from shared.language.script import reading_direction
 
 from ..context import PipelineContext
 from ..schemas import FigureCaption
 from ..state import Element, Figure, IngestionState, PageResult
+
 from ..utils import is_garbage, normalise_text, pdf
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
@@ -139,7 +141,6 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
                 )
             else:
                 counts["unreadable"] += 1
-                state["ingestion_status"] = "needs_review"
             page_figs = _digital_figures(state, ctx, doc, page, page_no, ing, default_lang,
                                          counts)
             figures.extend(page_figs)
@@ -180,7 +181,6 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
                     counts["stub_vision"] += 1
                 if result.unreadable:
                     counts["unreadable"] += 1
-                    state["ingestion_status"] = "needs_review"
                 else:
                     text = _norm(result.text, norm)
                     if text:
@@ -234,10 +234,14 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             f"{counts['stub_vision']} page(s) used STUB vision output — not real "
             "transcription; re-run once the vision key is configured."
         )
+    state["ingestion_status"] = review_status(
+        unreadable=counts["unreadable"], pages=len(pages),
+        ratio=ing.get("needs_review_ratio"))
+    state["stats"]["extract"]["ingestion_status"] = state["ingestion_status"]
     if counts["unreadable"]:
         state.setdefault("errors", []).append(
-            f"{counts['unreadable']} page(s) were unreadable and skipped; lesson "
-            "flagged ingestion_status=needs_review."
+            f"{counts['unreadable']} of {len(pages)} page(s) were unreadable; lesson "
+            f"is {state['ingestion_status']}."
         )
     return state
 
@@ -299,6 +303,25 @@ def _extract_body_text(state: IngestionState, ctx: PipelineContext) -> Ingestion
     return state
 
 
+
+def review_status(*, unreadable: int, pages: int, ratio: float) -> str:
+    """Whether a lesson is fit to answer from, or has to be looked at first.
+
+    Proportional, because any-page-failed does not scale. A 371-page textbook
+    read into 545 good chunks answered nothing at all: one page came back
+    unreadable, the lesson was held back, and retrieval only reads lectures
+    marked ready. At that length one bad page is near-certain, so the rule
+    quarantined every long document it was given while letting a three-page
+    lesson through on the same evidence.
+
+    A share also needs no special case for short lessons: one page of three is a
+    third of the lesson and fails the same test.
+    """
+    if not pages:
+        return "needs_review"
+    return "needs_review" if unreadable / pages >= ratio else "ready"
+
+
 def _page_cache(cfg: Any, layout_cfg: dict) -> Optional[PageCache]:
     """The cache for the pages this run has to pay a model to read.
 
@@ -312,6 +335,19 @@ def _page_cache(cfg: Any, layout_cfg: dict) -> Optional[PageCache]:
         return None
     return PageCache(cfg, model=cfg.get("vision.model"),
                      prompt_version=PAGE_LAYOUT_PROMPT.fingerprint)
+
+
+def _page_direction(page: Any, layout_cfg: dict) -> str:
+    """Which side this page's columns are read from.
+
+    Read off the page itself, because one direction for a whole corpus reads
+    every Latin, Cyrillic and CJK page backwards the moment the corpus stops
+    being Arabic — and a single document can hold both. ``detect_direction:
+    false`` hands the decision back to whoever set it.
+    """
+    if layout_cfg.get("detect_direction", True):
+        return reading_direction(pdf.page_text(page))
+    return layout_cfg.get("reading_direction", "ltr")
 
 
 def _parse_layout(
@@ -337,7 +373,7 @@ def _parse_layout(
         page=page_no,
         width=float(page.rect.width),
         height=float(page.rect.height),
-        reading_direction=layout_cfg.get("reading_direction", "ltr"),
+        reading_direction=_page_direction(page, layout_cfg),
     )
     blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
     wanted = choose_tier(page, char_count=char_count, blocks=blocks)
