@@ -70,9 +70,10 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
     depth = config.get("agent.prereq_depth", 2)
     prereq_limit = config.get("agent.max_prereqs", retrieval.DEFAULT_MAX_PREREQS)
     min_score = config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE)
-    topic_filter = config.get("agent.topic_filter", "soft")
+    topic_filter = config.get("agent.topic_filter", "off")
     scope_ratio = config.get("agent.scope.relevance_ratio", retrieval.DEFAULT_SCOPE_RATIO)
     with_figure = config.get("agent.explain_figures", False)
+    expand = config.get("agent.expand") or {}
 
     def adapter(payload) -> dict:                    # payload = {task, ...shared context}
         task = payload["task"]
@@ -103,6 +104,9 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
             "min_score": min_score,
             "topic_filter": topic_filter,
             "scope_relevance_ratio": scope_ratio,
+            "expand_anchors": expand.get("anchors", 0),
+            "expand_window": expand.get("window", 0),
+            "context_limit": expand.get("context_limit", k),
         })
         # (2) the subgraph ran; `result` is its private output. (3) TRANSLATE OUT below.
         # Tag citations with their task so compose can renumber [n] globally across a

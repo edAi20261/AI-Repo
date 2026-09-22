@@ -351,7 +351,7 @@ agent:
                              # Only this low because matching folds Arabic (shared/matching.py)
                              # and retrieval fuses a lexical rank (shared/lexical.py).
                              # Re-sweep when the real curriculum is indexed.
-  topic_filter: soft         # explain/summarize/report: soft = a topic-filtered miss retries unscoped
+  topic_filter: "off"        # explain/summarize/report: off = rank by similarity alone; soft = a topic-filtered miss retries unscoped
                              # (a wrong topic guess must not silently exclude the material); hard = strict
                              # (assessment stays hard — it wants one topic per question)
   resolve_topics_qdrant: true   # topic resolution via the Qdrant topics collection.
@@ -362,6 +362,10 @@ agent:
                                 # not. Populate the collection with scripts/reembed_chunks.py
                                 # before turning this on.
   prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
+  expand:
+    anchors: 3
+    window: 2
+    context_limit: 14
   show_prereqs: true         # append "you should know X first" to an answer. The labels
                              # come from topic extraction at ingest, so the line is only as
                              # good as those are — turn it off if they read as noise.

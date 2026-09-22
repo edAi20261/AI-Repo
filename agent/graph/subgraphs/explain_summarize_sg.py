@@ -59,6 +59,9 @@ class ExplainSummarizeState(TypedDict, total=False):
     min_score: float
     topic_filter: str               # soft = a topic-filtered miss retries unscoped (config agent.topic_filter)
     scope_relevance_ratio: float    # in-scope share of the unscoped best score (config agent.scope.relevance_ratio)
+    expand_anchors: int
+    expand_window: int
+    context_limit: int
     # produced
     chunks: list[RetrievedChunk]
     prereq_topics: list[PrereqTopic]
@@ -101,14 +104,21 @@ def _retrieve(state: ExplainSummarizeState, config) -> dict:
             logger.info("question falls outside the selected lesson", extra={
                 "lecture_id": scope.lecture_id, "scoped_best": round(found[0].score, 3)})
             found = []
+    found = retrieval.with_neighbours(
+        found,
+        anchors=state.get("expand_anchors", 0),
+        window=state.get("expand_window", 0),
+        limit=state.get("context_limit", k),
+    )
     carried = _carried_passages(state.get("previous_chunk_ids") or [])
     if not carried:
         return {"chunks": found}
     known = {chunk.chunk_id for chunk in carried}
     merged = carried + [chunk for chunk in found if chunk.chunk_id not in known]
+    limit = state.get("context_limit", k)
     logger.info("turn continues the last answer", extra={
-        "carried": len(carried), "found": len(found), "kept": min(len(merged), k)})
-    return {"chunks": merged[:k]}
+        "carried": len(carried), "found": len(found), "kept": min(len(merged), limit)})
+    return {"chunks": merged[:limit]}
 
 
 def _carried_passages(chunk_ids: list[str]) -> list[RetrievedChunk]:
