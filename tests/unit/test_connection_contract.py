@@ -55,44 +55,90 @@ def test_nothing_on_a_turn_opens_its_own_connection(path: Path):
         "directly — use shared.postgres.connect, which carries the timeouts")
 
 
-def test_the_helper_passes_both_timeouts(monkeypatch):
-    """The timeouts are the reason the helper exists."""
+def _pooled_with(monkeypatch, config, *, reset=True, **overrides):
+    """Build a pool with the real settings and a fake connection underneath."""
+    import psycopg_pool
+
     seen = {}
 
     class _Conn:
         def close(self):
             pass
 
-    def fake_connect(url, **kwargs):
-        seen.update(kwargs)
-        return _Conn()
+    class _FakePool:
+        def __init__(self, url, **kwargs):
+            seen.update(kwargs)
+            seen["url"] = url
 
-    import psycopg
-    monkeypatch.setattr(psycopg, "connect", fake_connect)
-    with postgres.connect(Config.load()):
+        def connection(self):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _held():
+                yield _Conn()
+
+            return _held()
+
+        def close(self):
+            pass
+
+    _FakePool.check_connection = staticmethod(lambda conn: None)
+    if reset:
+        postgres._pools.clear()
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", _FakePool)
+    with postgres.connect(config, **overrides):
         pass
+    return seen
 
-    assert seen["connect_timeout"] > 0
-    assert "statement_timeout=" in seen["options"]
+
+def test_the_helper_passes_both_timeouts(monkeypatch):
+    """The timeouts are the reason the helper exists.
+
+    They now reach the server as the pool's connection kwargs rather than as
+    one call's arguments, which is the same guarantee from one level further
+    back: every connection the pool hands out was opened with them."""
+    seen = _pooled_with(monkeypatch, Config.load())
+
+    assert seen["kwargs"]["connect_timeout"] > 0
+    assert "statement_timeout=" in seen["kwargs"]["options"]
 
 
 def test_a_caller_can_ask_for_a_tighter_bound(monkeypatch):
     """The session store sits at the front of every turn and wants less than a
     tool call does."""
-    seen = {}
+    seen = _pooled_with(monkeypatch, Config.load(),
+                        connect_timeout=2, statement_timeout_ms=500)
 
-    class _Conn:
-        def close(self):
-            pass
+    assert seen["kwargs"]["connect_timeout"] == 2
+    assert seen["kwargs"]["options"] == "-c statement_timeout=500"
 
-    import psycopg
-    monkeypatch.setattr(psycopg, "connect",
-                        lambda url, **kwargs: (seen.update(kwargs), _Conn())[1])
-    with postgres.connect(Config.load(), connect_timeout=2, statement_timeout_ms=500):
-        pass
 
-    assert seen["connect_timeout"] == 2
-    assert seen["options"] == "-c statement_timeout=500"
+def test_two_bounds_do_not_share_one_pool(monkeypatch):
+    """`options` is fixed when a connection is opened. One pool serving both
+    bounds would hand a tool call's 5s turn a connection carrying the session
+    store's 500ms, at random — an intermittent failure by construction."""
+    _pooled_with(monkeypatch, Config.load(), statement_timeout_ms=500)
+    _pooled_with(monkeypatch, Config.load(), statement_timeout_ms=5000, reset=False)
+
+    assert len(postgres._pools) == 2
+
+
+def test_the_pool_is_full_so_a_burst_never_pays_for_a_handshake(monkeypatch):
+    """A pool that grows on demand opens connections exactly when it is
+    busiest. Measured at 8 concurrent reads, growing on demand put p95 at
+    474ms against 239ms for a full one — the tail this was meant to remove."""
+    seen = _pooled_with(monkeypatch, Config.load())
+
+    assert seen["min_size"] == seen["max_size"] > 0
+
+
+def test_a_connection_is_proved_alive_before_a_turn_gets_it(monkeypatch):
+    """Without this, a connection the server dropped while it sat in the pool
+    raises inside a student's turn — an intermittent failure by construction,
+    and the harder kind to reproduce."""
+    seen = _pooled_with(monkeypatch, Config.load())
+
+    assert seen["check"] is not None
 
 
 # --- Qdrant -----------------------------------------------------------------

@@ -47,6 +47,23 @@ CREATE TABLE IF NOT EXISTS ai.topic_dependencies (
     CONSTRAINT topic_dependencies_pkey PRIMARY KEY (topic_id, prereq_topic_id)
 );
 
+-- One vision call per page is the most expensive thing the pipeline does, and
+-- chunking is the thing most often changed. Caching the raw parse decouples
+-- them: re-chunking reads from here and costs nothing, and a page is sent to a
+-- model again only when the model or the prompt changes.
+CREATE TABLE IF NOT EXISTS ai.page_transcriptions (
+    lecture_id     uuid NOT NULL,
+    page           integer NOT NULL,
+    model          text NOT NULL,
+    prompt_version text NOT NULL,   -- digest of the prompt text, not a hand-set string
+    raw_output     jsonb NOT NULL,  -- the parsed page, exactly as the model returned it
+    image_uri      text,
+    dpi            integer,
+    created_at     timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT page_transcriptions_pkey
+        PRIMARY KEY (lecture_id, page, model, prompt_version)
+);
+
 CREATE TABLE IF NOT EXISTS ai.chunks (
     chunk_id     uuid NOT NULL DEFAULT gen_random_uuid(),
     lecture_id   uuid NOT NULL,

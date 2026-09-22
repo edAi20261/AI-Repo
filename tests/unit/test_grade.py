@@ -279,7 +279,7 @@ def test_grade_degrades_on_llm_failure(monkeypatch):
     res = out["result"]
     assert res["degraded"] is True and res["graded"][0]["graded"] is False
     assert res["mastery_events"] == 0 and called["n"] == 0   # no mastery on a failed grade
-    assert "couldn't complete" in res["graded"][0]["feedback"].lower()
+    assert res["graded"][0]["feedback"] == ""                 # the caller words it
 
 
 # --- end-to-end stub --------------------------------------------------------
@@ -321,7 +321,7 @@ def test_grade_sg_declines_without_key_or_context(monkeypatch):
     res = out["result"]
     assert res["summary"]["declined"] == 1 and res["summary"]["count"] == 0
     assert res["mastery_events"] == 0                 # declined -> no mastery
-    assert res["graded"][0]["graded"] is False and "syllabus" in res["graded"][0]["feedback"].lower()
+    assert res["graded"][0]["graded"] is False and res["graded"][0]["feedback"] == ""
 
 
 def test_grade_sg_no_user_id_feedback_only(monkeypatch):
@@ -336,13 +336,43 @@ def test_grade_sg_no_user_id_feedback_only(monkeypatch):
     assert out["result"]["mastery_events"] == 0      # no user -> graded, no mastery
 
 
+def test_the_grade_endpoint_grounds_a_keyless_answer_in_the_syllabus(monkeypatch):
+    """Every answer sent to POST /ai/grade with no reference key was declined.
+
+    grade_sg grounds a keyless answer by retrieving the syllabus, and returns
+    early when no namespaces were given. The chat path passes them; run_grade,
+    the endpoint's entrypoint, never did — so a student pasting their own
+    homework question got "there is no model answer or enough syllabus content"
+    even where the syllabus answers it plainly.
+    """
+    from agent.graph import grade as grade_entrypoint
+
+    seen: dict = {}
+
+    class _Sg:
+        def invoke(self, state):
+            seen.update(state)
+            return {"result": {}}
+
+    monkeypatch.setattr(grade_entrypoint, "build_grade_sg", lambda **k: _Sg())
+    monkeypatch.setattr(grade_entrypoint, "get_backend_client", lambda config: None)
+    grade_entrypoint.run_grade(
+        {"submissions": [{"question": "ما معنى ريادة الأعمال؟", "student_answer": "..."}],
+         "user_id": "u1", "subject_id": "s1"},
+        config=get_config())
+
+    assert seen["namespaces"] == ["syllabus"]
+    assert seen["min_score"] == get_config().get("agent.min_score")
+
+
 # --- source: student practice vs teacher assigned ---------------------------
 
 def test_grade_adapter_source_by_pathway():
     from agent.graph.graph import _build_grade_adapter
     from agent.graph.subgraphs import build_grade_sg
     cfg = get_config()
-    adapter = _build_grade_adapter(build_grade_sg(config=cfg, llm=None), cfg, client=None)
+    from agent.subjects import SubjectDirectory
+    adapter = _build_grade_adapter(build_grade_sg(config=cfg, llm=None), cfg, SubjectDirectory(None))
     base = {"subject_id": None, "user_id": None, "language": "en"}
     # A student chat grade is self-practice even when a quiz is referenced.
     student = adapter({**base, "pathway": "student",

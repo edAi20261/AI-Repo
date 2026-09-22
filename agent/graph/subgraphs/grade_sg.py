@@ -19,7 +19,6 @@ from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 
-from shared.language import translate
 from shared.structured import align_by_id, call_structured, schema_hint
 
 from ...mastery import Mastery, MasteryParams, observation, update_aggregate
@@ -230,24 +229,21 @@ def _gradable(item: SubmissionItem) -> bool:
     return bool(item.correct_answer or item.context)
 
 
-# Decline message when there is no key and no syllabus evidence (en is the fallback).
-
-
-
-def _not_graded(item: SubmissionItem, feedback: str) -> GradedItem:
-    """A not-graded result: no score, no mastery, a clear message (declined or degraded)."""
+def _not_graded(item: SubmissionItem) -> GradedItem:
+    """A not-graded result: no score, no mastery. ``graded=False`` is the message; the
+    caller says it in the reader's language."""
     return GradedItem(
         question=item.question, graded=False, correct=False, partial_score=None,
-        feedback=feedback,
+        feedback="",
         topic_id=item.topic_id, lecture_id=item.lecture_id, question_id=item.question_id,
         difficulty=item.difficulty, bloom=item.bloom, points=item.points,
     )
 
 
-def _declined(item: SubmissionItem, language: str) -> GradedItem:
+def _declined(item: SubmissionItem) -> GradedItem:
     """Declined: no reference key and no syllabus context — decline rather than grade on the
     model's own knowledge."""
-    return _not_graded(item, translate("grade.no_evidence", language))
+    return _not_graded(item)
 
 
 def _stub_draft(item: SubmissionItem):
@@ -378,7 +374,6 @@ def _build_grade(llm, config):
             logger.info("grade", extra={"items": 0})
             return {"graded": []}
         threshold = state.get("pass_threshold", 0.5)
-        language = state.get("language", "en")
         # Only answers WITH a reference key or syllabus context are graded — never on the model's
         # own knowledge. An answer with neither is declined (no score, no mastery, clear message).
         gradable = [it for it in items if _gradable(it)]
@@ -398,9 +393,9 @@ def _build_grade(llm, config):
         graded, gi = [], 0
         for it in items:
             if not _gradable(it):
-                graded.append(_declined(it, language))          # no key + no context
+                graded.append(_declined(it))          # no key + no context
             elif degraded:
-                graded.append(_not_graded(it, translate("common.degraded", language)))
+                graded.append(_not_graded(it))
             else:
                 graded.append(_build_graded(it, drafts[gi], threshold))
                 gi += 1

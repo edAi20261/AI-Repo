@@ -90,3 +90,36 @@ def assert_stores_configured(settings: Settings) -> None:
         f"{' and '.join(missing)} unset for APP_ENV={settings.app_env!r}. "
         "Refusing to start a service that cannot reach its stores."
     )
+
+
+def collection_size(config: Config) -> Optional[int]:
+    """How many points the configured chunk collection holds, or ``None`` if it
+    cannot be reached. Separate from the warning so a test can set the number."""
+    from shared.vector_store import query_client
+
+    name = config.get("vector_store.collection")
+    try:
+        return query_client(config).get_collection(name).points_count
+    except Exception:
+        return None
+
+
+def warn_if_index_empty(config: Config) -> None:
+    """Say at startup when the collection this service will search holds nothing.
+
+    An empty index is not a startup failure — a fresh environment has one before
+    its first ingest — but it is indistinguishable from a broken tutor at the
+    other end: every question declines, every quiz comes back empty, and the
+    reason is one config line naming a collection nobody looked at.
+    """
+    size = collection_size(config)
+    if size is None:
+        logger.warning(
+            "could not read the vector collection %r; retrieval may find nothing",
+            config.get("vector_store.collection"))
+        return
+    if size == 0:
+        logger.warning(
+            "vector collection %r is empty (APP_ENV=%s): every answer will decline "
+            "and every quiz will come back with no questions until it is ingested",
+            config.get("vector_store.collection"), config.app_env)

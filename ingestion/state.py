@@ -84,6 +84,9 @@ class Chunk:
     topic_ids: list[str] = field(default_factory=list)
     chunk_id: Optional[str] = None       # set at write; keys row, manifest and point
     embedding: Optional[list[float]] = None
+    # {term_id: weight} — the lexical half of a hybrid search. Transient, like
+    # embedding: it goes to Qdrant and never to ai.chunks.
+    sparse: Optional[dict[int, float]] = None
     namespace: str = "syllabus"          # below: carried for indexing, not on ai.chunks
     subject_id: Optional[str] = None
     grade: Optional[str] = None
@@ -91,6 +94,28 @@ class Chunk:
     subject_name: Optional[str] = None
     lesson_title: Optional[str] = None
     lesson_order: Optional[int] = None
+
+    def for_embedding(self) -> str:
+        """What this chunk is searched by — never what a student reads.
+
+        A chunk carries no sign of where it came from. "مهدت لنهضة علمية" is
+        four words that name no lesson, no unit and no page, so a query naming
+        any of them has nothing in the vector to match. Prefixing the context
+        the chunk already knows about itself puts it there.
+
+        The prefix is built here rather than at the call sites that embed, so a
+        second one cannot embed the bare text and quietly index a chunk the
+        rest of the corpus is not comparable to.
+        """
+        parts = [self.subject_name, self.lesson_title]
+        if self.heading_path:
+            parts.append(f"Section: {self.heading_path}")
+        if self.page_from:
+            parts.append(f"Page {self.page_from}")
+        named = [p for p in parts if p]
+        if not named:
+            return self.text
+        return ". ".join(named) + ".\n" + self.text
 
 
 @dataclass
@@ -140,6 +165,7 @@ class IngestionState(TypedDict, total=False):
 
     # accumulated by the stages
     pages: list[PageResult]
+    parsed_pages: list[dict]        # layout-parsed pages, when ingestion.layout is on
     elements: list[Element]  # flattened across pages, in reading order
     figures: list[Figure]
     chunks: list[Chunk]

@@ -1,40 +1,32 @@
-"""The one place a turn's language is decided.
+"""The one place a turn's reply language is decided.
 
-The rule every assistant people already use converges on: answer in the language
-of the message, unless the message itself asks for another one. Anthropic states
-it as "follow the language of the query unless explicitly requested otherwise" —
-and applies it even over a stored "my native language is Spanish". OpenAI's voice
-prompt says "respond in the same language the user is speaking unless directed
-otherwise".
+Two different questions used to be answered by one chain of regexes: what
+language the student wrote in, and what language they asked to be answered in.
+Word lists cannot tell "answer in French" from "why did you answer in French?",
+and the second was stored as an instruction for a month. Reading a request is a
+judgement about meaning, so it belongs to the model that reads the conversation;
+this module only ranks the facts it is handed:
 
-So precedence runs from what this message says, to what the student said earlier
-in this conversation, to what it is written in, to what we were told beforehand:
-
-    explicit request in the message
-    -> a standing request from earlier in the session
-    -> Arabic script
-    -> confident detection
+    a request the student made in this conversation
+    -> the language of the subject being studied
+    -> the language the student wrote in
     -> the caller's parameter
-    -> planner hint -> profile -> previous turn -> default
+    -> the configured default
 
-The second rank is the same clause read the other way round: "unless explicitly
-requested otherwise" does not expire at the end of the turn it was said in. A
-student who asked for Arabic and then pastes an English formula has not changed
-their mind — only a newer request, or asking to be followed again, outranks it.
+Every subject is taught in its own language. A student who writes Arabic in an
+English science lesson is answered in English unless they ask otherwise, and
+that request holds until they change it. ``reply_follows`` switches the second
+and third ranks for a deployment that answers in the student's language.
 
-A caller's ``language`` parameter is a default for when the message cannot decide
-— a greeting too short to detect, Arabizi, a bare equation — never an override of
-what the student actually typed. A stored preference is the weakest evidence
-there is about what someone wants right now.
-
-Every node downstream reads the result; none of them decide again.
+Detection by script and statistics stays, as evidence the model and the
+no-model path can use, and for ingested documents where there is more text.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import Optional
+from typing import Literal, Optional
 
 from .detect import (
     DEFAULT_MIN_CHARS,
@@ -44,7 +36,6 @@ from .detect import (
     detect,
     is_trustworthy,
 )
-from .request import about_a_language, explicit_request
 from .script import MIN_MIXED_SHARE, classify
 from .types import LanguageDecision
 
@@ -52,10 +43,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SUPPORTED: tuple[str, ...] = ("ar", "en", "fr", "de")
 DEFAULT_LANGUAGE = "en"
+DEFAULT_REPLY_FOLLOWS = "subject"
+
+ReplyFollows = Literal["subject", "message"]
 
 
 class LanguagePolicy:
-    """Resolves the language of a turn, or of a document, from its configuration."""
+    """Decides the language of a turn, or of a document, from its configuration."""
 
     def __init__(
         self,
@@ -66,7 +60,7 @@ class LanguagePolicy:
         min_chars: int = DEFAULT_MIN_CHARS,
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
         min_margin: float = DEFAULT_MIN_MARGIN,
-        arabizi_hint: Optional[str] = None,
+        reply_follows: ReplyFollows = DEFAULT_REPLY_FOLLOWS,
     ) -> None:
         self.supported = tuple(code for code in supported if code)
         self.default = default if default in self.supported else (
@@ -76,7 +70,7 @@ class LanguagePolicy:
         self.min_chars = min_chars
         self.min_confidence = min_confidence
         self.min_margin = min_margin
-        self.arabizi_hint = arabizi_hint if arabizi_hint in self.supported else None
+        self.reply_follows = reply_follows
 
     @classmethod
     def from_config(cls, config) -> LanguagePolicy:
@@ -88,75 +82,54 @@ class LanguagePolicy:
             min_chars=get("language.min_chars", DEFAULT_MIN_CHARS),
             min_confidence=get("language.min_confidence", DEFAULT_MIN_CONFIDENCE),
             min_margin=get("language.min_margin", DEFAULT_MIN_MARGIN),
-            arabizi_hint=get("language.arabizi.hint_to", None),
+            reply_follows=get("language.reply_follows", DEFAULT_REPLY_FOLLOWS),
         )
 
-    def resolve(
-        self,
-        message: str = "",
-        *,
-        api_language: Optional[str] = None,
-        session_language: Optional[str] = None,
-        session_evidence: Optional[str] = None,
-        planner_hint: Optional[str] = None,
-    ) -> LanguageDecision:
-        """The language this turn is answered in, and the rule that decided it."""
+    def supports(self, code: Optional[str]) -> bool:
+        return bool(code) and code in self.supported
+
+    def written_in(self, message: str) -> Optional[str]:
+        """The language ``message`` is written in, when the text can tell."""
         text = message or ""
         writing_system = classify(text, arabic_threshold=self.arabic_ratio)
-
-        # A message that names a language is evidence about the topic, not about
-        # the language to answer in. explicit_request has always known that; the
-        # planner's hint reached the fallback tiers without the same test.
-        if planner_hint and about_a_language(text):
-            planner_hint = None
-
-        requested = explicit_request(text)
-        if requested and self._supported(requested[0]):
-            return self._decide(
-                requested[0], "explicit", script=writing_system, evidence=requested[1]
-            )
-
-        # An instruction from an earlier turn, still an instruction. Not marked
-        # refused: these are the turns most likely to drift, because the message
-        # and the answer are in different languages and every retrieved passage
-        # pulls the model back toward the message.
-        if self._supported(session_language):
-            return self._decide(
-                session_language, "session", script=writing_system,
-                evidence=session_evidence,
-            )
-
-        if writing_system == "arabic" and self._supported("ar"):
-            return self._decide("ar", "script", script=writing_system)
-
-        if writing_system in ("arabizi", "mixed"):
-            return self._fallback(writing_system, api_language, planner_hint)
-
+        if writing_system == "arabic" and self.supports("ar"):
+            return "ar"
+        if writing_system != "latin":
+            return None
         detection = detect(text, self.supported)
-        trustworthy = is_trustworthy(
-            detection,
-            text,
-            min_chars=self.min_chars,
-            min_confidence=self.min_confidence,
-            min_margin=self.min_margin,
-        )
-        if detection and trustworthy and self._supported(detection.code):
-            return self._decide(
-                detection.code,
-                "detected",
-                script=writing_system,
-                confidence=detection.confidence,
-                detector=detection.detector,
-            )
+        if detection and self.supports(detection.code) and is_trustworthy(
+            detection, text, min_chars=self.min_chars,
+            min_confidence=self.min_confidence, min_margin=self.min_margin,
+        ):
+            return detection.code
+        return None
 
-        return self._fallback(writing_system, api_language, planner_hint, detection)
+    def reply(
+        self,
+        *,
+        requested: Optional[str] = None,
+        subject_language: Optional[str] = None,
+        message_language: Optional[str] = None,
+        api_language: Optional[str] = None,
+    ) -> LanguageDecision:
+        """The language this turn is answered in, and the fact that decided it."""
+        ranked = [("session", requested)]
+        if self.reply_follows == "subject":
+            ranked += [("subject", subject_language), ("message", message_language)]
+        else:
+            ranked += [("message", message_language), ("subject", subject_language)]
+        ranked.append(("api", api_language))
+        for source, code in ranked:
+            if self.supports(code):
+                return self._decide(code, source)
+        return self._decide(self.default, "default", refused=True)
 
     def resolve_document(
         self, text: str, *, hint: Optional[str] = None
     ) -> LanguageDecision:
         """The language of ingested material, where more text is available."""
         writing_system = classify(text or "", arabic_threshold=self.arabic_ratio)
-        if writing_system == "arabic" and self._supported("ar"):
+        if writing_system == "arabic" and self.supports("ar"):
             return self._decide("ar", "script", script=writing_system)
 
         detection = detect(text or "", self.supported)
@@ -175,41 +148,9 @@ class LanguagePolicy:
                 detector=detection.detector,
             )
 
-        if self._supported(hint):
+        if self.supports(hint):
             return self._decide(hint, "profile", script=writing_system, refused=True)
         return self._decide(self.default, "default", script=writing_system, refused=True)
-
-    def _fallback(
-        self,
-        writing_system: str,
-        api_language: Optional[str],
-        planner_hint: Optional[str],
-        detection=None,
-    ) -> LanguageDecision:
-        """The message could not decide: use what we were told, and say we guessed."""
-        if writing_system == "arabizi" and self.arabizi_hint:
-            return self._decide(
-                self.arabizi_hint, "script", script=writing_system, refused=True
-            )
-        # The caller's parameter is an instruction, not a guess, so the answer is
-        # still checked against it — unlike everything below, which is memory.
-        if self._supported(api_language):
-            return self._decide(api_language, "api", script=writing_system)
-        # There were two more tiers here — a stored profile preference and the
-        # language the previous turn was answered in. Nothing ever put either into
-        # the graph state, so both arrived None on every call in the service's
-        # life. The session store is what actually carries a language between
-        # turns now; when a profile preference exists, it goes in beside it.
-        if self._supported(planner_hint):
-            return self._decide(planner_hint, "planner", script=writing_system, refused=True)
-
-        confidence = detection.confidence if detection else 0.0
-        return self._decide(
-            self.default, "default", script=writing_system, confidence=confidence, refused=True
-        )
-
-    def _supported(self, code: Optional[str]) -> bool:
-        return bool(code) and code in self.supported
 
     def _decide(
         self,

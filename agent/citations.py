@@ -15,8 +15,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-# [1] | [1, 2] | [1,2] — a group of numbers inside one pair of brackets.
-MARKER = re.compile(r"\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")
+# [1] | [1, 2] | [1,2] | [1، 2] — a group of numbers inside one pair of brackets,
+# separated the way the answer's own script separates a list.
+SEPARATOR = "[,،、，]"
+MARKER = re.compile(rf"\[\s*(\d+(?:\s*{SEPARATOR}\s*\d+)*)\s*\]")
 
 # A run of markers with nothing between them: "[1][2][1]".
 RUN = re.compile(r"(?:\[\d+\]){2,}")
@@ -26,7 +28,7 @@ def cited_numbers(text: str) -> list[int]:
     """Every source number referenced in ``text``, in order of first appearance."""
     seen: list[int] = []
     for group in MARKER.findall(text or ""):
-        for part in group.split(","):
+        for part in re.split(SEPARATOR, group):
             number = int(part.strip())
             if number not in seen:
                 seen.append(number)
@@ -49,7 +51,7 @@ def renumber(text: str, mapping: dict[int, int]) -> str:
 
     def replace(match: re.Match[str]) -> str:
         nonlocal dropped
-        numbers = [int(part.strip()) for part in match.group(1).split(",")]
+        numbers = [int(part.strip()) for part in re.split(SEPARATOR, match.group(1))]
         kept = [mapping[n] for n in numbers if n in mapping]
         dropped = dropped or len(kept) < len(numbers)
         return "".join(f"[{n}]" for n in kept)

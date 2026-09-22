@@ -3,8 +3,6 @@ the chat model is forced off so nodes take their deterministic grounded path."""
 
 from __future__ import annotations
 
-from typing import ClassVar
-
 import pytest
 
 from agent import retrieval as rmod
@@ -12,11 +10,7 @@ from agent.config import get_config
 from agent.graph import build_graph
 from agent.graph import nodes as nmod
 from agent.graph.nodes import (
-    _infer_subject,
-    _plan_tasks,
-    _prereq_line,
     _renumber_citations,
-    _sources_block,
     build_load_context,
 )
 from agent.graph.pathways import build_namespaces, resolve_style
@@ -63,117 +57,156 @@ def test_assert_user_type_allows_and_rejects():
         assert_user_type(None, "student")  # missing ctx
 
 
-# --- planner ----------------------------------------------------------------
+# --- understand ---------------------------------------------------------------
 
-class _FakeLLM:
-    def __init__(self, content):
-        self._content = content
+class _Subjects:
+    """Subject facts without a backend."""
 
-    def invoke(self, _messages):
-        class _Msg:
-            content = self._content
-        return _Msg()
+    def __init__(self, **facts):
+        self._facts = facts
 
-
-def test_plan_tasks_uses_llm_json_within_allowlist():
-    llm = _FakeLLM('{"tasks": [{"type": "summarize", "query": "cells"}]}')
-    tasks, lang = _plan_tasks("summarize cells", ["explain", "summarize"], llm)
-    assert tasks == [{"type": "summarize", "query": "cells",
-                      "level": "intermediate", "length": "medium"}]
-    assert lang is None  # no explicit language request
+    def facts(self, subject_id):
+        from agent.models import SubjectFacts
+        return SubjectFacts(**self._facts.get(subject_id, {})) if subject_id else SubjectFacts()
 
 
-def test_plan_tasks_injects_role_and_languages():
-    # The planner prompt is filled with the caller's role and the configured
-    # language set (both parametrised, not hardcoded).
-    class _CaptureLLM:
-        prompt = None
-
-        def invoke(self, messages):
-            _CaptureLLM.prompt = messages[0].content
-            class _Msg:
-                content = '{"tasks": [{"type": "explain", "query": "x"}]}'
-            return _Msg()
-
-    _plan_tasks("x", ["explain"], _CaptureLLM(), role="teacher", languages="ar, en")
-    assert "teacher" in _CaptureLLM.prompt
-    assert "ar, en" in _CaptureLLM.prompt
+def _reading(**fields):
+    from agent.models import TurnUnderstanding
+    fields.setdefault("needs_syllabus", True)
+    return TurnUnderstanding(**fields)
 
 
-def test_plan_tasks_uses_structured_output():
-    from agent.models import PlannedTask, PlannerOutput
+def _understand(monkeypatch, reading, *, state=None, subjects=None, llm=object()):
+    captured = {}
 
-    class _Structured:
-        def invoke(self, _msgs):
-            return PlannerOutput(tasks=[PlannedTask(type="summarize", query="cells")])
+    def fake_call(schema, messages, **kwargs):
+        captured["prompt"] = messages[0].content
+        captured["validate"] = kwargs.get("validate")
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
 
-    class _StructLLM:
-        def with_structured_output(self, model_cls):
-            assert model_cls is PlannerOutput
-            return _Structured()
-
-        def invoke(self, _msgs):  # must NOT be used when structured output works
-            raise AssertionError("plain invoke should not run on the structured path")
-
-    tasks, _ = _plan_tasks("summarize cells", ["explain", "summarize"], _StructLLM())
-    assert tasks[0]["type"] == "summarize" and tasks[0]["query"] == "cells"
+    monkeypatch.setattr(nmod, "call_structured", fake_call)
+    node = nmod.build_understand(get_config(), llm, subjects or _Subjects())
+    turn = {"pathway": "student", "message": "hi", "history": "", "conversation": {}}
+    turn.update(state or {})
+    return node(turn), captured
 
 
-def test_plan_tasks_falls_back_to_json_without_structured_output():
-    # A model without `with_structured_output` -> plain call + extract_json fallback.
-    llm = _FakeLLM('{"tasks": [{"type": "explain", "query": "cells"}]}')
-    tasks, _ = _plan_tasks("explain cells", ["explain"], llm)
-    assert tasks[0]["type"] == "explain"
+def test_a_social_message_is_answered_without_searching_the_syllabus(monkeypatch):
+    """A greeting used to be planned as an explain task and searched for in the book."""
+    out, _ = _understand(monkeypatch, _reading(needs_syllabus=False, message_language="en"))
+    assert out["turn_kind"] == "conversation"
+    assert out["planned_tasks"] == []
+    assert nmod._after_understand(out) == "converse"
 
 
-def test_plan_tasks_drops_disallowed_and_falls_back():
-    llm = _FakeLLM('{"tasks": [{"type": "grade", "query": "x"}]}')  # not allowed
-    tasks, _ = _plan_tasks("do something", ["explain", "summarize"], llm)
-    assert tasks[0]["type"] == "explain"  # deterministic fallback
+def test_a_follow_up_is_read_against_the_conversation(monkeypatch):
+    """"Give me an example" names nothing; the model reads it with the history
+    and writes a query that names what it refers to."""
+    from agent.models import PlannedTask
+    reading = _reading(tasks=[PlannedTask(type="explain", query="examples of evaporation")],
+                       continues_previous=True, message_language="en")
+    out, captured = _understand(monkeypatch, reading, state={
+        "message": "Give me an example.",
+        "history": "Student: explain evaporation\nTutor: Evaporation is ..."})
+    assert "Tutor: Evaporation is" in captured["prompt"]
+    assert out["planned_tasks"][0]["query"] == "examples of evaporation"
+    assert nmod._after_understand(out) == "plan"
 
 
-def test_plan_tasks_raises_on_llm_failure():
-    # A real LLM failure PROPAGATES (no silently-picked task); the plan node degrades.
-    class _BadLLM:
-        def invoke(self, _messages):
-            raise RuntimeError("boom")
+def test_asking_for_a_language_sets_it_for_the_rest_of_the_conversation(monkeypatch):
+    from agent.models import LanguageRequest
+    out, _ = _understand(monkeypatch, _reading(
+        needs_syllabus=False, message_language="ar",
+        language_request=LanguageRequest(action="set", code="ar")))
+    assert out["requested_language"] == "ar"
+    assert out["language"] == "ar"
 
-    with pytest.raises(RuntimeError):
-        _plan_tasks("x", ["explain"], _BadLLM())
+
+def test_objecting_to_a_language_clears_it(monkeypatch):
+    """The stuck-in-French bug: nothing an English speaker typed could undo it."""
+    from agent.models import LanguageRequest
+    out, _ = _understand(monkeypatch, _reading(
+        needs_syllabus=False, message_language="en",
+        language_request=LanguageRequest(action="clear")),
+        state={"conversation": {"state": {"language": "fr"}}})
+    assert out["requested_language"] is None
+    assert out["language"] == "en"
 
 
-def test_plan_degrades_on_planner_failure():
-    class _BadLLM:
-        def invoke(self, _messages):
-            raise RuntimeError("boom")
+def test_mentioning_a_language_changes_nothing(monkeypatch):
+    out, _ = _understand(monkeypatch, _reading(needs_syllabus=False, message_language="en"),
+                         state={"message": "why did you answer in french?"})
+    assert out["requested_language"] is None
+    assert out["language"] == "en"
 
-    plan = nmod.build_plan(get_config(), _BadLLM())
-    out = plan({"pathway": "student", "message": "hi", "language": "en"})
-    assert out["tasks"] == [] and "try again" in out["response"].lower()
+
+def test_a_subject_is_answered_in_its_own_language(monkeypatch):
+    out, captured = _understand(
+        monkeypatch, _reading(needs_syllabus=False, message_language="ar"),
+        state={"conversation": {"state": {"subject_id": "bio"}}},
+        subjects=_Subjects(bio={"language": "en", "name": "Biology"}))
+    assert out["language"] == "en"
+    assert "Biology" in captured["prompt"]
+
+
+def test_an_unreadable_turn_fails_instead_of_guessing_a_task(monkeypatch):
+    """A parse failure used to be indistinguishable from "explain this"; it
+    then became an apology in one of four languages. It is a failed request."""
+    from agent.errors import TutorUnavailable
+    with pytest.raises(TutorUnavailable):
+        _understand(monkeypatch, RuntimeError("unparseable"))
+
+
+def test_without_a_model_every_turn_is_an_explain_task(monkeypatch):
+    node = nmod.build_understand(get_config(), None, _Subjects())
+    out = node({"pathway": "student", "message": "explain photosynthesis",
+                "conversation": {}, "history": ""})
+    assert out["planned_tasks"] == [{"type": "explain", "query": "explain photosynthesis",
+                                     "level": "intermediate", "length": "medium"}]
+
+
+def test_a_reading_that_contradicts_itself_goes_back_to_the_model(monkeypatch):
+    from agent.models import LanguageRequest, PlannedTask
+    _, captured = _understand(monkeypatch, _reading(needs_syllabus=False))
+    check = captured["validate"]
+    with pytest.raises(ValueError):
+        check(_reading(needs_syllabus=True, tasks=[], student_words="hi"))
+    with pytest.raises(ValueError):
+        check(_reading(tasks=[PlannedTask(type="explain", query="  ")], student_words="hi"))
+    with pytest.raises(ValueError):
+        check(_reading(needs_syllabus=False,
+                       language_request=LanguageRequest(action="set", code="it")))
+
+
+def test_the_task_descriptions_route_by_intent_not_by_quoted_phrases():
+    """The planner was told "how am I doing" -> report; a phrase list covers
+    only the phrasings someone thought to write down."""
+    from agent.prompts import TASK_DESCRIPTIONS
+    for description in TASK_DESCRIPTIONS.values():
+        body = description.split(":", 1)[1]
+        assert '("' not in body
+
+
+def test_report_is_a_task_the_model_is_allowed_to_choose():
+    """"report" was missing from the task-type enum, so structured output could
+    never return it and progress questions fell through to other tasks."""
+    from agent.models import PlannedTask
+    assert PlannedTask(type="report", query="my progress").type == "report"
+
+
+def test_allowed_descriptions_lists_only_allowed():
+    text = nmod._allowed_descriptions(["explain", "grade"])
+    assert '"explain"' in text and '"grade"' in text
+    assert '"visual"' not in text and '"summarize"' not in text
 
 
 def test_dispatch_routes_empty_tasks_to_persist():
-    # Planner degraded (no tasks) -> dispatch sends the turn straight to the end.
     assert nmod.dispatch({"tasks": []}) == "persist"
 
 
-def test_plan_tasks_no_llm_is_deterministic():
-    tasks, lang = _plan_tasks("explain photosynthesis", ["explain", "summarize"], None)
-    assert tasks == [{"type": "explain", "query": "explain photosynthesis",
-                      "level": "intermediate", "length": "medium"}]
-    assert lang is None
-
-
-def test_infer_subject_picks_top_topic_subject(monkeypatch):
-    from agent.graph import nodes as nmod
-    monkeypatch.setattr(
-        nmod, "resolve_topics",
-        lambda q, sid=None, **k: [ResolvedTopic("t1", "Fractions", 0.8, "subjX")])
-    assert _infer_subject("what is a fraction", object()) == "subjX"
-    # Nothing clears the threshold -> None (caller searches unscoped).
-    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
-    assert _infer_subject("totally unrelated", object()) is None
-
+# --- plan -------------------------------------------------------------------
 
 class _SubjectCfg:
     """Minimal config for plan() with a controllable default subject."""
@@ -187,61 +220,92 @@ class _SubjectCfg:
             return ["explain"]
         if key == "language.supported":
             return ["ar", "en", "fr", "de"]
-        return default  # agent.pathways.* -> None -> falls back to default_tasks
+        return default
 
 
-def test_plan_prefers_inferred_subject_over_default(monkeypatch):
-    # A default is set, but the message infers a subject -> inference wins.
-    monkeypatch.setattr(
-        nmod, "resolve_topics",
-        lambda q, sid=None, **k: [ResolvedTopic("t1", "Fractions", 0.8, "subjINFER")])
-    plan = nmod.build_plan(_SubjectCfg(default_subject_id="subjDEFAULT"), None)
-    out = plan({"pathway": "student", "message": "what is a fraction"})
-    assert out["subject_id"] == "subjINFER"
+def _plan_state(**extra):
+    state = {"pathway": "student", "message": "q", "namespaces": ["syllabus"],
+             "planned_tasks": [{"type": "explain", "query": "q", "level": "intermediate",
+                                "length": "medium"}],
+             "understanding": {"needs_syllabus": True}, "conversation": {}}
+    state.update(extra)
+    return state
 
 
-def test_plan_falls_back_to_default_when_inference_empty(monkeypatch):
-    # Nothing clears the resolve threshold -> the default is the last resort.
+def _hit(subject_id, score):
+    return RetrievedChunk(chunk_id=f"c-{subject_id}-{score}", score=score, text="x",
+                          lecture_id="l", topic_ids=[], page_from=1, page_to=1,
+                          heading_path="H", language="en", subject_id=subject_id)
+
+
+def test_the_subject_is_found_by_searching_the_material(monkeypatch):
     monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
-    plan = nmod.build_plan(_SubjectCfg(default_subject_id="subjDEFAULT"), None)
-    out = plan({"pathway": "student", "message": "totally unrelated"})
-    assert out["subject_id"] == "subjDEFAULT"
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [
+        _hit("bio", 0.7), _hit("bio", 0.6), _hit("chem", 0.8)])
+    plan = nmod.build_plan(_SubjectCfg(default_subject_id="dflt"), _Subjects())
+    assert plan(_plan_state())["subject_id"] == "bio"
 
 
-def test_plan_keeps_explicit_subject_and_skips_default(monkeypatch):
-    # An explicit subject is authoritative: neither inference nor default touch it,
-    # and plan does not re-emit it (already in state).
-    monkeypatch.setattr(
-        nmod, "resolve_topics",
-        lambda q, sid=None, **k: [ResolvedTopic("t1", "Fractions", 0.8, "subjINFER")])
-    plan = nmod.build_plan(_SubjectCfg(default_subject_id="subjDEFAULT"), None)
-    out = plan({"pathway": "student", "message": "explain fractions",
-                "subject_id": "subjEXPLICIT"})
-    assert "subject_id" not in out
+def test_passages_below_the_floor_do_not_vote(monkeypatch):
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [_hit("bio", 0.1)])
+    plan = nmod.build_plan(_SubjectCfg(default_subject_id="dflt"), _Subjects())
+    assert plan(_plan_state())["subject_id"] == "dflt"
 
 
-def test_infer_subject_constrained_to_enrolled(monkeypatch):
-    # The top topic hit is a subject the student isn't enrolled in; inference must pick the
-    # best hit that IS enrolled, never a subject the student can't access.
-    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [
-        ResolvedTopic("t1", "A", 0.9, "subjOther"),
-        ResolvedTopic("t2", "B", 0.7, "subjEnrolled")])
-    assert _infer_subject("q", _SubjectCfg(), {"subjEnrolled"}) == "subjEnrolled"
-    assert _infer_subject("q", _SubjectCfg(), {"subjNope"}) is None   # no enrolled match -> unscoped
-
-
-def test_plan_constrains_inference_to_enrolled_subjects(monkeypatch):
-    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [
-        ResolvedTopic("t1", "A", 0.9, "subjOther"),
-        ResolvedTopic("t2", "B", 0.7, "subjEnrolled")])
+def test_inference_is_confined_to_the_student_s_subjects(monkeypatch):
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [
+        _hit("other", 0.9), _hit("enrolled", 0.6)])
 
     class _Client:
         def get_student_subjects(self, uid):
-            return [{"id": "subjEnrolled", "name": "Chem"}]
+            return [{"id": "enrolled"}]
 
-    plan = nmod.build_plan(_SubjectCfg(), None, _Client())
-    out = plan({"pathway": "student", "message": "q", "user_id": "u1"})
-    assert out["subject_id"] == "subjEnrolled"        # the non-enrolled top hit was skipped
+    plan = nmod.build_plan(_SubjectCfg(), _Subjects(), _Client())
+    assert plan(_plan_state(user_id="u1"))["subject_id"] == "enrolled"
+
+
+def test_the_caller_s_subject_is_authoritative(monkeypatch):
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [_hit("bio", 0.9)])
+    plan = nmod.build_plan(_SubjectCfg(), _Subjects())
+    assert "subject_id" not in plan(_plan_state(subject_id="explicit"))
+
+
+def test_the_conversation_keeps_its_subject_until_the_student_moves_on(monkeypatch):
+    """A follow-up names no subject; re-inferring it from "can you explain more?"
+    sent an English science answer to the Arabic corpus."""
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [_hit("arabic", 0.9)])
+    plan = nmod.build_plan(_SubjectCfg(), _Subjects())
+    kept = plan(_plan_state(conversation={"state": {"subject_id": "bio"}}))
+    assert kept["subject_id"] == "bio"
+    moved = plan(_plan_state(conversation={"state": {"subject_id": "bio"}},
+                             understanding={"needs_syllabus": True, "changes_subject": True}))
+    assert moved["subject_id"] == "arabic"
+
+
+def test_a_continuing_turn_brings_the_last_answer_s_passages(monkeypatch):
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    conversation = {"state": {"subject_id": "bio"}, "turns": [
+        {"message": "explain evaporation", "reply": "...", "kind": "study",
+         "subject_id": "bio", "cited_chunk_ids": ["c1", "c2"]}]}
+    plan = nmod.build_plan(_SubjectCfg(), _Subjects())
+    carried = plan(_plan_state(conversation=conversation, understanding={
+        "needs_syllabus": True, "continues_previous": True}))
+    assert carried["previous_chunk_ids"] == ["c1", "c2"]
+    fresh = plan(_plan_state(conversation=conversation))
+    assert fresh["previous_chunk_ids"] == []
+
+
+def test_the_reply_language_follows_the_subject_once_it_is_known(monkeypatch):
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [_hit("bio", 0.9)])
+    plan = nmod.build_plan(get_config(), _Subjects(bio={"language": "en"}))
+    out = plan(_plan_state(message_language="ar"))
+    assert out["language"] == "en"
+    assert plan(_plan_state(message_language="ar", requested_language="ar"))["language"] == "ar"
 
 
 def test_merge_same_type_collapses_only_explain_summarize():
@@ -256,7 +320,7 @@ def test_merge_same_type_collapses_only_explain_summarize():
     explains = [t for t in out if t["type"] == "explain"]
     grades = [t for t in out if t["type"] == "grade"]
     assert len(explains) == 1 and "X" in explains[0]["query"] and "Y" in explains[0]["query"]
-    assert len(grades) == 2                            # grade tasks are never merged
+    assert len(grades) == 2
 
 
 def test_validate_assessment_spec_sanitizes():
@@ -265,9 +329,9 @@ def test_validate_assessment_spec_sanitizes():
     assert _validate_assessment_spec({}) is None
     assert _validate_assessment_spec({"count": 5}).count == 5
     assert _validate_assessment_spec({"types": ["mcq", "bogus"]}).types == ["mcq"]
-    assert _validate_assessment_spec({"count": "five"}) is None     # bad type -> None
-    assert _validate_assessment_spec({"count": 0}) is None          # out of range -> None
-    assert _validate_assessment_spec({"types": ["bogus"]}) is None  # no valid types -> None
+    assert _validate_assessment_spec({"count": "five"}) is None
+    assert _validate_assessment_spec({"count": 0}) is None
+    assert _validate_assessment_spec({"types": ["bogus"]}) is None
 
 
 def test_assessment_type_mix_distribution():
@@ -276,51 +340,34 @@ def test_assessment_type_mix_distribution():
     assert _assessment_type_mix(AssessmentSpec(count=4, types=["mcq"]), default) == {"mcq": 4}
     assert _assessment_type_mix(AssessmentSpec(count=3, types=["mcq", "true_false"]), default) == \
         {"mcq": 2, "true_false": 1}
-    # types only -> spread the default total across requested types
     assert sum(_assessment_type_mix(AssessmentSpec(types=["mcq", "essay"]), default).values()) == \
         sum(default.values())
-    # count only -> spread across the default's types
     assert sum(_assessment_type_mix(AssessmentSpec(count=6), default).values()) == 6
 
 
 def test_plan_applies_requested_assessment_shape(monkeypatch):
     monkeypatch.setattr(nmod, "resolve_topics",
                         lambda q, sid=None, **k: [ResolvedTopic("t1", "T", 0.9)])
-    llm = _FakeLLM('{"tasks": [{"type": "assessment", "query": "fractions", '
-                   '"assessment": {"count": 4, "types": ["mcq"]}}]}')
-    plan = nmod.build_plan(get_config(), llm)
-    out = plan({"pathway": "student", "message": "give me 4 mcqs on fractions",
-                "subject_id": "s"})
+    plan = nmod.build_plan(get_config(), _Subjects())
+    out = plan(_plan_state(subject_id="s", planned_tasks=[{
+        "type": "assessment", "query": "fractions", "level": "intermediate",
+        "length": "medium", "assessment": {"count": 4, "types": ["mcq"]}}]))
     qtask = next(t for t in out["tasks"] if t["type"] == "assessment")
     assert qtask["params"]["type_mix"] == {"mcq": 4}
 
 
-def test_allowed_descriptions_lists_only_allowed():
-    # A teacher pathway without "visual" must not see the visual bullet.
-    text = nmod._allowed_descriptions(["explain", "grade"])
-    assert '"explain"' in text and '"grade"' in text
-    assert '"visual"' not in text and '"summarize"' not in text
-
-
 def test_plan_grade_ref_overrides_nl_reference(monkeypatch):
-    # A structured grade_ref on the request wins over the NL-parsed reference.
     monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
-    llm = _FakeLLM('{"tasks": [{"type": "grade", "query": "my answer", '
-                   '"grade": {"assessment_id": "from-nl", "kind": "quiz"}}]}')
-    plan = nmod.build_plan(get_config(), llm)
-    out = plan({"pathway": "student", "message": "grade my saved quiz", "subject_id": "s",
-                "grade_ref": {"assessment_id": "from-frontend", "kind": "homework"}})
+    plan = nmod.build_plan(get_config(), _Subjects())
+    out = plan(_plan_state(
+        subject_id="s",
+        grade_ref={"assessment_id": "from-frontend", "kind": "homework"},
+        planned_tasks=[{"type": "grade", "query": "my answer", "level": "intermediate",
+                        "length": "medium",
+                        "grade": {"assessment_id": "from-nl", "kind": "quiz"}}]))
     gtask = next(t for t in out["tasks"] if t["type"] == "grade")
     assert gtask["params"]["grade"]["assessment_id"] == "from-frontend"
     assert gtask["params"]["grade"]["kind"] == "homework"
-
-
-def test_plan_tasks_extracts_explicit_output_language():
-    llm = _FakeLLM('{"output_language": "ar", '
-                   '"tasks": [{"type": "explain", "query": "fire triangle"}]}')
-    tasks, lang = _plan_tasks("explain the fire triangle, answer in Arabic",
-                              ["explain", "summarize"], llm)
-    assert tasks[0]["type"] == "explain" and lang == "ar"
 
 
 # --- compose helpers --------------------------------------------------------
@@ -329,29 +376,22 @@ def _pt(topic_id="t0", label="Cells", strength="weak", depth=1):
     return PrereqTopic(topic_id=topic_id, label=label, strength=strength, depth=depth)
 
 
-def test_prereq_line_bilingual():
-    prereqs = [_pt()]
-    assert _prereq_line(prereqs, "en") == "Prerequisite topics: Cells"
+def test_what_follows_an_answer_is_marked_not_worded():
+    """"Prerequisite topics" and "Sources" were sentences kept in four languages,
+    and wrong the day a fifth was added. A mark reads the same in every one."""
+    assert nmod._prereq_line([_pt()]) == "🧩 Cells"
+    cites = [Citation(n=1, lecture_id="lec1", heading_path="Ch1", page_from=3)]
+    assert nmod._sources_block(cites).startswith("📚\n[1]")
 
 
-def test_an_empty_prereq_list_renders_no_heading():
-    """A bare "Prerequisite topics:" with nothing after it reads as a bug."""
-    assert _prereq_line([], "ar") == ""
+def test_an_empty_prereq_list_renders_nothing():
+    assert nmod._prereq_line([]) == ""
 
 
-def test_an_arabic_prereq_is_shown_under_an_arabic_answer():
+def test_an_arabic_prereq_is_shown_as_written():
     arabic = PrereqTopic(topic_id="t2", label="تحليل النص الشعري",
                          strength="required", depth=1)
-    assert _prereq_line([arabic], "ar").startswith("مواضيع تمهيدية")
-
-
-def test_prereq_and_sources_headers_fr_de():
-    prereqs = [_pt()]
-    assert _prereq_line(prereqs, "fr").startswith("Sujets prérequis")
-    assert _prereq_line(prereqs, "de").startswith("Voraussetzungen")
-    cites = [Citation(n=1, lecture_id="lec1", heading_path="Ch1", page_from=3)]
-    assert _sources_block(cites, "fr").startswith("Sources:")
-    assert _sources_block(cites, "de").startswith("Quellen:")
+    assert "تحليل النص الشعري" in nmod._prereq_line([arabic])
 
 
 def test_sources_block_dedupes_and_numbers():
@@ -359,7 +399,7 @@ def test_sources_block_dedupes_and_numbers():
         Citation(n=1, lecture_id="lec1", heading_path="Ch1", page_from=3, page_to=3),
         Citation(n=1, lecture_id="lec1", heading_path="Ch1", page_from=3, page_to=3),
     ]
-    block = _sources_block(cites, "en")
+    block = nmod._sources_block(cites)
     assert block.count("[1]") == 1
     assert "Ch1, p.3" in block
 
@@ -368,31 +408,20 @@ def test_sources_block_renders_readable_lecture_label():
     cites = [Citation(n=1, lecture_id="lec1", subject_name="Science FR",
                       lesson_order=4, lesson_title="Mendel's Laws",
                       page_from=6, page_to=7)]
-    block = _sources_block(cites, "en")
-    assert "[1] Science FR · Lesson 4: Mendel's Laws, p.6–7" in block
+    assert "[1] Science FR · 4: Mendel's Laws, p.6–7" in nmod._sources_block(cites)
 
 
-def test_sources_block_lecture_label_partial_and_localized():
-    # order but no title
-    b1 = _sources_block(
-        [Citation(n=1, lecture_id="l", subject_name="Math EN", lesson_order=2,
-                  page_from=1)], "en")
-    assert "[1] Math EN · Lesson 2, p.1" in b1
-    # localized lesson word (fr)
-    b2 = _sources_block(
-        [Citation(n=1, lecture_id="l", subject_name="Sciences", lesson_order=5,
-                  page_from=2)], "fr")
-    assert "Leçon 5" in b2
-    # no metadata -> heading_path fallback (unchanged behavior)
-    b3 = _sources_block([Citation(n=1, lecture_id="l", heading_path="Ch1",
-                                  page_from=3)], "en")
+def test_sources_block_lecture_label_partial():
+    b1 = nmod._sources_block([Citation(n=1, lecture_id="l", subject_name="Math EN",
+                                       lesson_order=2, page_from=1)])
+    assert "[1] Math EN · #2, p.1" in b1
+    b3 = nmod._sources_block([Citation(n=1, lecture_id="l", heading_path="Ch1", page_from=3)])
     assert "[1] Ch1, p.3" in b3
 
 
 def test_sources_block_strips_trailing_punctuation():
-    # A heading carrying a trailing comma must not render "Oxidation,, p.3".
     cites = [Citation(n=1, lecture_id="lec1", heading_path="Oxidation,", page_from=3)]
-    block = _sources_block(cites, "en")
+    block = nmod._sources_block(cites)
     assert "[1] Oxidation, p.3" in block
     assert ",," not in block
 
@@ -503,30 +532,23 @@ def _patch_tools(monkeypatch):
         chunk_id="c1", score=0.7, text="Plants convert light into energy.",
         lecture_id="lec1", topic_ids=["t1"], page_from=3, page_to=3,
         heading_path="Ch1 > Photosynthesis", language="en")
-    prereq = RetrievedChunk(
-        chunk_id="c0", score=0.0, text="A cell is the basic unit of life.",
-        lecture_id="lec0", topic_ids=["t0"], page_from=1, page_to=1,
-        heading_path="Ch0 > Cells", language="en")
-
     monkeypatch.setattr(rmod, "rag_search", lambda *a, **k: [primary])
     monkeypatch.setattr(rmod, "get_topic_deps",
                         lambda ids, **k: [PrereqTopic("t0", "Cells", "required", 1)])
-    monkeypatch.setattr(rmod, "get_topic_chunks", lambda ids, ns, **k: [prereq])
 
 
 def test_graph_halts_on_unknown_role(monkeypatch):
-    # No valid role -> the graph does NOT run; it returns a sign-in message.
+    from shared.errors import UnprocessableError
     _patch_tools(monkeypatch)
     graph = build_graph(get_config())
-    out = graph.invoke({"message": "explain photosynthesis", "user_type": "guest"})
-    assert out["pathway"] is None
-    assert "sign in" in out["response"].lower()
-    assert "tasks" not in out                     # plan never ran
+    with pytest.raises(UnprocessableError):
+        graph.invoke({"message": "explain photosynthesis", "user_type": "guest"})
 
 
 def test_classify_recognizes_parent(monkeypatch):
     # Parent is a configured pathway -> recognized, not mis-routed to student.
-    classify = nmod.build_classify(get_config())
+    from agent.conversation import HistoryWindow, InMemoryConversationStore
+    classify = nmod.build_classify(get_config(), InMemoryConversationStore(), HistoryWindow())
     out = classify({"message": "how is my child doing?", "user_type": "parent"})
     assert out["pathway"] == "parent" and "response" not in out
 
@@ -558,25 +580,23 @@ def test_shipped_config_starts_in_production_with_openrouter_key(monkeypatch):
     gmod._require_llm_in_prod(Config.load())
 
 
-def test_explain_sg_degrades_on_llm_failure(monkeypatch):
-    # A runtime LLM failure -> a friendly message, no stub text, no citations.
+def test_explain_sg_fails_the_turn_when_the_model_fails(monkeypatch):
+    from agent.errors import TutorUnavailable
     from agent.graph.subgraphs.explain_summarize_sg import build_explain_sg
 
     chunk = RetrievedChunk(chunk_id="c1", score=0.9, text="t", lecture_id="lec1",
                            topic_ids=["t1"], page_from=1, page_to=1, heading_path="H",
                            language="en")
     monkeypatch.setattr(rmod, "retrieve", lambda *a, **k: [chunk])
-    monkeypatch.setattr(rmod, "resolve_prereqs", lambda *a, **k: ([], []))
 
     class _BadLLM:
         def invoke(self, _messages):
             raise RuntimeError("boom")
 
     sg = build_explain_sg(config=get_config(), llm=_BadLLM())
-    out = sg.invoke({"query": "x", "topic_ids": ["t1"], "namespaces": ["syllabus"],
-                     "language": "en"})
-    assert "couldn't complete" in out["explanation"].lower()
-    assert out["citations"] == [] and "pending chat model" not in out["explanation"]
+    with pytest.raises(TutorUnavailable):
+        sg.invoke({"query": "x", "topic_ids": ["t1"], "namespaces": ["syllabus"],
+                   "language": "en"})
 
 
 def test_graph_end_to_end_stub_english(monkeypatch):
@@ -589,9 +609,9 @@ def test_graph_end_to_end_stub_english(monkeypatch):
     assert out["language"] == "en"
     assert out["tasks"][0]["params"]["topic_ids"] == ["t1"]
     assert "grounded in" in out["response"]
-    assert "Prerequisite topics: Cells" in out["response"]
-    assert "Sources" in out["response"]
-    assert out["citations"] and out["citations"][0].lecture_id == "lec1"
+    assert "🧩" not in out["response"] and "📚" not in out["response"]
+    assert "[1]" not in out["response"]
+    assert out["published_citations"][0].lecture_id == "lec1"
 
 
 def test_graph_routes_teacher_and_arabic(monkeypatch):
@@ -611,8 +631,8 @@ def test_grade_line_shows_correct_answer_and_explanation():
         "summary": {"score": 0, "max_score": 1},
         "graded": [{"correct": False, "feedback": "Not quite.",
                     "correct_answer": "6", "explanation": "b = sqrt(a*c)."}],
-    }, "en")
-    assert "Correct answer: 6" in line and "Why: b = sqrt(a*c)." in line
+    })
+    assert "→ 6" in line and "💡 b = sqrt(a*c)." in line
 
 
 def test_grade_line_omits_key_when_correct():
@@ -620,22 +640,45 @@ def test_grade_line_omits_key_when_correct():
         "summary": {"score": 1, "max_score": 1},
         "graded": [{"correct": True, "feedback": "Right.",
                     "correct_answer": "6", "explanation": "because."}],
-    }, "en")
-    assert "Correct answer" not in line and "Why" not in line
+    })
+    assert "→" not in line and "💡" not in line
 
 
-def test_visual_caption_by_kind_and_language():
-    assert nmod._visual_caption([{"kind": "mindmap", "s3_uri": "u"}], "en") == "Here's your mind map:"
-    assert nmod._visual_caption([{"kind": "flashcards", "s3_uri": "u"}], "ar").startswith("إليك")
-    # slides carry their own text -> no caption
-    assert nmod._visual_caption([{"kind": "slides", "text": "S"}], "en") == ""
+def test_an_answer_that_could_not_be_graded_is_marked():
+    line = nmod._grade_line({"summary": {"score": 0, "max_score": 0},
+                             "graded": [{"graded": False, "feedback": ""}]})
+    assert "∅ 1." in line
 
 
-def test_compose_render_error_over_decline():
+def test_a_visual_is_linked_by_its_mark():
+    line = nmod._visual_line([{"kind": "mindmap", "s3_uri": "u"},
+                              {"kind": "figure", "s3_uri": "f", "reused": True}])
+    assert "[🧠](u)" in line and "[🖼️ 📖](f)" in line
+    assert nmod._visual_line([{"kind": "slides", "text": "S"}]) == "S"
+
+
+def test_a_quiz_shows_its_questions_without_their_answers():
+    block = nmod._assessment_block({"items": [
+        {"question": "What is evaporation?", "answer": "gas",
+         "options": [{"text": "gas", "is_correct": True}, {"text": "ice"}]}]})
+    assert "1. What is evaporation?" in block and "a) gas" in block and "b) ice" in block
+    assert "is_correct" not in block
+
+
+def test_a_visual_that_failed_alone_fails_the_turn():
+    from agent.errors import TutorUnavailable
     compose = nmod.build_compose(get_config(), None)
-    out = compose({"answers": [], "visual_error": True, "language": "en"})
-    assert "went wrong" in out["response"].lower()
-    assert "syllabus material" not in out["response"].lower()
+    with pytest.raises(TutorUnavailable):
+        compose({"answers": [], "visual_error": True, "language": "en"})
+
+
+def test_a_visual_that_failed_beside_an_answer_leaves_the_answer():
+    compose = nmod.build_compose(get_config(), None)
+    out = compose({"answers": [{"type": "explain", "text": "Plants make food [1].",
+                                "task_id": "a", "grounded": True}],
+                   "citations": [Citation(n=1, task_id="a", lecture_id="l", page_from=1)],
+                   "visual_error": True, "language": "en"})
+    assert out["response"].startswith("Plants make food.")
 
 
 def test_compose_suppresses_prereqs_on_decline():
@@ -647,36 +690,56 @@ def test_compose_suppresses_prereqs_on_decline():
                                       strength="strong", depth=1)],
         "citations": [], "language": "en",
     })
-    assert "Prerequisite topics" not in out["response"] and "Fractions" not in out["response"]
+    assert "🧩" not in out["response"] and "Fractions" not in out["response"]
 
 
-def test_an_unreadable_plan_does_not_become_an_explain_task():
-    """A parse failure used to be indistinguishable from "explain this".
+def test_every_later_step_sees_only_the_student_s_own_words(monkeypatch):
+    """The app sends "Explain this: Hellllllo". The reply step read the prefix as the
+    student's request and asked what part of "Hellllllo" to explain."""
+    out, _ = _understand(monkeypatch, _reading(
+        needs_syllabus=False, student_words="Hellllllo", message_language="en"),
+        state={"message": "Explain this: Hellllllo"})
+    assert out["message"] == "Hellllllo"
+    assert out["raw_message"] == "Explain this: Hellllllo"
 
-    A student who asked to be graded got an explanation instead, with nothing in
-    the response saying the planner never ran.
-    """
-    from agent.graph.nodes import build_plan
-    from shared.config import Config
 
-    class _Prose:
-        class _Structured:
-            def invoke(self, _msgs):
-                raise ValueError("Failed to parse PlannerOutput from completion")
+def test_words_the_student_did_not_write_go_back_to_the_model(monkeypatch):
+    _, captured = _understand(monkeypatch, _reading(needs_syllabus=False, student_words="hi"),
+                              state={"message": "Explain this: hi"})
+    check = captured["validate"]
+    with pytest.raises(ValueError):
+        check(_reading(needs_syllabus=False, student_words="Hello there"))
+    check(_reading(needs_syllabus=False, student_words="hi"))
 
-        def with_structured_output(self, schema, **kwargs):
-            return self._Structured()
 
-        def invoke(self, _msgs):
-            class _Reply:
-                content = "Sure, I can help with that!"
-                additional_kwargs: ClassVar[dict] = {}
-                response_metadata: ClassVar[dict] = {}
-            return _Reply()
+def test_without_a_topic_filter_the_best_match_is_not_excluded(monkeypatch):
+    """"clothes catch fire" guessed "Scientific inquiry skills" and two water-cycle
+    topics; filtered to those, the fire-safety passage was never a candidate."""
+    seen = {}
 
-    config = Config.load()
-    node = build_plan(config, _Prose())
-    out = node({"pathway": "student", "message": "grade my answer: 42", "language": "en"})
+    def search(query, namespaces, **k):
+        seen["topic_ids"] = k.get("topic_ids")
+        return [_chunk("fire", 0.66)]
 
-    assert out["tasks"] == [], "a failed plan must not invent a task"
-    assert out["response"], "the student must be told the turn degraded"
+    monkeypatch.setattr(rmod, "rag_search", search)
+    rmod.retrieve("q", ["syllabus"], topic_ids=["guessed"], topic_filter="off")
+    assert seen["topic_ids"] is None
+
+
+def _placed(cid, score, order, lecture="L"):
+    return RetrievedChunk(chunk_id=cid, score=score, text=cid, lecture_id=lecture,
+                          topic_ids=[], page_from=1, page_to=1, heading_path="",
+                          language="en", order_index=order)
+
+
+def test_a_section_split_into_chunks_is_read_whole(monkeypatch):
+    """"What causes ocean waves?" found the wind chunk and never the landslide and
+    meteorite chunks two and three places after it on the same page."""
+    section = {o: _placed(f"s{o}", 0.0, o) for o in range(10, 15)}
+    monkeypatch.setattr(rmod, "get_neighbours", lambda seeds, window: [
+        section[o] for s in seeds for o in range(s.order_index - window, s.order_index + window + 1)
+        if o in section])
+    wind, far = _placed("s11", 0.72, 11), _placed("x", 0.60, 90)
+    out = rmod.with_neighbours([far, wind], anchors=1, window=2, limit=10)
+    assert [c.chunk_id for c in out] == ["s10", "s11", "s12", "s13", "x"]
+    assert out[1].score == 0.72

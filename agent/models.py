@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, computed_field, field_validator, model_va
 # The closed vocabularies, as Literal types (one source of truth). In a pydantic model a
 # Literal becomes an enum in the JSON schema, so structured output is constrained to valid
 # values. The tuples are the same values for runtime iteration.
-TaskType = Literal["explain", "summarize", "assessment", "grade", "visual"]
+TaskType = Literal["explain", "summarize", "assessment", "grade", "visual", "report"]
 QuestionType = Literal["mcq", "true_false", "short_answer", "essay"]
 Difficulty = Literal["easy", "medium", "hard"]
 GradeKind = Literal["quiz", "homework"]
@@ -45,6 +45,8 @@ class RetrievedChunk:
     subject_name: Optional[str] = None
     lesson_title: Optional[str] = None
     lesson_order: Optional[int] = None
+    subject_id: Optional[str] = None
+    order_index: Optional[int] = None
 
 
 @dataclass
@@ -93,6 +95,7 @@ class Citation(BaseModel):
     lesson_title: Optional[str] = None
     lesson_order: Optional[int] = None
     task_id: Optional[str] = None
+    chunk_id: Optional[str] = None
 
 
 class AssessmentSpec(BaseModel):
@@ -199,10 +202,37 @@ class PlannedTask(BaseModel):
     visual: Optional[VisualSpec] = None           # only on a visual task
 
 
-class PlannerOutput(BaseModel):
-    """The planner's whole reply: the tasks, plus an explicit answer-language request."""
-    output_language: Optional[str] = None
-    tasks: list[PlannedTask] = Field(default_factory=list)
+class LanguageRequest(BaseModel):
+    """What the student asked about the language they are answered in."""
+    action: Literal["none", "set", "clear"] = Field(
+        default="none",
+        description="set: the student wants replies in a particular language; clear: they "
+                    "want to go back to the default; none: they asked for neither.")
+    code: Optional[str] = Field(
+        default=None, description="The language code asked for, only with set.")
+
+
+class TurnUnderstanding(BaseModel):
+    """What one turn asks of the tutor, read against the conversation so far."""
+    student_words: str = Field(
+        default="",
+        description="The student's own words, copied exactly, leaving out any instruction "
+                    "the app put in front of them.")
+    needs_syllabus: bool = Field(
+        description="true when answering needs the student's course material; false only "
+                    "for a purely social message or one about the tutor itself.")
+    tasks: list[PlannedTask] = Field(
+        default_factory=list,
+        description="The tasks to run, at most one per type. Empty when needs_syllabus is false.")
+    continues_previous: bool = Field(
+        default=False,
+        description="true when the message asks about what the tutor's last answer covered.")
+    changes_subject: bool = Field(
+        default=False,
+        description="true when the message moves to a different school subject.")
+    message_language: Optional[str] = Field(
+        default=None, description="The language the student's own words are written in.")
+    language_request: LanguageRequest = Field(default_factory=LanguageRequest)
 
 
 class ItemDraft(BaseModel):

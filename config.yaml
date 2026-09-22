@@ -30,7 +30,9 @@ llm:
   overrides:
     extract_topics:  { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
     derive_deps:     { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
-    plan:            { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1000 }
+    understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
+    converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }
+    conversation_summary: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 1200 }
     explain:         { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     summarize:       { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     compose:         { provider: openrouter, model: google/gemini-2.5-flash-lite, max_tokens: 2000 }
@@ -76,9 +78,23 @@ vector_store:
   # production cluster from outside it: a k=8 search over eduai_chunks runs
   # 99-100ms, k=24 the same, topics the same, with one 273ms cold outlier.
   # 5s is ~18x the worst measured call: a search that slow is broken, not busy.
+  # Keep a sparse vector beside the dense one, so the lexical half of a search
+  # can FIND a chunk rather than only re-rank what the dense half returned: a
+  # name, a formula or a date a student types exactly is what an average over
+  # 1024 dimensions loses. Terms come from the embedding model's own
+  # multilingual tokenizer, so a Chinese or Hindi page is as searchable as an
+  # English one.
+  # Off until the collection is rebuilt — naming a vector in a query finds none
+  # of the points already written without a name.
+  hybrid: true
   query_timeout_seconds: 5
   upsert_batch_size: 64
-  collection: eduai_chunks
+  # The collection retrieval reads and ingestion writes. Named dense + sparse
+  # vectors cannot be added to a collection that has an unnamed one, so the
+  # hybrid index is built beside the old one and this line makes the switch —
+  # and the way back, if it has to be made.
+  collection: eduai_chunks_v2
+  source_collection: eduai_chunks   # what scripts/reembed_chunks.py copies from
   topics_collection: eduai_topics  # topic-label vectors (resolve_topics ANN); populated on re-ingest
   distance: cosine
   # Payload fields indexed for filtering; namespace is filtered on every query.
@@ -117,10 +133,45 @@ ingestion:
     max_candidates: 40           # cap candidates per topic to the K nearest (0 = no cap)
     drop_self_edges: true
     break_cycles: true
+  # Embed each chunk as "subject. lesson. Section: heading. Page n." + the text,
+  # never the text alone: a four-word chunk names no lesson, unit or page, so a
+  # query naming one has nothing in the vector to match. Measured over the 154
+  # indexed chunks against scripts/eval_retrieval.json, dense only:
+  #   off  precision@1 0.750  MRR 0.833  answerable/unanswerable gap +0.084
+  #   on   precision@1 0.833  MRR 0.882  answerable/unanswerable gap +0.107
+  # Off until the index is re-embedded — a prefixed chunk and a bare one are not
+  # comparable, so a half-converted index ranks by which half a chunk is in.
+  # Flip this, then run scripts/reembed_chunks.py --apply.
+  context_prefix: true
   normalise:                     # NFKC + tatweel strip, before chunking
     nfkc: true
     strip_tatweel: true
     collapse_whitespace: true
+  layout:
+    # Parse each page into typed blocks in reading order, and let the chunker
+    # group them, instead of splitting the page's text by length. Measured on a
+    # 40-page magazine-style textbook: 25 chunks at a 546-token median, 4% over
+    # the size limit and the copyright line welded into 25 of 25, against 52
+    # chunks at a 243-token median, none oversized and none contaminated.
+    # On. Chunks written by the two paths do not line up, so a lecture takes
+    # the new path only when it is next ingested; the 11 already indexed keep
+    # the chunks they have until someone re-ingests them deliberately.
+    enabled: true
+    # Which side of a column a page is read from. Detected per page from what
+    # the page is written in, because one direction for a whole corpus reads
+    # every Latin, Cyrillic and CJK page backwards the moment the corpus stops
+    # being Arabic — and a single book can hold both. Set detect_direction
+    # false to force the value below for every page.
+    detect_direction: true
+    reading_direction: ltr        # used only when detect_direction is false
+    cache: true                   # store what a model read, keyed on model + prompt digest
+  # How much of a lesson has to be unreadable before it is held back from
+  # retrieval. A share, not a count: any-page-failed does not scale. A 371-page
+  # textbook read into 545 good chunks answered nothing, because one page came
+  # back unreadable and rag_search only reads lectures marked ready — while a
+  # three-page lesson with the same one bad page went through. A share also
+  # needs no special case for a short lesson: one page of three is a third of it.
+  needs_review_ratio: 0.05
   ocr:
     min_chars_per_page: 40       # fewer characters than this: treat page as scanned
     render_dpi: 300
@@ -159,28 +210,12 @@ language:
   min_chars: 12
   min_confidence: 0.55
   min_margin: 0.15
-  arabizi:
-    # Arabic typed in Latin letters ("momken", "a7seb") defeats every detector
-    # measured. Set hint_to: ar to route it to Arabic instead of falling back.
-    hint_to: null
   verify:
     enabled: true
     min_confidence: 0.60
     answer_min_chars: 40
-  sticky:
-    # "reply in Arabic from now on" is an instruction, not a preference: it is
-    # remembered against the session so the next turn still honours it.
-    enabled: true
-    ttl_hours: 720             # a month; an older conversation starts fresh
-    acknowledge: true          # a message that is only an instruction is answered,
-                               # not searched for in the syllabus
-    # This read sits at the front of every turn, so it gets its own limits: a
-    # database that hangs rather than refuses must not stall the service.
-    connect_timeout_seconds: 2
-    statement_timeout_ms: 500
-    failure_threshold: 3       # consecutive failures before the store is paused
-    breaker_seconds: 30
   quiz_single_language: true   # questions follow the subject; prose follows the student
+  reply_follows: subject
 
 database:
   # Postgres has no default timeout of its own: an unresponsive host holds the
@@ -192,6 +227,33 @@ database:
   # several times the size, narrow enough that a hang is an error, not a wait.
   connect_timeout_seconds: 5
   statement_timeout_ms: 5000
+
+  # Connections are pooled and reused. Opening one costs a 486ms handshake
+  # against a read that takes 65ms, so an unpooled turn spent 86% of its
+  # database time saying hello — and two overlapping turns opened two.
+  #
+  # These come from a sweep, 8 concurrent reads against production, ms:
+  #
+  #                              median   p95   worst
+  #   a connection per call         650   719     723
+  #   pooled min=0, checked         243   474     603
+  #   pooled min=4, unchecked       177   350     408
+  #   pooled min=8, checked         235   239     246   <- this
+  #
+  # The unchecked pool has the better median and a tail three times as wide.
+  # Predictable beats fast here: an intermittent 500 is what sent us looking.
+  # min == max, so the pool is full and a burst never pays for a handshake;
+  # a 9th caller waits a bounded pool_wait_seconds rather than opening a 9th.
+  #
+  # The pool is built the first time something asks for a connection, never at
+  # import — /health and /ready touch no database, so a probe cannot build it.
+  pool_size: 8                 # per process; ECS runs one pool per task
+  pool_wait_seconds: 5         # waiting for a free connection is a bounded error, not a hang
+  pool_max_lifetime_seconds: 900   # recycle, so a connection the server has since dropped is not held forever
+  # One round trip per checkout to prove the connection is alive. It is the
+  # difference between p95 239ms and p95 350ms, and it is what stops a
+  # connection the server dropped from failing inside a student's turn.
+  pool_check_connections: true
 
 agent:
   # Retrieval is two-stage. A dense search finds candidates; BM25 over those same
@@ -213,9 +275,57 @@ agent:
                                # recover what the dense stage never returned
     rrf_k: 60                  # Cormack et al.'s published constant
 
+  scope:
+    # When the student has selected one lesson, the turn answers from that lesson
+    # or refuses by name. The similarity floor cannot make that call: filtered to
+    # a single lesson there is nothing to lose to, so its best chunk clears the
+    # floor whatever was asked — "explain the Youth poem" scores 0.503 against the
+    # Jabir lesson, against 0.472 for "who was Jabir ibn Hayyan".
+    #
+    # The rest of the corpus is what separates them. Measured over 15 questions
+    # across three lessons, as the scoped best score over the unscoped best:
+    #   in-scope      0.952 - 1.000
+    #   out-of-scope  0.324 - 0.872
+    # At 0.90 all 7 in-scope questions are answered and all 8 out-of-scope ones
+    # refused. Costs one extra vector search (~100ms) and no model call.
+    #
+    # It cannot catch a question the corpus answers nowhere: "اشرح لي الطرح" is
+    # answered inside every Arabic lesson because the only subtraction material
+    # indexed is two English paragraphs, so no lesson answers it better and the
+    # ratio is 1.0. That is a gap in the corpus, not in the rule — it closes when
+    # the real curriculum is indexed. Re-measure then.
+    relevance_ratio: 0.90
+
+  conversation:
+    store: postgres
+    ttl_hours: 720
+    recent_turns: 6
+    fold_after: 12
+    history_chars: 6000
+    reply_chars: 1500
+    connect_timeout_seconds: 2
+    statement_timeout_ms: 500
+    failure_threshold: 3
+    breaker_seconds: 30
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
-  min_score: 0.44            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
+  min_score: 0.47            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
+                             # Re-swept after the context prefix went on: embedding a chunk
+                             # with its subject, lesson, section and page lifts every score a
+                             # little, the unanswerable ones with the rest, and 0.44 stopped
+                             # separating them — "اشرح لي قانون نيوتن الأول" rose from 0.434 to
+                             # 0.444 and was answered from a lesson about electronic games.
+                             # Over the same 12 answerable and 10 unanswerable questions,
+                             # against the dense+sparse index:
+                             #   0.44 -> 11/12 answered,  8/10 declined
+                             #   0.45 -> 11/12 answered,  9/10 declined
+                             #   0.46 -> 11/12 answered, 10/10 declined   <- the knee
+                             #   0.47 -> 11/12 answered, 10/10 declined   <- picked, for margin
+                             #   0.52 -> 11/12 answered, 10/10 declined
+                             # 0.47 sits 0.02 above the best unanswerable (0.450) and 0.03
+                             # below the worst answerable (0.500), rather than on the knee.
+                             # The sweep below is the one that set 0.44, kept because it is
+                             # why the floor is not 0.50:
                              # 0.50 was swept against same-language questions only, and a
                              # cross-lingual question scores systematically lower: the same
                              # lesson answers "ماذا اخترع جابر بن حيان؟" at 0.600 and "what did
@@ -241,7 +351,7 @@ agent:
                              # Only this low because matching folds Arabic (shared/matching.py)
                              # and retrieval fuses a lexical rank (shared/lexical.py).
                              # Re-sweep when the real curriculum is indexed.
-  topic_filter: soft         # explain/summarize/report: soft = a topic-filtered miss retries unscoped
+  topic_filter: "off"        # explain/summarize/report: off = rank by similarity alone; soft = a topic-filtered miss retries unscoped
                              # (a wrong topic guess must not silently exclude the material); hard = strict
                              # (assessment stays hard — it wants one topic per question)
   resolve_topics_qdrant: true   # topic resolution via the Qdrant topics collection.
@@ -252,13 +362,10 @@ agent:
                                 # not. Populate the collection with scripts/reembed_chunks.py
                                 # before turning this on.
   prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
-  intent:
-    # Deciding whether a turn needs the syllabus at all. A greeting used to be
-    # planned as an explain task and searched for in the textbook.
-    enabled: true
-    max_words: 6             # longer than this is a question whatever it resembles
-    similarity: 0.72         # cosine against the seed utterances, when the phrase
-                             # pass finds nothing
+  expand:
+    anchors: 3
+    window: 2
+    context_limit: 14
   show_prereqs: true         # append "you should know X first" to an answer. The labels
                              # come from topic extraction at ingest, so the line is only as
                              # good as those are — turn it off if they read as noise.
@@ -360,6 +467,12 @@ api:
   request_timeout: 120         # seconds a caller should allow for a chat turn
   docs_enabled: true           # OpenAPI + /docs; off in production
   cors_origins: []             # the platform backend calls this service, not a browser
+  homework:
+    # A phone photo of one page. Above this the upload is refused with a size
+    # error rather than spending a vision call on it: a 12 MP camera JPEG is
+    # around 4 MB, and anything much larger is a scan of a whole booklet, which
+    # is an ingestion job rather than a homework question.
+    max_upload_bytes: 8388608
   ingestion:
     max_workers: 2             # concurrent pipeline runs (each is minutes long and heavy)
     job_retention: 500         # in-process job records kept for status polling
@@ -372,6 +485,8 @@ logging:
   format: json
   third_party_level: WARNING   # cap HTTP/LLM client loggers so a DEBUG app level
                                # never logs request/response bodies (prompts, PII)
+  file: null
+  file_max_bytes: 10000000
 
 # Overlays merged over the base, selected by APP_ENV.
 environments:

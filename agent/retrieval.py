@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
-from .tools import get_topic_chunks, get_topic_deps, rag_search
+from .tools import get_neighbours, get_topic_deps, rag_search
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,8 @@ def retrieve(
         # nothing and the answer declines, rather than citing unrelated material.
         return [c for c in chunks if c.score >= min_score] if min_score else chunks
 
+    if topic_filter == "off":
+        topic_ids = None
     kept = _search(topic_ids)
     # Soft topic scoping: if the topic-filtered pass grounded NOTHING, the topic guess was
     # likely wrong/partial and hard-filtered out the right chunks (invariant 8 in reverse).
@@ -62,6 +64,77 @@ def retrieve(
     return kept
 
 
+def answers_within_scope(
+    query: str,
+    namespaces: list[str],
+    scoped_best: float,
+    *,
+    subject_id: str | None = None,
+    ratio: float,
+) -> bool:
+    """Whether the selected lesson is where this question is actually answered.
+
+    Inside one lesson a similarity floor cannot tell a question the lesson
+    covers from one it does not: with the rest of the corpus filtered out there
+    is nothing left to lose to, so the lesson's own best chunk clears the floor
+    whatever was asked. Both "who was Jabir ibn Hayyan" and "explain the Youth
+    poem" score around 0.50 against the Jabir lesson.
+
+    What separates them is the rest of the corpus. A question the lesson owns
+    scores the same with or without the filter; a question belonging to another
+    lesson scores markedly worse once that lesson is excluded.
+    """
+    if scoped_best <= 0:
+        return False
+    unscoped = rag_search(query or "", namespaces, k=1, subject_id=subject_id)
+    if not unscoped:
+        return True
+    return scoped_best / unscoped[0].score >= ratio
+
+
+def with_neighbours(
+    chunks: list[RetrievedChunk],
+    *,
+    anchors: int,
+    window: int,
+    limit: int,
+) -> list[RetrievedChunk]:
+    """Search small, read big: the best matches, each with the rest of its section.
+
+    A layout chunker cuts a section at every sub-heading and every page, so
+    "what causes ocean waves?" found the chunk about wind and never the ones
+    about landslides and meteorites, three lines further down the same page.
+    Their words match the question poorly; their place next to the chunk that
+    matched it well is what says they belong to the answer. The ``anchors``
+    closest matches by meaning are read in their lesson's order with ``window``
+    chunks either side, then the remaining matches, up to ``limit``. Closeness
+    is the dense score, not the fused rank: a question's function words lift
+    whole lessons written in its language up the fused order.
+    """
+    if not chunks or anchors < 1 or window < 1:
+        return chunks
+    seeds = sorted(chunks, key=lambda c: c.score, reverse=True)[:anchors]
+    around = get_neighbours(seeds, window=window)
+    scored = {c.chunk_id: c for c in chunks}
+    out: list[RetrievedChunk] = []
+    seen: set[str] = set()
+    for seed in seeds:
+        run = [c for c in around
+               if c.lecture_id == seed.lecture_id and seed.order_index is not None
+               and abs(c.order_index - seed.order_index) <= window]
+        for chunk in run or [seed]:
+            if chunk.chunk_id not in seen:
+                seen.add(chunk.chunk_id)
+                out.append(scored.get(chunk.chunk_id, chunk))
+    for chunk in chunks:
+        if chunk.chunk_id not in seen:
+            seen.add(chunk.chunk_id)
+            out.append(chunk)
+    logger.info("retrieve with neighbours", extra={
+        "matched": len(chunks), "added": len(out) - len(chunks), "kept": min(len(out), limit)})
+    return out[:limit]
+
+
 def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
     """``"Subtraction Part 2 0.715"`` per chunk — what matched, and how well."""
     return [
@@ -74,6 +147,10 @@ def describe(chunks: Sequence[RetrievedChunk], limit: int = 5) -> list[str]:
 # silently fall back to "keep everything". config.yaml agent.min_score is the
 # source; this is the safety net when a payload omits it.
 DEFAULT_MIN_SCORE = 0.44
+
+# The shipped ratio, repeated here so a subgraph reached without one does not
+# silently fall back to answering everything. config.yaml is the source.
+DEFAULT_SCOPE_RATIO = 0.90
 
 DEFAULT_MAX_PREREQS = 5
 
@@ -88,30 +165,25 @@ _STRENGTH_RANK = {"required": 0, "related": 1}
 
 def resolve_prereqs(
     topic_ids: list[str],
-    namespaces: list[str],
     *,
     depth: int = 2,
     limit: int = DEFAULT_MAX_PREREQS,
-) -> tuple[list[PrereqTopic], list[RetrievedChunk]]:
-    """Prerequisite topics for ``topic_ids`` and the chunks that teach them.
+) -> list[PrereqTopic]:
+    """Prerequisite topics for ``topic_ids``, nearest and most required first.
 
     The walk fans out: two hops over a well-connected subject reaches dozens of
-    topics, each contributing chunks that are fetched by id and so carry no
-    relevance score to filter on. Unbounded, prerequisite material outweighed the
-    lesson the student actually asked about. ``limit`` keeps the nearest few.
+    topics. ``limit`` keeps the nearest few. Only the topics are returned; their
+    passages were once fetched by position in the lesson and handed to the model
+    as citable context, which is how a book's title page came to be cited.
     """
     if not topic_ids:
-        return [], []
+        return []
     found = get_topic_deps(topic_ids, depth=depth)
     prereqs = sorted(
         found, key=lambda p: (p.depth, _STRENGTH_RANK.get(p.strength, 9), p.label)
     )[:limit] if limit else found
-    prereq_ids = [p.topic_id for p in prereqs]
-    prereq_chunks = get_topic_chunks(prereq_ids, namespaces) if prereq_ids else []
-    logger.info("resolve_prereqs", extra={
-        "found": len(found), "prereqs": len(prereqs),
-        "prereq_chunks": len(prereq_chunks)})
-    return prereqs, prereq_chunks
+    logger.info("resolve_prereqs", extra={"found": len(found), "prereqs": len(prereqs)})
+    return prereqs
 
 
 def cite(chunk: RetrievedChunk, n: int) -> Citation:
@@ -124,6 +196,7 @@ def cite(chunk: RetrievedChunk, n: int) -> Citation:
         subject_name=chunk.subject_name,
         lesson_title=chunk.lesson_title,
         lesson_order=chunk.lesson_order,
+        chunk_id=chunk.chunk_id,
     )
 
 

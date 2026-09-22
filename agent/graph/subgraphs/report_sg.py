@@ -22,7 +22,6 @@ from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 
-from shared.language import translate
 
 from ...prompts import REPORT_STUDENT_PROMPT
 from ...tools import get_mastery, get_mastery_trend, get_topic_deps, get_topic_labels
@@ -34,10 +33,6 @@ _SUPPORTED = {"student_progress"}
 # TODO (Sprint 3): build class_analytics / at_risk / parent / homework_batch — each needs a
 # classroom roster or parent->student linkage and the get_class_analytics / get_at_risk tools.
 _SHELLED = {"class_analytics", "at_risk", "parent", "homework_batch"}
-
-# No-weak-topics and no-data notes (the LLM is only used when there IS something to explain).
-
-
 
 
 class ReportState(TypedDict, total=False):
@@ -145,19 +140,18 @@ def _weak_block(weak_topics: list[dict]) -> str:
         for w in weak_topics) or "- (none)"
 
 
-def _trend_chart(trend: dict, language: str) -> dict | None:
+def _trend_chart(trend: dict) -> dict | None:
     """A line chart of mastery score over recent events, or None when too few points.
     Data-tied — the values are the real graded scores, never invented."""
     events = trend.get("events") or []
     if len(events) < 2:
         return None
     values = [round(float(e.get("score") or 0.0), 3) for e in events]
-    title = translate("report.chart_title", language)
     return {
         "kind": "chart",
-        "description": title,
-        "params": {"type": "line", "title": title,
-                   "x_label": "", "y_label": "score",
+        "description": "",
+        "params": {"type": "line", "title": "",
+                   "x_label": "", "y_label": "",
                    "labels": [str(i + 1) for i in range(len(values))],
                    "series": [{"name": "mastery", "values": values}]},
     }
@@ -171,14 +165,10 @@ def _build_narrate(llm, config):
         root_cause = state.get("root_cause")
         degraded = False
 
-        if not state.get("weak_ids") and not (trend.get("events")):
-            narrative = translate("report.no_data", language)
-        elif not weak_topics:
-            narrative = translate("report.all_good", language)
-        elif llm is None:                       # dev/test: no key -> deterministic stub
-            focus = (root_cause or {}).get("label") or weak_topics[0].get("label") or ""
-            narrative = (translate("report.focus_next", language, focus=focus) if focus
-                         else translate("report.all_good", language))
+        if llm is None:
+            focus = (root_cause or {}).get("label") or (
+                weak_topics[0].get("label") if weak_topics else "")
+            narrative = f"🎯 {focus}" if focus else ("✓" if trend.get("events") else "")
         else:
             prompt_text = REPORT_STUDENT_PROMPT.render(language=language,
                 weak_block=_weak_block(weak_topics),
@@ -190,7 +180,7 @@ def _build_narrate(llm, config):
                     raise ValueError("empty narrative")
             except Exception:
                 logger.error("report narrate failed; degrading", exc_info=True)
-                narrative = translate("common.degraded", language)
+                narrative = ""
                 degraded = True
 
         result = {
@@ -201,7 +191,7 @@ def _build_narrate(llm, config):
             "degraded": degraded,
         }
         out: dict[str, Any] = {"result": result}
-        chart = _trend_chart(trend, language)
+        chart = _trend_chart(trend)
         if chart:
             out["visual_spec"] = chart
         logger.info("report narrate", extra={

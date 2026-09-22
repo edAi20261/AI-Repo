@@ -1,0 +1,201 @@
+{
+  "lecture_id": "aaaaaaaa-0000-4000-8000-00000000f001",
+  "cases": [
+    {
+      "question": "Who is Michael DiSpezio and what is his background in science education?",
+      "answer": "Michael DiSpezio is a renaissance educator who moved from the research laboratory of a Nobel Prize winner to the K–12 science classroom, has authored or co-authored numerous textbooks and written more than 25 trade books, and has developed supplementary material for organizations such as PBS Scientific American Frontiers, Discover magazine, and the Discovery Channel.",
+      "chunk_id": "e64501b9-d32c-44fe-97cb-8dd9cfd90605",
+      "page": 2,
+      "heading": "fusion [FYOO • zhuhn] a combination of two"
+    },
+    {
+      "question": "What are some ways my school can conserve water?",
+      "answer": "You can make a list of five ways in which the school can conserve water.",
+      "chunk_id": "92eaff6b-af90-4fc2-b69a-cde786b5f5e2",
+      "page": 17,
+      "heading": "3 Make a Plan"
+    },
+    {
+      "question": "What happens to ice as it warms up?",
+      "answer": "The ice absorbs energy from the surroundings when it melts.",
+      "chunk_id": "f1ff5372-b6fc-499a-988a-f27afd1bb0a0",
+      "page": 31,
+      "heading": "Engage Your Brain"
+    },
+    {
+      "question": "What is the role of sluice gates in a hydroelectric dam system?",
+      "answer": "The sluice gates act as the control in this system by being opened to allow more water to flow when more electricity is needed and closed when less electricity is required.",
+      "chunk_id": "ea9de61a-b78a-410f-93e1-7b1a56fa6f6f",
+      "page": 45,
+      "heading": "Think Outside the Book Inquiry"
+    },
+    {
+      "question": "Where is groundwater found?",
+      "answer": "Groundwater is found in pore spaces in rocks and sediment below Earth’s surface.",
+      "chunk_id": "f942807f-b842-4214-92fc-7b20375d1438",
+      "page": 58,
+      "heading": "and Groundwater"
+    },
+    {
+      "question": "What are the three temperature layers of the ocean by depth, and how does temperature change in each?",
+      "answer": "The top layer is the surface zone, which is the warmest and heated by the sun; the next is the thermocline, where temperature drops with increased depth faster than in other layers; the deepest layer is the deep zone, which is the coldest.",
+      "chunk_id": "404ff419-87b5-4cc1-90e9-74fcafbface1",
+      "page": 73,
+      "heading": "serve as nurseries for fish and other sea life."
+    },
+    {
+      "question": "What is the difference between the crest and the trough of a wave?",
+      "answer": "A crest is the highest point of a wave, and a trough is the lowest point of a wave.",
+      "chunk_id": "a6a5449a-4ed9-440c-9ad3-677ab4b47f94",
+      "page": 88,
+      "heading": "Vocabulary Terms"
+    },
+    {
+      "question": "What caused the iceberg off the coast of Newfoundland to drift south?",
+      "answer": "It broke off an Arctic ice sheet and drifted south on ocean surface currents.",
+      "chunk_id": "66b9d01e-db42-4b04-808d-67d0f0f2560e",
+      "page": 102,
+      "heading": "Ocean Waves"
+    },
+    {
+      "question": "What do ocean currents transport around Earth?",
+      "answer": "Along with water, ocean currents also transport dissolved solids, dissolved gases, and energy around Earth.",
+      "chunk_id": "bceebcec-aa31-4a38-8dfe-f1977001484d",
+      "page": 112,
+      "heading": "How do convection currents transfer energy?"
+    },
+    {
+      "question": "What are the main gases that make up Earth's atmosphere and their percentages?",
+      "answer": "The atmosphere is made mostly of nitrogen gas (78%) and oxygen gas (21%), with the other 1% being other gases.",
+      "chunk_id": "47ec6696-7a6d-4ad5-be25-501d0d7810c2",
+      "page": 128,
+      "heading": "Vocabulary Terms"
+    },
+    {
+      "question": "What is the direction of energy transfer when two objects at different temperatures come into contact?",
+      "answer": "The direction of this energy transfer is always from the object with the higher temperature to the object with the lower temperature.",
+      "chunk_id": "c59a6db9-a32f-42f6-b74a-38381b45db74",
+      "page": 142,
+      "heading": "Visualize It!"
+    },
+    {
+      "question": "What is the main difference between a horizontal-axis wind turbine (HAWT) and a vertical-axis wind turbine (VAWT)?",
+      "answer": "A horizontal-axis wind turbine (HAWT) has a main axle that is horizontal and a generator at the top of a tall tower, while a vertical-axis wind turbine (VAWT) has a main axle that is vertical and a generator at ground level.",
+      "chunk_id": "caa86948-fc4b-4d3c-b07b-63c38c5e46a2",
+      "page": 155,
+      "heading": "Key Concepts"
+    },
+    {
+      "question": "What causes valley breezes and mountain breezes in areas with mountains and valleys?",
+      "answer": "During the day, the sun warms the air along the mountain slopes faster than the air in the valleys, creating lower pressure near the mountain tops and causing a valley breeze that flows up the slopes; at night, the air along the mountain slopes cools and moves down into the valley, creating a mountain breeze.",
+      "chunk_id": "f514e411-942c-4a0f-832a-b5c73488ad95",
+      "page": 167,
+      "heading": "Think Outside the Book Inquiry"
+    },
+    {
+      "question": "What are weather stations used for?",
+      "answer": "Weather stations placed all around the world allow scientists to measure the elements, or separate parts, of weather.",
+      "chunk_id": "58bc1c3f-5247-4c3a-aa29-934538d36a16",
+      "page": 180,
+      "heading": "3 Propose and Apply Improvements"
+    },
+    {
+      "question": "What are the vocabulary terms listed in the passage for the cloud formation lab?",
+      "answer": "cloud, dew point, fog",
+      "chunk_id": "43d3b3d4-2373-4ab7-a7ce-0afe7dfbd579",
+      "page": 193,
+      "heading": "Engage Your Brain"
+    },
+    {
+      "question": "What is condensed water vapor that forms very close to Earth’s surface called?",
+      "answer": "Condensed water vapor that forms very close to Earth’s surface is called fog.",
+      "chunk_id": "d6b3f091-581c-4ce3-a9af-5c97aafb3d90",
+      "page": 203,
+      "heading": "In 1976, Viking Orbiter 1 took this photo of water-filled clouds that had formed over a large system of canyons just after the Martian sunrise."
+    },
+    {
+      "question": "How do ocean currents affect temperatures in different parts of the world?",
+      "answer": "The flow of surface currents moves energy as heat from one part of Earth to another, and the energy from the warm currents is transferred to colder water or to the atmosphere, changing local temperatures and humidity.",
+      "chunk_id": "d6895e2b-9e0b-44db-98be-30dbfa01dbb5",
+      "page": 220,
+      "heading": "How do ocean currents influence weather?"
+    },
+    {
+      "question": "Why are tornadoes so dangerous?",
+      "answer": "The danger of a tornado is mainly due to the high speed of its winds.",
+      "chunk_id": "fba8ba18-2a58-4cac-9b0f-e475766535d0",
+      "page": 233,
+      "heading": "Think Outside the Book Inquiry"
+    },
+    {
+      "question": "How do meteorologists use radar to find out about storms?",
+      "answer": "Radar works by bouncing radio waves off precipitation; the stronger the signal that is returned to the radar, the heavier the precipitation is, and the longer it takes for the signal to return, the farther away the precipitation is.",
+      "chunk_id": "aa54dbf8-b0e9-4f83-9b29-fbcd0b3e66a3",
+      "page": 246,
+      "heading": "What elements of weather are forecast?"
+    },
+    {
+      "question": "What does the word 'topography' mean?",
+      "answer": "The topography of the area is varied, because there are hills, valleys, and flat plains all within a few square miles.",
+      "chunk_id": "64585637-df94-4873-a5e9-c6d1fbd1edfe",
+      "page": 261,
+      "heading": "Vocabulary Terms"
+    },
+    {
+      "question": "How does climate change affect polar bears in the Arctic?",
+      "answer": "With less time on the ice to hunt for seals, polar bears are struggling to survive.",
+      "chunk_id": "2257023f-47f6-409f-ac33-cc8411754868",
+      "page": 276,
+      "heading": "Key Concepts"
+    },
+    {
+      "question": "How does global warming affect sea levels and coastal cities?",
+      "answer": "As temperatures increase and ice on land melts, global sea level rises because water flows into the ocean, which is expected to increase flooding in coastal areas, including cities like New York City, Shanghai, and Mumbai.",
+      "chunk_id": "5d3e20da-0774-430a-8194-8b87979f6cfd",
+      "page": 284,
+      "heading": "By Burning Fossil Fuels"
+    },
+    {
+      "question": "What conclusion can be made about the level of carbon dioxide in the atmosphere between 1960 and 2000 based on the graph?",
+      "answer": "There was an overall increase in the level of carbon dioxide in the atmosphere between 1960 and 2000.",
+      "chunk_id": "f9349677-fcd2-46e1-9c6c-6bbb15750643",
+      "page": 299,
+      "heading": "Key Concepts"
+    },
+    {
+      "question": "What should I do if I spill liquid on my computer?",
+      "answer": "If a liquid spills on a device, unplug it and switch it off immediately, remove the battery and wipe up as much of the liquid inside the device as possible. Don’t switch the device back on until it is completely dry.",
+      "chunk_id": "41349464-a206-4640-b732-2af7a8aabe82",
+      "page": 309,
+      "heading": "Handle and maintain computers properly"
+    },
+    {
+      "question": "What does the atomic number of an atom represent?",
+      "answer": "The atomic number is the number of protons in the nucleus of an atom.",
+      "chunk_id": "c466f3be-dbc0-482a-af16-9f53408d620c",
+      "page": 324,
+      "heading": "divided and still be the same element. An element,"
+    },
+    {
+      "question": "What do engineers do if their prototype does not work well during the technology design process?",
+      "answer": "If their prototype does not work well, engineers improve the prototype to make it better.",
+      "chunk_id": "d6231988-cfda-44f9-ab96-b5ab4e792066",
+      "page": 333,
+      "heading": "Main Idea Web"
+    },
+    {
+      "question": "Why are graphs useful when analyzing data from an experiment?",
+      "answer": "Graphs are useful for understanding relationships in the data and for communicating the results of your experiment.",
+      "chunk_id": "de0b43a6-20e8-42b0-b598-8a3b8438ff6f",
+      "page": 343,
+      "heading": "Experimental Group Control Group"
+    },
+    {
+      "question": "How do you find 85% of 40?",
+      "answer": "Rewrite 85% as 0.85, then multiply 0.85 by 40 to get 34.",
+      "chunk_id": "3a2be4e6-39ac-4814-a1e2-a5d9a3b06328",
+      "page": 353,
+      "heading": "plant’s rate of growth was 6 cm"
+    }
+  ]
+}

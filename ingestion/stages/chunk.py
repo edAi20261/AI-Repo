@@ -8,9 +8,11 @@ the elements the extract stage tagged — never re-reads the PDF.
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 
 from ..context import PipelineContext
+from ..layout.bridge import chunks_for, parsed_pages
 from ..state import Chunk, Element, IngestionState
 from ..utils.tokens import count_tokens
 
@@ -22,12 +24,57 @@ _SENTENCE_ENDS = ".!?؟\n"
 # display-side strip as well). Latin + Arabic comma family.
 _HEADING_TRAIL = " \t،,;:."
 
+logger = logging.getLogger(__name__)
+
+
+def _layout_chunks(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    """Chunks from the layout parser: whole blocks, never split text.
+
+    The length-based chunker below stays for lessons that arrive as body text
+    rather than a file, and for any document the tier router sends to a parser
+    that is not wired yet.
+    """
+    pages = parsed_pages(state["parsed_pages"])
+    chunks = chunks_for(
+        pages,
+        lecture_id=state["lecture_id"],
+        language=state.get("language_hint") or ctx.config.get("language.default", "en"),
+        version=state.get("version", 1),
+        namespace=state.get("namespace", "syllabus"),
+        subject_id=state.get("subject_id"),
+        grade=state.get("grade"),
+    )
+    state["chunks"] = chunks
+    state.setdefault("stats", {})["chunk"] = {
+        "chunks": len(chunks),
+        "pages_parsed": len(pages),
+        "avg_tokens": round(
+            sum(count_tokens(c.text) for c in chunks) / len(chunks), 1) if chunks else 0,
+        "source": "layout",
+    }
+    return state
+
 
 def _clean_heading(text: str) -> str:
     return text.rstrip(_HEADING_TRAIL)
 
 
 def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    if state.get("parsed_pages"):
+        state = _layout_chunks(state, ctx)
+        if state["chunks"] or not state.get("elements"):
+            return state
+        # The parser read the pages and found nothing that can become a chunk.
+        # A maths book is the case that shows it: every page is routed to
+        # vision and its text layer deliberately dropped, but the layout parser
+        # still reads that empty layer, and its zero chunks were taken over the
+        # transcription the vision route had already produced. An empty lesson
+        # and a lesson nobody could parse must not look the same.
+        logger.warning(
+            "layout parsed %d page(s) into no chunks; chunking the extracted "
+            "elements instead", len(state["parsed_pages"]),
+            extra={"lecture_id": state.get("lecture_id")})
+
     cfg = ctx.config.get("ingestion.chunk", {})
     chunker = _Chunker(
         state=state,
@@ -41,10 +88,8 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     state.setdefault("stats", {})["chunk"] = {
         "chunks": len(chunks),
         "avg_tokens": round(
-            sum(count_tokens(c.text) for c in chunks) / len(chunks), 1
-        )
-        if chunks
-        else 0,
+            sum(count_tokens(c.text) for c in chunks) / len(chunks), 1) if chunks else 0,
+        "source": "length",
     }
     return state
 

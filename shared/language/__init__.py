@@ -4,15 +4,8 @@ One resolver decides a turn's language once, from the strongest evidence
 available, and records why. Everything downstream reads that decision.
 """
 
-from .catalog import translate
 from .detect import Detection, detect, is_trustworthy
 from .directive import content_directive, language_directive, name_of
-from .request import (
-    about_a_language,
-    clear_request,
-    explicit_request,
-    language_instruction_only,
-)
 from .resolver import DEFAULT_LANGUAGE, DEFAULT_SUPPORTED, LanguagePolicy
 from .script import arabic_ratio, classify, looks_arabizi, written_in
 from .types import (
@@ -37,20 +30,15 @@ __all__ = [
     "LanguagePolicy",
     "LanguageSource",
     "Script",
-    "about_a_language",
     "arabic_ratio",
     "classify",
-    "clear_request",
     "content_directive",
     "detect",
-    "explicit_request",
     "is_trustworthy",
     "language_directive",
-    "language_instruction_only",
     "looks_arabizi",
     "name_of",
     "prose_of",
-    "translate",
     "verify_answer",
     "written_in",
 ]

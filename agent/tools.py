@@ -25,6 +25,8 @@ from shared.embeddings import get_embedder
 logger = logging.getLogger(__name__)
 
 from .mastery import Mastery, MasteryParams, status
+from shared.matching import NOT_CONTENT, chunk_kind
+from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR, has_named_vectors
 from .models import PrereqTopic, ResolvedTopic, RetrievedChunk
 
 __all__ = [
@@ -36,6 +38,7 @@ __all__ = [
     "get_item",
     "get_mastery",
     "get_mastery_rollup",
+    "get_neighbours",
     "get_question_bank",
     "get_topic_chunks",
     "get_topic_deps",
@@ -126,25 +129,19 @@ def rag_search(
     # A contents page lists every lesson title, so it beats the lessons
     # themselves whenever a student names one. It can never be an answer.
     must_not = [models.FieldCondition(
-        key="chunk_kind", match=models.MatchValue(value="contents"))]
+        key="chunk_kind", match=models.MatchAny(any=list(NOT_CONTENT)))]
 
     collection = config.vector_store.get("collection", "eduai_chunks")
-    client = query_client(config)
     # Over-fetch for two reasons: ready_only may drop hits, and the lexical
     # stage can only reorder what the dense stage brought back.
     fetch = k * 3 if ready_only else k
     if config.get("agent.hybrid.enabled"):
         fetch = max(fetch, config.get("agent.hybrid.candidates"))
-    hits = client.query_points(
-        collection, query=vector,
-        query_filter=models.Filter(must=must, must_not=must_not),
-        limit=fetch, with_payload=True,
-    ).points
-    if not hits:
+    scores, meta = _candidate_scores(
+        query, [models.Filter(must=must, must_not=must_not)], config,
+        collection=collection, limit=fetch, vector=vector, with_meta=True)
+    if not scores:
         return []
-    scores = {str(h.id): h.score for h in hits}
-    # Readable citation labels ride the payload; keyed by chunk_id (== point id).
-    meta = {str(h.id): (h.payload or {}) for h in hits}
 
     ready_clause = ""
     if ready_only:
@@ -152,7 +149,7 @@ def rag_search(
                         "ai.lecture_ingestion WHERE status = 'ready')")
     sql = (
         "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
-        "c.lecture_id::text, c.language, c.topic_ids "
+        "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
         "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
     )
 
@@ -169,6 +166,8 @@ def rag_search(
             subject_name=meta.get(r[0], {}).get("subject_name"),
             lesson_title=meta.get(r[0], {}).get("lesson_title"),
             lesson_order=meta.get(r[0], {}).get("lesson_order"),
+            subject_id=meta.get(r[0], {}).get("subject_id"),
+            order_index=r[8],
         )
         for r in rows
     ]
@@ -176,6 +175,86 @@ def rag_search(
     if config.get("agent.hybrid.enabled"):
         out = _fuse_lexically(query, out, config)
     return out[:k]
+
+
+
+def _candidate_scores(
+    query: str,
+    filters: list,
+    config: Config,
+    *,
+    collection: str,
+    limit: int,
+    vector: list[float] | None = None,
+    with_meta: bool = False,
+):
+    """Candidate chunk ids with their DENSE cosine, however they were found.
+
+    A collection holding both vectors is searched twice: once by meaning, once
+    by the words themselves. The second is what earns the round trip — a chunk
+    the dense vector averaged away was never a candidate before, so no amount of
+    re-ranking could surface it. A student typing a name, a formula or a date is
+    exactly that case.
+
+    What comes back is always a similarity. ``agent.min_score`` is measured
+    against one, and a fused rank score in its place would read as "everything
+    clears the floor" — the tutor would stop declining what the syllabus cannot
+    answer. So a chunk only the sparse half found is scored by asking the dense
+    half about it, not by its sparse score.
+    """
+    client = query_client(config)
+    query_filter = filters[0] if filters else None
+    vector = vector if vector is not None else get_embedder(config).embed_query(query)
+    hybrid = has_named_vectors(client, collection)
+
+    # A collection with named vectors has to be told which one to search; the
+    # collection we have today has one unnamed vector, and naming it finds
+    # nothing. Same call, one argument apart.
+    named = {"using": DENSE_VECTOR} if hybrid else {}
+    dense = client.query_points(
+        collection, query=vector, query_filter=query_filter,
+        limit=limit, with_payload=True, **named,
+    ).points
+    scores = {str(h.id): h.score for h in dense}
+    meta = {str(h.id): (h.payload or {}) for h in dense}
+
+    if hybrid:
+        terms = get_embedder(config).embed_sparse([query])[0]
+        if terms:
+            scores, meta = _add_lexical_candidates(
+                client, collection, terms, vector, query_filter, limit,
+                scores, meta, config)
+
+    return (scores, meta) if with_meta else scores
+
+
+def _add_lexical_candidates(
+    client, collection, terms, vector, query_filter, limit, scores, meta, config,
+):
+    """Chunks the words found, scored by meaning so the floor still applies."""
+    from qdrant_client import models
+
+    lexical = client.query_points(
+        collection,
+        query=models.SparseVector(indices=list(terms), values=list(terms.values())),
+        using=SPARSE_VECTOR, query_filter=query_filter,
+        limit=limit, with_payload=True,
+    ).points
+    unseen = [str(h.id) for h in lexical if str(h.id) not in scores]
+    if not unseen:
+        return scores, meta
+
+    rescored = client.query_points(
+        collection, query=vector, using=DENSE_VECTOR,
+        query_filter=models.Filter(must=[models.HasIdCondition(has_id=unseen)]),
+        limit=len(unseen), with_payload=True,
+    ).points
+    logger.info("lexical candidates", extra={
+        "found_only_by_words": len(unseen), "rescored": len(rescored)})
+    for hit in rescored:
+        scores[str(hit.id)] = hit.score
+        meta[str(hit.id)] = hit.payload or {}
+    return scores, meta
 
 
 def _fuse_lexically(
@@ -361,6 +440,135 @@ def get_topic_labels(
             return {r[0]: r[1] or "" for r in cur.fetchall()}
 
 
+def get_chunks_by_id(
+    chunk_ids: Sequence[str],
+    *,
+    ready_only: bool = True,
+    config: Config | None = None,
+) -> list[RetrievedChunk]:
+    """The named chunks, in the order they were named.
+
+    A lookup, not a search: ``score`` is 0.0 because nothing was ranked. It is
+    how a turn that continues the one before it reaches the passages that
+    answer already used — by pointer, rather than by searching for words that
+    name nothing.
+
+    Order is preserved because it is the order the previous answer read them
+    in, and a re-presentation that reshuffles its evidence reads as a different
+    answer to the same question.
+    """
+    if not chunk_ids:
+        return []
+    config = config or Config.load()
+    wanted = [str(c) for c in chunk_ids]
+
+    ready_clause = ""
+    if ready_only:
+        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
+                        "ai.lecture_ingestion WHERE status = 'ready')")
+    sql = (
+        "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
+        "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
+        "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
+    )
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (wanted,))
+        rows = {r[0]: r for r in cur.fetchall()}
+
+    found = [rows[cid] for cid in wanted if cid in rows]
+    chunks = [
+        RetrievedChunk(
+            chunk_id=r[0], score=0.0, text=r[1], heading_path=r[2],
+            page_from=r[3], page_to=r[4], lecture_id=r[5], language=r[6],
+            topic_ids=[str(t) for t in (r[7] or [])], order_index=r[8],
+        )
+        for r in found
+    ]
+    labelled = _apply_labels(
+        chunks, _citation_labels([c.chunk_id for c in chunks], config))
+    if len(labelled) < len(wanted):
+        # A lecture re-ingested since the last turn re-mints every chunk_id, so
+        # the evidence points at rows that no longer exist. Saying so beats a
+        # re-presentation that quietly drops half of what it is re-presenting.
+        logger.info("evidence partly gone", extra={
+            "asked": len(wanted), "found": len(labelled)})
+    return labelled
+
+
+def get_neighbours(
+    anchors: Sequence[RetrievedChunk],
+    *,
+    window: int,
+    ready_only: bool = True,
+    config: Config | None = None,
+) -> list[RetrievedChunk]:
+    """The chunks written next to ``anchors`` in their lesson, in reading order.
+
+    A section a student asks about is often split across several chunks — one
+    per sub-heading, one per page — and only the chunk that best matches the
+    question's words is found. Its neighbours hold the rest of the section. A
+    lookup, not a search: ``score`` is 0.0. Navigation and apparatus are left
+    out, as they are from a search.
+    """
+    wanted = [(c.lecture_id, c.order_index) for c in anchors
+              if c.lecture_id and c.order_index is not None]
+    if not wanted or window < 1:
+        return []
+    config = config or Config.load()
+    ready_clause = ""
+    if ready_only:
+        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
+                        "ai.lecture_ingestion WHERE status = 'ready')")
+    ranges = " OR ".join(
+        "(c.lecture_id::text = %s AND c.order_index BETWEEN %s AND %s)" for _ in wanted)
+    params: list[Any] = []
+    for lecture_id, order in wanted:
+        params += [str(lecture_id), order - window, order + window]
+    sql = (
+        "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
+        "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
+        f"FROM ai.chunks c WHERE ({ranges})" + ready_clause
+        + " ORDER BY c.lecture_id, c.order_index"
+    )
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
+    chunks = [
+        RetrievedChunk(
+            chunk_id=r[0], score=0.0, text=r[1], heading_path=r[2],
+            page_from=r[3], page_to=r[4], lecture_id=r[5], language=r[6],
+            topic_ids=[str(t) for t in (r[7] or [])], order_index=r[8],
+        )
+        for r in rows if chunk_kind(r[1] or "") not in NOT_CONTENT
+    ]
+    return _apply_labels(chunks, _citation_labels([c.chunk_id for c in chunks], config))
+
+
+def get_lecture_topics(
+    lecture_ids: Sequence[str],
+    *,
+    limit: int = 20,
+    config: Config | None = None,
+) -> list[ResolvedTopic]:
+    """Every topic belonging to ``lecture_ids``, in lesson order.
+
+    A lookup, not a search: ``score`` is 0.0. It is what a lesson is *about*
+    when the request itself says nothing — "quiz me on this lesson" carries no
+    subject matter for an embedding to match, and the lesson the student is
+    sitting in is the answer.
+    """
+    if not lecture_ids:
+        return []
+    config = config or Config.load()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT topic_id::text, label, subject_id::text FROM ai.topics "
+            "WHERE lecture_id::text = ANY(%s) ORDER BY created_at LIMIT %s",
+            ([str(x) for x in lecture_ids], limit))
+        return [ResolvedTopic(topic_id=r[0], label=r[1] or "", score=0.0, subject_id=r[2])
+                for r in cur.fetchall()]
+
+
 def get_topic_lectures(
     topic_ids: Sequence[str],
     *,
@@ -417,6 +625,7 @@ def _apply_labels(
         chunk.subject_name = label.get("subject_name")
         chunk.lesson_title = label.get("lesson_title")
         chunk.lesson_order = label.get("lesson_order")
+        chunk.subject_id = label.get("subject_id")
     return chunks
 
 
@@ -464,6 +673,8 @@ def get_topic_chunks(
     counts: dict[str, int] = {}
     out: list[RetrievedChunk] = []
     for r in rows:
+        if chunk_kind(r[1] or "") in NOT_CONTENT:
+            continue
         chunk_topics = [str(t) for t in (r[7] or [])]
         keys = [t for t in wanted if t in chunk_topics] or ["_"]
         if all(counts.get(key, 0) >= per_topic for key in keys):

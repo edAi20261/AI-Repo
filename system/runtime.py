@@ -117,12 +117,19 @@ class AgentRuntime:
         synchronously, so this reports which stage is running rather than partial text.
         """
         state: dict[str, Any] = {}
-        async with self._limiter, anyio.fail_after(self._timeout):
-            async for update in self._graph.astream(payload, stream_mode="updates"):
-                for stage, delta in update.items():
-                    if isinstance(delta, dict):
-                        state.update(delta)
-                    yield stage, delta
+        # fail_after is a synchronous context manager used inside async code;
+        # `async with` on it raises before the first node ever runs.
+        try:
+            async with self._limiter:
+                with anyio.fail_after(self._timeout):
+                    async for update in self._graph.astream(payload, stream_mode="updates"):
+                        for stage, delta in update.items():
+                            if isinstance(delta, dict):
+                                state.update(delta)
+                            yield stage, delta
+        except TimeoutError as exc:
+            logger.warning("streamed turn exceeded %ss", self._timeout)
+            raise UpstreamTimeoutError("The request took too long to complete.") from exc
         yield "__final__", state
 
     async def _offload(self, fn, *args, **kwargs) -> dict[str, Any]:

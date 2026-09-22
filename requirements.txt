@@ -16,6 +16,8 @@ langchain-google-genai>=2.0.7
 
 # --- API --------------------------------------------------------------------
 fastapi>=0.115.0
+# Multipart bodies: the homework photo upload (POST /ai/homework/capture).
+python-multipart>=0.0.9
 uvicorn[standard]>=0.32.0
 pydantic>=2.9.0
 pydantic-settings>=2.6.0
@@ -28,6 +30,9 @@ sqlalchemy>=2.0.36
 # vector_index / topics). Ingestion normalises DATABASE_URL to +psycopg.
 asyncpg>=0.30.0
 psycopg[binary]>=3.2.0
+# Pooled: opening a connection costs 486ms against a 65ms read, so an unpooled
+# turn spent most of its database time on the handshake and two turns did it twice.
+psycopg_pool>=3.2.0
 alembic>=1.14.0
 redis>=5.2.0
 qdrant-client>=1.12.0

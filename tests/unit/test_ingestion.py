@@ -17,9 +17,6 @@ from ingestion.llm_provider import (
     HashEmbedder,
     OpenRouterVisionClient,
     StubVisionClient,
-    _caption_from_json,
-    _page_from_json,
-    _strip_json,
     get_vision_client,
 )
 from ingestion.backend import (
@@ -28,6 +25,7 @@ from ingestion.backend import (
     resolve_lesson,
 )
 from ingestion.context import PipelineContext
+from ingestion.schemas import FigureCaption, PageTranscription
 from ingestion.graph import run_ingestion
 from ingestion.state import Chunk, Dependency, Discipline, Element, new_state
 from ingestion.stages.chunk import run as run_chunk
@@ -543,40 +541,44 @@ def test_vision_stub_is_marked_and_safe():
 
 # --- real vision client: JSON parsing + factory ----------------------------
 
-def test_strip_json_recovers_fenced_and_bare():
+def test_a_vision_reply_wrapped_in_prose_is_still_read():
+    """Vision models fence their JSON or introduce it. The parsing lives in
+    shared.structured now, so the vision client no longer carries a private
+    scraper of its own — there were two of those."""
+    from shared.structured import recover
+
     fenced = 'Here you go:\n```json\n{"unreadable": false, "text": "hi"}\n```'
-    assert _strip_json(fenced) == {"unreadable": False, "text": "hi"}
+    assert recover(fenced, PageTranscription).text == "hi"
     bare = 'prose {"text": "x", "figures": []} trailing'
-    assert _strip_json(bare) == {"text": "x", "figures": []}
-    assert _strip_json("no json here") is None
-    assert _strip_json(None) is None
-    assert _strip_json("[1, 2, 3]") is None  # a list is not a page object
+    assert recover(bare, PageTranscription).text == "x"
+    assert recover("no json here", PageTranscription) is None
 
 
-def test_page_from_json_reads_text_boxes_and_unreadable():
-    page = _page_from_json(
-        {
-            "unreadable": False,
-            "text": "the page",
-            "figures": [{"bbox": [1, 2, 3, 4]}, {"bbox": "bad"}, {"nope": 1}],
-        }
-    )
+def test_a_malformed_figure_box_costs_the_figure_not_the_page():
+    """The regression this guards. The old hand-written parser dropped a bad box
+    and kept the page; validating the object whole would fail the page instead,
+    sending a page of readable text to manual review over one bad crop."""
+    page = PageTranscription.model_validate({
+        "unreadable": False,
+        "text": "the page",
+        "figures": [{"bbox": [1, 2, 3, 4]}, {"bbox": "bad"}, {"nope": 1}],
+    })
     assert page.text == "the page"
     assert page.unreadable is False
-    # Only the well-formed 4-number bbox survives.
     assert [f.bbox for f in page.figures] == [(1.0, 2.0, 3.0, 4.0)]
 
 
-def test_page_from_json_unreadable_true():
-    page = _page_from_json({"unreadable": True, "text": "", "figures": []})
+def test_an_unreadable_page_says_so():
+    page = PageTranscription.model_validate(
+        {"unreadable": True, "text": "", "figures": []})
     assert page.unreadable is True
     assert page.text == ""
 
 
-def test_caption_from_json():
-    cap = _caption_from_json({"caption": "a heart", "alt_text": "labelled diagram"})
-    assert cap.caption == "a heart" and cap.alt_text == "labelled diagram"
-    empty = _caption_from_json({})
+def test_a_caption_with_nothing_in_it_is_empty_not_absent():
+    cap = FigureCaption.model_validate({"caption": "a heart", "alt_text": "diagram"})
+    assert cap.caption == "a heart" and cap.alt_text == "diagram"
+    empty = FigureCaption.model_validate({})
     assert empty.caption == "" and empty.alt_text == ""
 
 
@@ -1288,3 +1290,76 @@ def test_a_failed_caption_is_counted_not_indexed_as_empty(tmp_path):
     result = run_extract(st, ctx)
 
     assert "caption_failed" in result["stats"]["extract"]
+
+# --- what a chunk is embedded as --------------------------------------------
+
+def _chunk(**kw):
+    from ingestion.state import Chunk
+    base = dict(lecture_id="lec1", text="الكيمياء التجريبية مهدت لنهضة علمية.",
+                heading_path="", page_from=3, page_to=3, language="ar", order_index=0)
+    base.update(kw)
+    return Chunk(**base)
+
+
+def test_a_chunk_is_embedded_with_the_lesson_it_came_from():
+    """A short chunk is unfindable on its own. "مهدت لنهضة علمية" says nothing
+    about which lesson, unit or page it belongs to, so a query naming the lesson
+    has nothing in the vector to match."""
+    chunk = _chunk(subject_name="اللغة العربية",
+                   lesson_title="Unit 2 · Lesson 2: Jabir ibn Hayyan",
+                   heading_path="ثقافة النجاح")
+    embedded = chunk.for_embedding()
+
+    assert embedded.endswith(chunk.text)
+    assert "اللغة العربية" in embedded
+    assert "Unit 2 · Lesson 2: Jabir ibn Hayyan" in embedded
+    assert "ثقافة النجاح" in embedded
+    assert "3" in embedded.split(chunk.text)[0]
+
+
+def test_the_text_a_student_reads_is_never_the_prefixed_one():
+    """The prefix exists to be searched, not to be read. It must not reach the
+    stored row, the citation, or the passage handed to the answering model."""
+    chunk = _chunk(subject_name="Science", lesson_title="Unit 1: Matter")
+
+    assert chunk.for_embedding() != chunk.text
+    assert chunk.text == "الكيمياء التجريبية مهدت لنهضة علمية."
+
+
+def test_a_chunk_that_knows_nothing_about_itself_is_embedded_as_it_is():
+    """A prefix of empty fields would embed punctuation, which is worse than
+    no prefix at all."""
+    bare = _chunk(page_from=0, page_to=0)
+    assert bare.for_embedding() == bare.text
+
+
+def test_the_prefix_names_only_the_parts_that_exist():
+    chunk = _chunk(lesson_title="Unit 1: Matter", page_from=0)
+    prefix = chunk.for_embedding().split(chunk.text)[0]
+
+    assert "Unit 1: Matter" in prefix
+    assert "Section" not in prefix
+    assert "0" not in prefix
+
+
+def test_a_direct_run_labels_its_chunks_like_a_resolved_one(monkeypatch):
+    """A lecture ingested from the command line carried no lesson title or
+    subject name, so every citation from it was labelled by whatever the layout
+    parser took for a heading: "Visualize It!", "is a straight line"."""
+    import ingestion.__main__ as cli
+
+    captured = {}
+
+    class _Backend:
+        def get_subject(self, subject_id):
+            return {"name": "Biology", "language": "en"}
+
+    monkeypatch.setattr(cli, "get_backend_client", lambda config, **k: _Backend())
+    monkeypatch.setattr(cli, "run_ingestion",
+                        lambda state, **k: captured.update(state) or {"stats": {}})
+    cli.main(["lesson.pdf", "--lecture-id", "l1", "--subject-id", "s1",
+              "--lesson-title", "The Water Cycle", "--lesson-order", "4"])
+    assert captured["subject_name"] == "Biology"
+    assert captured["lesson_title"] == "The Water Cycle"
+    assert captured["lesson_order"] == 4
+    assert captured["language_hint"] == "en"

@@ -27,14 +27,26 @@ class MainState(TypedDict, total=False):
     message: str
     subject_id: Optional[str]       # the subject this turn is about (scopes retrieval)
     lecture_ids: Optional[list[str]]  # optional lecture scope; None -> whole subject
+    study_scope: Optional[dict[str, Any]]  # the UI selection this turn is bounded by
     grade: Optional[str]            # academic grade/year level (NOT a grading result — see grade_result)
     grade_ref: Optional[dict[str, Any]]  # structured {assessment_id, kind} from the frontend for a grade turn
 
     # -- classify --
     pathway: str                    # student | teacher
-    intent: str                     # greeting | thanks | meta | chitchat | question
+    api_language: Optional[str]
+    conversation: dict[str, Any]
+    history: str
     language: str                   # ar | en | fr | de — the reply language for the turn
     language_decision: dict[str, Any]   # which rule chose it (shared.language.LanguageDecision)
+
+    raw_message: str
+    understanding: dict[str, Any]
+    turn_kind: str
+    planned_tasks: list[dict[str, Any]]
+    requested_language: Optional[str]
+    message_language: Optional[str]
+    previous_chunk_ids: list[str]
+    degraded: bool
 
     # -- load_context --
     namespaces: list[str]
@@ -59,12 +71,9 @@ class MainState(TypedDict, total=False):
     visuals: list[dict[str, Any]]
     visual_error: bool              # a visual_spec RAISED during render (vs produced nothing)
 
-    # -- session memory: the standing language instruction, and any change to it --
-    session_language: Optional[str]          # in force this turn, or None
-    session_language_write: Optional[dict]   # {"op": "set"|"clear", ...} for persist
-
     # -- compose --
     response: str
+    reply_body: str
     # The citations the reply actually carries, renumbered globally and capped. Kept
     # apart from ``citations`` because that one merges by addition: compose replaces
     # the subgraphs' local numbering rather than adding to it.

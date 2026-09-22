@@ -354,6 +354,90 @@ def test_a_turn_past_the_timeout_is_abandoned(monkeypatch):
     anyio.run(run)
 
 
+class _StreamingGraph:
+    """A graph that yields node updates, the way LangGraph's astream does."""
+
+    async def astream(self, _payload, stream_mode=None):
+        yield {"plan": {"tasks": ["explain"]}}
+        yield {"compose": {"response": "Jabir ibn Hayyan was a chemist."}}
+
+
+def test_a_streamed_turn_reaches_the_student(monkeypatch):
+    """POST /ai/chat/stream failed in milliseconds with internal_error, every time,
+    in every environment: the turn was wrapped in `async with ... anyio.fail_after(...)`,
+    and fail_after is a synchronous context manager. The endpoint had never worked,
+    while /ai/chat beside it did — so nothing that only exercised the plain endpoint
+    ever saw it."""
+    monkeypatch.setenv("APP_ENV", "test")
+    from system.runtime import AgentRuntime
+
+    runtime = AgentRuntime(
+        get_config(reload=True), _StreamingGraph(), None, max_concurrency=2, timeout=5
+    )
+
+    async def run():
+        return [pair async for pair in runtime.stream_chat({"message": "hi"})]
+
+    updates = anyio.run(run)
+    assert [stage for stage, _ in updates] == ["plan", "compose", "__final__"]
+    # The final payload is the accumulation of every node's update, not the last one.
+    assert updates[-1][1] == {
+        "tasks": ["explain"], "response": "Jabir ibn Hayyan was a chemist."}
+
+
+def test_a_streamed_turn_past_the_timeout_is_abandoned(monkeypatch):
+    """The timeout has to survive being made to work."""
+    monkeypatch.setenv("APP_ENV", "test")
+    from system.runtime import AgentRuntime
+
+    class _SlowStream:
+        async def astream(self, _payload, stream_mode=None):
+            await anyio.sleep(2)
+            yield {"plan": {}}
+
+    runtime = AgentRuntime(
+        get_config(reload=True), _SlowStream(), None, max_concurrency=2, timeout=0.2
+    )
+
+    async def run():
+        with pytest.raises(UpstreamTimeoutError):
+            async for _ in runtime.stream_chat({"message": "hi"}):
+                pass
+
+    anyio.run(run)
+
+
+def test_a_service_pointed_at_an_empty_index_says_so(monkeypatch, caplog):
+    """A whole afternoon of testing was spent against an empty index.
+
+    APP_ENV=local points the vector store at eduai_chunks_dev, which held no
+    points. The service started, answered every request, and declined or
+    degraded each one — indistinguishable from the tutor being broken. Nothing
+    at startup said the collection it was about to search was empty.
+    """
+    import logging
+
+    from system import security
+
+    monkeypatch.setattr(security, "collection_size", lambda settings: 0)
+    with caplog.at_level(logging.WARNING):
+        security.warn_if_index_empty(get_config(reload=True))
+
+    assert any("empty" in r.message.lower() for r in caplog.records)
+
+
+def test_a_service_pointed_at_a_populated_index_is_quiet(monkeypatch, caplog):
+    import logging
+
+    from system import security
+
+    monkeypatch.setattr(security, "collection_size", lambda settings: 154)
+    with caplog.at_level(logging.WARNING):
+        security.warn_if_index_empty(get_config(reload=True))
+
+    assert not caplog.records
+
+
 # --- the platform's ingestion contract ---------------------------------------
 
 def test_platform_trigger_queues_by_lesson_id(client):
@@ -503,3 +587,67 @@ def test_unusable_source_material_is_not_a_server_error():
 
     assert issubclass(SourceError, ServiceError)
     assert SourceError("source file not found").status_code == 422
+
+
+# --- homework capture -------------------------------------------------------
+
+def _photo(client, content=b"\x89PNG\r\n", content_type="image/png"):
+    return client.post(
+        "/ai/homework/capture",
+        files={"image": ("page.png", content, content_type)},
+        headers=auth(),
+    )
+
+
+def test_a_homework_photo_comes_back_as_questions(client, monkeypatch):
+    from agent.homework import HomeworkCapture
+
+    import system.routers.homework as router
+    monkeypatch.setattr(router, "capture", lambda *a, **k: HomeworkCapture.model_validate(
+        {"questions": [{"number": "1", "question": "ما هو السجع؟",
+                        "student_answer": "تشابه"}]}))
+
+    body = _photo(client).json()
+    assert body["questions"][0]["question"] == "ما هو السجع؟"
+    assert body["questions"][0]["student_answer"] == "تشابه"
+    assert body["unreadable"] is False
+    assert body["request_id"]
+
+
+def test_an_unreadable_photo_is_reported_not_treated_as_empty(client, monkeypatch):
+    from agent.homework import HomeworkCapture
+
+    import system.routers.homework as router
+    monkeypatch.setattr(router, "capture", lambda *a, **k: HomeworkCapture(unreadable=True))
+
+    body = _photo(client).json()
+    assert body["unreadable"] is True
+    assert body["questions"] == []
+
+
+def test_a_pdf_is_refused_before_a_vision_call_is_paid_for(client):
+    response = _photo(client, content_type="application/pdf")
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "unprocessable"
+
+
+def test_a_scanned_booklet_is_refused_by_size(client):
+    from shared.config import Config
+
+    limit = Config.load().get("api.homework.max_upload_bytes")
+    response = _photo(client, content=b"x" * (limit + 1))
+    assert response.status_code == 422
+    assert response.json()["error"]["details"]["limit"] == limit
+
+
+def test_an_empty_upload_is_refused(client):
+    assert _photo(client, content=b"").status_code == 422
+
+
+def test_capture_needs_the_service_token(client):
+    response = client.post(
+        "/ai/homework/capture",
+        files={"image": ("page.png", b"\x89PNG", "image/png")},
+        headers={"x-service-token": "nope"},
+    )
+    assert response.status_code == 401
