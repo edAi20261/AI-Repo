@@ -13,9 +13,11 @@ coincidence.
 from __future__ import annotations
 
 from collections import deque
+from contextlib import contextmanager
 
-import psycopg
 import pytest
+
+from shared import postgres
 
 
 class FakePostgres:
@@ -79,7 +81,18 @@ def fake_postgres(monkeypatch):
 
     def install(db: FakePostgres | None = None, **kwargs) -> FakePostgres:
         db = db if db is not None else FakePostgres(**kwargs)
-        monkeypatch.setattr(psycopg, "connect", lambda *a, **k: db)
+
+        class _Pool:
+            """A pool of exactly one double, handed out as often as asked."""
+
+            @contextmanager
+            def connection(self):
+                yield db
+
+        # Patched at the pool rather than at psycopg.connect: connections are
+        # pooled now, so nothing on a turn calls psycopg.connect any more and a
+        # double installed there would never be reached.
+        monkeypatch.setattr(postgres, "_pool_for", lambda *a, **k: _Pool())
         return db
 
     return install

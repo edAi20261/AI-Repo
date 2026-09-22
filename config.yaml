@@ -247,6 +247,33 @@ database:
   connect_timeout_seconds: 5
   statement_timeout_ms: 5000
 
+  # Connections are pooled and reused. Opening one costs a 486ms handshake
+  # against a read that takes 65ms, so an unpooled turn spent 86% of its
+  # database time saying hello — and two overlapping turns opened two.
+  #
+  # These come from a sweep, 8 concurrent reads against production, ms:
+  #
+  #                              median   p95   worst
+  #   a connection per call         650   719     723
+  #   pooled min=0, checked         243   474     603
+  #   pooled min=4, unchecked       177   350     408
+  #   pooled min=8, checked         235   239     246   <- this
+  #
+  # The unchecked pool has the better median and a tail three times as wide.
+  # Predictable beats fast here: an intermittent 500 is what sent us looking.
+  # min == max, so the pool is full and a burst never pays for a handshake;
+  # a 9th caller waits a bounded pool_wait_seconds rather than opening a 9th.
+  #
+  # The pool is built the first time something asks for a connection, never at
+  # import — /health and /ready touch no database, so a probe cannot build it.
+  pool_size: 8                 # per process; ECS runs one pool per task
+  pool_wait_seconds: 5         # waiting for a free connection is a bounded error, not a hang
+  pool_max_lifetime_seconds: 900   # recycle, so a connection the server has since dropped is not held forever
+  # One round trip per checkout to prove the connection is alive. It is the
+  # difference between p95 239ms and p95 350ms, and it is what stops a
+  # connection the server dropped from failing inside a student's turn.
+  pool_check_connections: true
+
 agent:
   # Retrieval is two-stage. A dense search finds candidates; BM25 over those same
   # candidates reorders them, and the two rankings are fused by reciprocal rank.
