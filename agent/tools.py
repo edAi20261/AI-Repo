@@ -25,7 +25,7 @@ from shared.embeddings import get_embedder
 logger = logging.getLogger(__name__)
 
 from .mastery import Mastery, MasteryParams, status
-from shared.matching import NOT_CONTENT
+from shared.matching import NOT_CONTENT, chunk_kind
 from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR, has_named_vectors
 from .models import PrereqTopic, ResolvedTopic, RetrievedChunk
 
@@ -165,6 +165,7 @@ def rag_search(
             subject_name=meta.get(r[0], {}).get("subject_name"),
             lesson_title=meta.get(r[0], {}).get("lesson_title"),
             lesson_order=meta.get(r[0], {}).get("lesson_order"),
+            subject_id=meta.get(r[0], {}).get("subject_id"),
         )
         for r in rows
     ]
@@ -573,6 +574,7 @@ def _apply_labels(
         chunk.subject_name = label.get("subject_name")
         chunk.lesson_title = label.get("lesson_title")
         chunk.lesson_order = label.get("lesson_order")
+        chunk.subject_id = label.get("subject_id")
     return chunks
 
 
@@ -620,6 +622,8 @@ def get_topic_chunks(
     counts: dict[str, int] = {}
     out: list[RetrievedChunk] = []
     for r in rows:
+        if chunk_kind(r[1] or "") in NOT_CONTENT:
+            continue
         chunk_topics = [str(t) for t in (r[7] or [])]
         keys = [t for t in wanted if t in chunk_topics] or ["_"]
         if all(counts.get(key, 0) >= per_topic for key in keys):

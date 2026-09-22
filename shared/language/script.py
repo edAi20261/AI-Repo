@@ -28,11 +28,6 @@ LATIN = re.compile(r"[A-Za-z]")
 # signature of Arabizi, and never occurs in French, German or English prose.
 ARABIZI_DIGIT_LETTER = re.compile(r"[a-z][2356789][a-z]", re.IGNORECASE)
 
-ARABIZI_WORDS = frozenset({
-    "momken", "mumkin", "ezay", "izzay", "eh", "da", "di", "dah", "dol",
-    "el", "ana", "enta", "enti", "3ayez", "3awez", "3ashan", "mesh",
-    "kda", "keda", "bardo", "khalas", "yalla", "shukran", "dars", "mudarris",
-})
 
 MIN_MIXED_SHARE = 0.30
 
@@ -47,10 +42,7 @@ def arabic_ratio(text: str) -> float:
 
 def looks_arabizi(text: str) -> bool:
     """Whether Latin-script ``text`` is Arabic typed in Latin letters and digits."""
-    if ARABIZI_DIGIT_LETTER.search(text):
-        return True
-    words = re.findall(r"[a-z0-9]+", text.lower())
-    return sum(1 for word in words if word in ARABIZI_WORDS) >= 2
+    return bool(ARABIZI_DIGIT_LETTER.search(text))
 
 
 def classify(text: str, *, arabic_threshold: float = MIN_MIXED_SHARE) -> Script:

@@ -1,7 +1,9 @@
 """Compile the runtime graph.
 
-    classify -> load_context -> plan -> dispatch ⇉ {explain|summarize|assessment|grade|visual}_sg
-             -> render_visuals -> compose -> persist
+    classify -> load_context -> understand -> converse -------------------------------+
+                                           -> plan -> dispatch ⇉ {task}_sg              |
+                                                   -> render_visuals -> compose --------+
+                                                                  -> verify_language -> persist
 
 Subgraphs are compiled once and wrapped by adapter nodes that translate a task +
 context into the subgraph's private state and map its result back onto MainState
@@ -16,16 +18,16 @@ import logging
 from typing import Optional
 
 from shared.backend import get_backend_client
-from shared.embeddings import loaded_embedder
 from shared.llm import llm_key_available, maybe_llm
 
 from .. import retrieval
 from ..config import Config, get_config
+from ..conversation import ConversationStore, HistoryWindow
+from ..errors import TutorUnavailable
 from ..models import Style, SubjectFacts
-from ..evidence import EvidenceSet, EvidenceStore
 from ..scope import lecture_filter
-from ..session_memory import SessionLanguage
 from ..state import MainState
+from ..subjects import SubjectDirectory
 from . import nodes
 from .subgraphs import (
     build_assessment_sg,
@@ -61,7 +63,8 @@ def _require_llm_in_prod(config: Config) -> None:
 # state, (2) run the compiled subgraph, (3) map its output BACK onto MainState fields. The
 # subgraph never sees MainState, so it stays self-contained. (LangGraph: a subgraph with a
 # different state schema is invoked inside a node function that transforms state in and out.)
-def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client=None):
+def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
+                                     subjects: SubjectDirectory):
     # Read the config knobs once, at build time (not per turn).
     k = config.get("agent.k", 8)
     depth = config.get("agent.prereq_depth", 2)
@@ -75,20 +78,14 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
         task = payload["task"]
         task_id = task.get("task_id")
         params = task.get("params", {})
-        facts = _subject_facts(client, payload.get("subject_id"))
-        # What the last answer in this conversation was built from, so a turn
-        # that carries it on can reuse those passages instead of searching for
-        # words that name nothing.
-        evidence_store = EvidenceStore(
-            config=config, user_id=payload.get("user_id"),
-            user_type=payload.get("pathway"), session_id=payload.get("session_id"))
+        facts = subjects.facts(payload.get("subject_id"))
         # (1) TRANSLATE IN: build the explain/summarize subgraph's private input state.
         result = compiled.invoke({
             "mode": mode,
             "query": params.get("query", ""),
             "message": payload.get("message") or params.get("query", ""),
-            "evidence": evidence_store.recall(),
-            "mode_chosen": payload.get("study_mode"),
+            "history": payload.get("history") or "",
+            "previous_chunk_ids": payload.get("previous_chunk_ids") or [],
             "level": params.get("level", "intermediate"),
             "length": params.get("length", "medium"),
             "topic_ids": params.get("topic_ids") or [],
@@ -112,16 +109,6 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
         # multi-task turn (each subgraph numbers from [1] independently).
         citations = [c.model_copy(update={"task_id": task_id})
                      for c in result.get("citations", [])]
-        # Keep what this answer was built from, for the turn that follows it.
-        # A declined turn grounded nothing and is deliberately not remembered:
-        # re-presenting a refusal as an explanation is worse than searching.
-        if result.get("grounded", True) and result.get("chunks"):
-            evidence_store.remember(EvidenceSet(
-                chunk_ids=[c.chunk_id for c in result["chunks"] if c.chunk_id],
-                query=params.get("query", ""),
-                lecture_id=(lecture_filter(payload) or [None])[0],
-                subject_id=payload.get("subject_id"),
-                topic_ids=params.get("topic_ids") or []))
         # A declined answer (no inline citation / figure) carries grounded=False; compose
         # then suppresses the trailing sources/prereqs so a refusal doesn't read as answered.
         # (Citations and the figure are already dropped by the subgraph on a decline.)
@@ -169,14 +156,14 @@ def _subject_instructions(facts: SubjectFacts, *, with_figure: bool = False) -> 
             if with_figure else MATH_PROMPT_INSTRUCTIONS)
 
 
-def _build_assessment_adapter(compiled, config: Config, client=None):
+def _build_assessment_adapter(compiled, config: Config, subjects: SubjectDirectory):
     q = config.get("assessment", {}) or {}
     quiz_follows_subject = config.get("language.quiz_single_language", True)
 
     def adapter(payload) -> dict:
         task = payload["task"]
         params = task.get("params", {})
-        facts = _subject_facts(client, payload.get("subject_id"))
+        facts = subjects.facts(payload.get("subject_id"))
         # Questions are material a student will sit, so they follow the subject's
         # language when it is known — an IGCSE physics quiz stays in English even
         # for an Arabic-speaking student. Everything addressed TO the student
@@ -214,7 +201,7 @@ def _kind_source(kind: Optional[str], grade_cfg: dict) -> str:
     return grade_cfg.get("source", "practice")
 
 
-def _build_grade_adapter(compiled, config: Config, client=None):
+def _build_grade_adapter(compiled, config: Config, subjects: SubjectDirectory):
     """Chat 'grade me this' path. Normalizes the turn into grade_sg's private state:
     structured ``submissions`` when the request carries them, else a single inline item
     from the message (graded on merits, or against a referenced quiz's rubric)."""
@@ -224,7 +211,7 @@ def _build_grade_adapter(compiled, config: Config, client=None):
         task = payload["task"]
         params = task.get("params", {})
         spec = params.get("grade") or {}
-        facts = _subject_facts(client, payload.get("subject_id"))
+        facts = subjects.facts(payload.get("subject_id"))
         answer = params.get("query", "")
         # Inline "grade my answer": the message is both the question and the student's answer.
         submissions = params.get("submissions") or [
@@ -252,7 +239,7 @@ def _build_grade_adapter(compiled, config: Config, client=None):
     return adapter
 
 
-def _build_visual_adapter(config: Config, client=None):
+def _build_visual_adapter(config: Config):
     """Chat 'show me a visual' task: emit ONE VisualSpec onto MainState.visual_specs.
     Rendering happens once in render_visuals (after the fan-in), the same path a
     subgraph-emitted spec takes."""
@@ -270,7 +257,7 @@ def _build_visual_adapter(config: Config, client=None):
     return adapter
 
 
-def _build_report_adapter(compiled, config: Config, client=None):
+def _build_report_adapter(compiled, config: Config):
     """Chat 'how am I doing' task -> report_sg. Students are forced to their OWN progress
     (scope + user_id = self); the report narrative becomes an answer (prose) and any trend
     chart is emitted as a visual_spec the parent renders. The structured payload is returned
@@ -288,6 +275,8 @@ def _build_report_adapter(compiled, config: Config, client=None):
             "language": payload.get("language", "en"),
         })
         result = state.get("result", {})
+        if result.get("degraded"):
+            raise TutorUnavailable()
         out: dict = {"answers": [{
             "type": "report", "task_id": task_id,
             "text": result.get("narrative", ""), "topic_labels": [],
@@ -299,7 +288,7 @@ def _build_report_adapter(compiled, config: Config, client=None):
     return adapter
 
 
-def _build_render_visuals(compiled, config: Config, client=None):
+def _build_render_visuals(compiled, config: Config, subjects: SubjectDirectory):
     """Parent node after the fan-in: render every collected visual_spec (chat task +
     subgraph-emitted) through visual_sg, once. get_figures-first, capped."""
     max_per = config.get("render.max_per_turn", 3)
@@ -308,7 +297,7 @@ def _build_render_visuals(compiled, config: Config, client=None):
         specs = state.get("visual_specs") or []
         if not specs:
             return {}
-        facts = _subject_facts(client, state.get("subject_id"))
+        facts = subjects.facts(state.get("subject_id"))
         arts = state.get("answers") or []
         # Gather what the turn already produced so a visual can be built from real content
         # (e.g. flashcards from the quiz, a chart from the grade) rather than invented.
@@ -358,43 +347,39 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
         backend_client = get_backend_client(config)
     except ValueError:
         backend_client = None
+    subjects = SubjectDirectory(backend_client)
+    store = ConversationStore.from_config(config)
+    window = HistoryWindow.from_config(config)
 
-    # Parent nodes run on MainState directly; each subgraph is wrapped in one adapter node.
     graph = StateGraph(MainState)
-    # None when session memory is off; the nodes treat that as "no memory",
-    # which is also what a store that cannot reach the database returns.
-    sticky = SessionLanguage.from_config(config)
-    graph.add_node("classify", nodes.build_classify(config, sticky=sticky))
-    # Resolved per turn, never at build time: loading the embedder here blocked
-    # startup behind a multi-gigabyte download and failed the health check.
-    graph.add_node("route", nodes.build_route(config, lambda: loaded_embedder(config)))
+    graph.add_node("classify", nodes.build_classify(config, store, window))
     graph.add_node("load_context", nodes.build_load_context(config))
-    graph.add_node("plan", nodes.build_plan(config, maybe_llm(config, "plan"), backend_client))
-    graph.add_node("explain_adapter", _build_explain_summarize_adapter(explain_sg, "explain", config, backend_client))
-    graph.add_node("summarize_adapter", _build_explain_summarize_adapter(summarize_sg, "summarize", config, backend_client))
-    graph.add_node("assessment_adapter", _build_assessment_adapter(assessment_sg, config, backend_client))
-    graph.add_node("grade_adapter", _build_grade_adapter(grade_sg, config, backend_client))
-    graph.add_node("report_adapter", _build_report_adapter(report_sg, config, backend_client))
-    graph.add_node("visual_adapter", _build_visual_adapter(config, backend_client))
-    graph.add_node("render_visuals", _build_render_visuals(visual_sg, config, backend_client))
+    graph.add_node("understand", nodes.build_understand(
+        config, maybe_llm(config, "understand"), subjects))
+    graph.add_node("converse", nodes.build_converse(config, maybe_llm(config, "converse")))
+    graph.add_node("plan", nodes.build_plan(config, subjects, backend_client))
+    graph.add_node("explain_adapter", _build_explain_summarize_adapter(explain_sg, "explain", config, subjects))
+    graph.add_node("summarize_adapter", _build_explain_summarize_adapter(summarize_sg, "summarize", config, subjects))
+    graph.add_node("assessment_adapter", _build_assessment_adapter(assessment_sg, config, subjects))
+    graph.add_node("grade_adapter", _build_grade_adapter(grade_sg, config, subjects))
+    graph.add_node("report_adapter", _build_report_adapter(report_sg, config))
+    graph.add_node("visual_adapter", _build_visual_adapter(config))
+    graph.add_node("render_visuals", _build_render_visuals(visual_sg, config, subjects))
     graph.add_node("compose", nodes.build_compose(config, maybe_llm(config, "compose")))
     graph.add_node("verify_language", nodes.build_verify_language(
         config, maybe_llm(config, "compose")))
-    graph.add_node("persist", nodes.build_persist(config, sticky=sticky))
+    graph.add_node("persist", nodes.build_persist(
+        config, store, window, maybe_llm(config, "conversation_summary")))
 
-    # Linear front, then plan fans out (dispatch returns one Send per planned task — only
-    # those adapters fire), then every adapter fans back in to render_visuals -> compose.
     graph.add_edge(START, "classify")
-    # Unknown role -> classify set a sign-in response; skip straight to the end.
-    graph.add_conditional_edges("classify", nodes._after_classify, ["route", "persist"])
-    graph.add_conditional_edges("route", nodes._after_route, ["load_context", "persist"])
-    graph.add_edge("load_context", "plan")
+    graph.add_edge("classify", "load_context")
+    graph.add_edge("load_context", "understand")
+    graph.add_conditional_edges("understand", nodes._after_understand, ["converse", "plan"])
+    graph.add_edge("converse", "verify_language")
     graph.add_conditional_edges(
         "plan", nodes.dispatch,
         ["explain_adapter", "summarize_adapter", "assessment_adapter", "grade_adapter",
-         "report_adapter", "visual_adapter", "persist"])   # "persist" = planner degraded, skip to the end
-    # All task adapters fan in to render_visuals (renders any collected visual_specs —
-    # chat visual task + subgraph-emitted), then compose.
+         "report_adapter", "visual_adapter", "persist"])
     for adapter in ("explain_adapter", "summarize_adapter", "assessment_adapter",
                     "grade_adapter", "report_adapter", "visual_adapter"):
         graph.add_edge(adapter, "render_visuals")

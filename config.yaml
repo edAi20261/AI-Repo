@@ -30,12 +30,9 @@ llm:
   overrides:
     extract_topics:  { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
     derive_deps:     { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
-    plan:            { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1000 }
-    # Reads the previous question and the new message and says whether the new one
-    # names a subject or points back at the last answer. On the critical path of every
-    # turn that follows another, so it is the light model; temperature 0 because the
-    # same pair of messages must decide the same way twice.
-    search_decision: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 500 }
+    understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
+    converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }
+    conversation_summary: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 1200 }
     explain:         { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     summarize:       { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     compose:         { provider: openrouter, model: google/gemini-2.5-flash-lite, max_tokens: 2000 }
@@ -213,28 +210,12 @@ language:
   min_chars: 12
   min_confidence: 0.55
   min_margin: 0.15
-  arabizi:
-    # Arabic typed in Latin letters ("momken", "a7seb") defeats every detector
-    # measured. Set hint_to: ar to route it to Arabic instead of falling back.
-    hint_to: null
   verify:
     enabled: true
     min_confidence: 0.60
     answer_min_chars: 40
-  sticky:
-    # "reply in Arabic from now on" is an instruction, not a preference: it is
-    # remembered against the session so the next turn still honours it.
-    enabled: true
-    ttl_hours: 720             # a month; an older conversation starts fresh
-    acknowledge: true          # a message that is only an instruction is answered,
-                               # not searched for in the syllabus
-    # This read sits at the front of every turn, so it gets its own limits: a
-    # database that hangs rather than refuses must not stall the service.
-    connect_timeout_seconds: 2
-    statement_timeout_ms: 500
-    failure_threshold: 3       # consecutive failures before the store is paused
-    breaker_seconds: 30
   quiz_single_language: true   # questions follow the subject; prose follows the student
+  reply_follows: subject
 
 database:
   # Postgres has no default timeout of its own: an unresponsive host holds the
@@ -315,16 +296,16 @@ agent:
     # the real curriculum is indexed. Re-measure then.
     relevance_ratio: 0.90
 
-  evidence:
-    # What an answer was built from, kept for the turn that follows it. A
-    # student saying "explain that more simply" is asking about the passages
-    # the last answer used, and their words name nothing to search for.
-    ttl_hours: 12              # a follow-up arrives in the same sitting or not at all
-    # Read and written on turns a student is waiting through, so the same
-    # limits as language.sticky: refuse rather than hang.
+  conversation:
+    store: postgres
+    ttl_hours: 720
+    recent_turns: 6
+    fold_after: 12
+    history_chars: 6000
+    reply_chars: 1500
     connect_timeout_seconds: 2
     statement_timeout_ms: 500
-    failure_threshold: 3       # consecutive failures before the store is paused
+    failure_threshold: 3
     breaker_seconds: 30
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
@@ -381,13 +362,6 @@ agent:
                                 # not. Populate the collection with scripts/reembed_chunks.py
                                 # before turning this on.
   prereq_depth: 2            # prerequisite hops resolve_prereqs walks (<= 2)
-  intent:
-    # Deciding whether a turn needs the syllabus at all. A greeting used to be
-    # planned as an explain task and searched for in the textbook.
-    enabled: true
-    max_words: 6             # longer than this is a question whatever it resembles
-    similarity: 0.72         # cosine against the seed utterances, when the phrase
-                             # pass finds nothing
   show_prereqs: true         # append "you should know X first" to an answer. The labels
                              # come from topic extraction at ingest, so the line is only as
                              # good as those are — turn it off if they read as noise.

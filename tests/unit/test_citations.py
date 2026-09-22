@@ -100,7 +100,7 @@ def test_published_sources_and_markers_always_agree():
     answers = [{"task_id": "a", "text": "A [1, 4] and B [9]."}]
     citations = [_cite(n, f"lec{n}") for n in (1, 2, 4)]
     new_answers, ordered = _renumber_citations(answers, citations)
-    block = _sources_block(ordered, "en")
+    block = _sources_block(ordered)
     shown = set(cited_numbers(new_answers[0]["text"]))
     assert shown == {c.n for c in ordered}
     for n in shown:
@@ -151,14 +151,10 @@ def test_the_prerequisite_walk_keeps_the_nearest_topics(monkeypatch):
         PrereqTopic(topic_id="near2", label="near2", strength="recommended", depth=1),
         PrereqTopic(topic_id="far2", label="far2", strength="required", depth=2),
     ]
-    asked: list[list[str]] = []
     monkeypatch.setattr(retrieval, "get_topic_deps", lambda *a, **k: found)
-    monkeypatch.setattr(retrieval, "get_topic_chunks",
-                        lambda ids, ns, **k: asked.append(list(ids)) or [])
 
-    prereqs, _ = retrieval.resolve_prereqs(["t1"], ["ns"], limit=2)
+    prereqs = retrieval.resolve_prereqs(["t1"], limit=2)
     assert [p.topic_id for p in prereqs] == ["near", "near2"]
-    assert asked == [["near", "near2"]]
 
 
 def test_an_unlimited_walk_is_still_possible(monkeypatch):
@@ -168,8 +164,7 @@ def test_an_unlimited_walk_is_still_possible(monkeypatch):
     found = [PrereqTopic(topic_id=f"t{i}", label=f"t{i}", strength="required", depth=1)
              for i in range(9)]
     monkeypatch.setattr(retrieval, "get_topic_deps", lambda *a, **k: found)
-    monkeypatch.setattr(retrieval, "get_topic_chunks", lambda ids, ns, **k: [])
-    prereqs, _ = retrieval.resolve_prereqs(["t"], ["ns"], limit=0)
+    prereqs = retrieval.resolve_prereqs(["t"], limit=0)
     assert len(prereqs) == 9
 
 

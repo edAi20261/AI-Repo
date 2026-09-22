@@ -16,6 +16,8 @@ Lang = Literal["ar", "en", "fr", "de"]
 LanguageSource = Literal[
     "explicit",   # the message itself asked for a language
     "session",    # an earlier message in this session asked, and it still stands
+    "subject",
+    "message",
     "api",        # the caller passed one
     "script",     # decided by writing system
     "detected",   # statistical detection, above the confidence floor

@@ -7,8 +7,11 @@
     "expect: answers  -> grounded, cites the syllabus, and stays on `about`",
     "        refuses  -> no citations; the syllabus does not cover it",
     "        chats    -> answered without searching at all",
+    "        any      -> any non-empty reply; only its language is checked",
     "about:  a word the answer must contain, which is how continuity is checked",
-    "        without asking a model whether two answers are about the same thing"
+    "        without asking a model whether two answers are about the same thing",
+    "language: the language the reply must be in; a subject is taught in its own",
+    "        language unless the student asks for another"
   ],
   "subject_id": "b9ec8535-7c88-40a2-a1a3-251a2b7cdb45",
   "lecture_id": "aaaaaaaa-0000-4000-8000-00000000f001",
@@ -16,54 +19,234 @@
     {
       "name": "a student who does not understand",
       "turns": [
-        {"say": "Can you explain to me evaporation, please?", "expect": "answers", "about": "evaporation"},
-        {"say": "Can you explain more?", "expect": "answers", "about": "evaporation"},
-        {"say": "Give me an example.", "expect": "answers", "about": "evaporation"},
-        {"say": "I feel that I still don't understand. Would you explain to me in layman's language, in a simpler way, maybe using bullets or making it easier for me to understand?", "expect": "answers", "about": "evaporation"}
+        {
+          "say": "Can you explain to me evaporation, please?",
+          "expect": "answers",
+          "about": "evaporat",
+          "language": "en"
+        },
+        {
+          "say": "Can you explain more?",
+          "expect": "answers",
+          "about": "evaporat",
+          "language": "en"
+        },
+        {
+          "say": "Give me an example.",
+          "expect": "answers",
+          "about": "evaporat",
+          "language": "en"
+        },
+        {
+          "say": "I feel that I still don't understand. Would you explain to me in layman's language, in a simpler way, maybe using bullets or making it easier for me to understand?",
+          "expect": "answers",
+          "about": "evaporat",
+          "language": "en"
+        }
       ]
     },
     {
       "name": "short follow-ups",
       "turns": [
-        {"say": "What is a watershed?", "expect": "answers", "about": "watershed"},
-        {"say": "tell me more", "expect": "answers", "about": "watershed"},
-        {"say": "why?", "expect": "answers", "about": "water"},
-        {"say": "can you break that down into bullet points", "expect": "answers", "about": "water"}
+        {
+          "say": "What is a watershed?",
+          "expect": "answers",
+          "about": "watershed",
+          "language": "en"
+        },
+        {
+          "say": "tell me more",
+          "expect": "answers",
+          "about": "watershed",
+          "language": "en"
+        },
+        {
+          "say": "why?",
+          "expect": "answers",
+          "about": "water",
+          "language": "en"
+        },
+        {
+          "say": "can you break that down into bullet points",
+          "expect": "answers",
+          "about": "water",
+          "language": "en"
+        }
       ]
     },
     {
       "name": "changing the subject",
       "turns": [
-        {"say": "How do hurricanes form?", "expect": "answers", "about": "hurricane"},
-        {"say": "explain more simply", "expect": "answers", "about": "hurricane"},
-        {"say": "What about tornadoes?", "expect": "answers", "about": "tornado"},
-        {"say": "and why are those dangerous?", "expect": "answers", "about": "tornado"}
+        {
+          "say": "How do hurricanes form?",
+          "expect": "answers",
+          "about": "hurricane",
+          "language": "en"
+        },
+        {
+          "say": "explain more simply",
+          "expect": "answers",
+          "about": "hurricane",
+          "language": "en"
+        },
+        {
+          "say": "What about tornadoes?",
+          "expect": "answers",
+          "about": "tornado",
+          "language": "en"
+        },
+        {
+          "say": "and why are those dangerous?",
+          "expect": "answers",
+          "about": "tornado",
+          "language": "en"
+        }
       ]
     },
     {
       "name": "small talk in the middle of a lesson",
       "turns": [
-        {"say": "hello good moring", "expect": "chats"},
-        {"say": "What causes ocean waves?", "expect": "answers", "about": "wave"},
-        {"say": "thanks, that helped", "expect": "chats"},
-        {"say": "ok now explain the layers of the atmosphere", "expect": "answers", "about": "atmosphere"}
+        {
+          "say": "hello good moring",
+          "expect": "chats",
+          "language": "en"
+        },
+        {
+          "say": "What causes ocean waves?",
+          "expect": "answers",
+          "about": "wave",
+          "language": "en"
+        },
+        {
+          "say": "thanks, that helped",
+          "expect": "chats",
+          "language": "en"
+        },
+        {
+          "say": "how is the weather where you are today?",
+          "expect": "chats",
+          "language": "en"
+        },
+        {
+          "say": "ok now explain the layers of the atmosphere",
+          "expect": "answers",
+          "about": "atmosphere",
+          "language": "en"
+        }
       ]
     },
     {
       "name": "asking for what the book does not have",
       "turns": [
-        {"say": "What is photosynthesis?", "expect": "refuses"},
-        {"say": "What is a watershed?", "expect": "answers", "about": "watershed"},
-        {"say": "Who was Napoleon?", "expect": "refuses"},
-        {"say": "ok, back to watersheds — give me an example", "expect": "answers", "about": "watershed"}
+        {
+          "say": "What is photosynthesis?",
+          "expect": "refuses",
+          "language": "en"
+        },
+        {
+          "say": "What is a watershed?",
+          "expect": "answers",
+          "about": "watershed",
+          "language": "en"
+        },
+        {
+          "say": "Who was Napoleon?",
+          "expect": "refuses",
+          "language": "en"
+        },
+        {
+          "say": "ok, back to watersheds — give me an example",
+          "expect": "answers",
+          "about": "watershed",
+          "language": "en"
+        }
       ]
     },
     {
-      "name": "following up in another language",
+      "name": "mentioning a language is not asking for it",
       "turns": [
-        {"say": "ما هي دورة الماء؟", "expect": "answers", "about": "ماء"},
-        {"say": "اشرح لي أكثر", "expect": "answers", "about": "ماء"},
-        {"say": "مثال من فضلك", "expect": "answers", "about": "ماء"}
+        {
+          "say": "What is condensation?",
+          "expect": "answers",
+          "about": "condens",
+          "language": "en"
+        },
+        {
+          "say": "why did you answer in french?",
+          "expect": "any",
+          "language": "en"
+        },
+        {
+          "say": "give me one more example",
+          "expect": "answers",
+          "about": "condens",
+          "language": "en"
+        },
+        {
+          "say": "stop replying in french",
+          "expect": "any",
+          "language": "en"
+        },
+        {
+          "say": "and what happens to the water after that?",
+          "expect": "answers",
+          "about": "water",
+          "language": "en"
+        }
+      ]
+    },
+    {
+      "name": "an Arabic speaker in an English subject",
+      "turns": [
+        {
+          "say": "ما هي دورة الماء؟",
+          "expect": "answers",
+          "about": "water",
+          "language": "en"
+        },
+        {
+          "say": "اشرح لي أكثر",
+          "expect": "answers",
+          "about": "water",
+          "language": "en"
+        },
+        {
+          "say": "ممكن تجاوبني بالعربي من فضلك؟",
+          "expect": "any",
+          "language": "ar"
+        },
+        {
+          "say": "مثال من فضلك",
+          "expect": "answers",
+          "about": "ماء",
+          "language": "ar"
+        }
+      ]
+    },
+    {
+      "name": "greetings as the app sends them",
+      "turns": [
+        {
+          "say": "Hellllllo",
+          "expect": "chats",
+          "language": "en"
+        },
+        {
+          "say": "Good morning",
+          "expect": "chats",
+          "language": "en"
+        },
+        {
+          "say": "What is a watershed?",
+          "expect": "answers",
+          "about": "watershed",
+          "language": "en"
+        },
+        {
+          "say": "thank you so much",
+          "expect": "chats",
+          "language": "en"
+        }
       ]
     }
   ]
