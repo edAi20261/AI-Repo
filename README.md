@@ -1,40 +1,177 @@
 # EduAI — AI Layer
 
-The AI service behind the EduAI learning platform. It answers students from their own
-syllabus, holds a conversation across turns, generates and grades practice questions,
-tracks per-skill mastery, draws study visuals and writes progress reports — in Arabic,
-English, French and German, with each subject taught in its own language.
-
-It is built on LangGraph and split into three independently deployable parts:
-
-- **`ingestion/`** — an offline pipeline that runs once per uploaded lesson. All the
-  expensive work happens here: reading pages (including scans, with a vision model),
-  chunking, embedding, extracting skills and deriving prerequisites.
-- **`agent/`** — the runtime graph a chat turn runs through. It searches the index and
-  reads the catalogue; the only things it writes are its own records: conversation
-  memory, mastery, mistake tags and rendered artifacts.
-- **`system/`** — the HTTP service the platform backend calls. Transport only: it
-  validates, authenticates and delegates to the two above.
-
-```
-frontend  ->  platform backend  ->  AI service (system/)  ->  agent / ingestion
-```
+The AI service of **EduAI**, a learning platform for schools. It turns each school's own
+syllabus into a tutor that students can talk to: it explains lessons, answers follow-up
+questions, sets and marks practice, tracks what every student has mastered, and reports
+progress — in Arabic, English, French and German.
 
 ---
 
 ## Contents
 
+- [What EduAI is](#what-eduai-is)
+- [What this repository does](#what-this-repository-does)
+- [Quickstart](#quickstart)
 - [How a turn is answered](#how-a-turn-is-answered)
 - [Retrieval and grounding](#retrieval-and-grounding)
 - [Ingestion](#ingestion)
 - [Where data lives](#where-data-lives)
 - [Repository layout](#repository-layout)
-- [Getting started](#getting-started)
 - [Configuration](#configuration)
 - [Running](#running)
 - [HTTP API](#http-api)
 - [Evaluation and tests](#evaluation-and-tests)
+- [Contributing](#contributing)
 - [Known limitations](#known-limitations)
+
+---
+
+## What EduAI is
+
+EduAI is a multi-school learning platform for **students, teachers and parents**. A school
+offers one or more curricula (a national curriculum, IGCSE, SAT…) across grades 1 to 12.
+Each grade has its subjects — science, Arabic, English, mathematics, French and so on —
+either official or created by a teacher, and each subject has lessons. When a lesson is
+published, its material becomes something students can learn from and ask about.
+
+Students study their lessons, do homework and quizzes, and follow a study plan. Teachers
+publish lessons, set work and follow their classes. Parents follow their children.
+
+What we are building is a tutor that behaves like a good teacher who has read exactly the
+books the student is studying:
+
+- **It answers from the syllabus, not from the internet.** Every answer is grounded in the
+  student's own lessons and cites them; a question the lessons do not cover is declined
+  honestly instead of answered from general knowledge.
+- **It holds a conversation.** "Explain that more simply", "give me an example" and "what
+  about tornadoes?" are understood in the light of what was said before.
+- **Each subject is taught in its own language.** An English science lesson is answered
+  in English and an Arabic lesson in Arabic, unless the student asks otherwise — and then
+  that choice is kept.
+- **It knows where each student stands.** Every graded answer moves a per-skill mastery
+  score, which drives which topics are practised next and what the progress report says.
+
+---
+
+## What this repository does
+
+EduAI is three codebases. This one is the AI layer; the other two call it.
+
+```
+ student / teacher / parent
+            │
+            ▼
+   frontend  (React)          the web app people use
+            │
+            ▼
+   platform backend (NestJS)  accounts, schools, classes, lessons, homework, quizzes,
+            │                 chat transcripts — and the only caller of this service
+            ▼
+   AI service  (this repo)    tutoring, retrieval, grading, mastery, reports, visuals,
+                              lesson ingestion
+```
+
+The AI layer provides:
+
+| For | What it does |
+|---|---|
+| Students | a tutor chat grounded in their lessons; practice quizzes aimed at their weak topics; marking with feedback and the correct answer; progress reports with the root cause of a weakness; mind maps, charts, flashcards, PDFs and slides; reading homework questions off a photo |
+| Teachers | the same tutor in a professional voice; quizzes, homework and exams generated from a lesson; marking submitted answers |
+| Parents | explanations, summaries and visuals of what their child is studying |
+| The platform | ingesting every published lesson — reading scanned pages, chunking, embedding, extracting skills and their prerequisites — so it can be searched |
+
+It deliberately does **not** handle login, users, schools, classes or chat history: those
+belong to the backend, which authenticates every user and calls this service with a
+shared secret. The service is never exposed to the public internet.
+
+Inside, it is three deployable parts:
+
+- **`ingestion/`** — an offline pipeline that runs once per published lesson; all the
+  expensive reading, embedding and extraction happens here.
+- **`agent/`** — the LangGraph graph a chat turn runs through. It searches the index and
+  reads the catalogue, and writes only its own records: conversation memory, mastery,
+  mistake tags and rendered visuals.
+- **`system/`** — the FastAPI service the backend calls. Transport only: it validates,
+  authenticates and delegates.
+
+---
+
+## Quickstart
+
+### 1. Install
+
+Requirements: **Python 3.11+**, access to a **PostgreSQL** database and a **Qdrant**
+instance, and an **OpenRouter API key**. The embedding model (BGE-M3, about 2 GB) runs
+locally and downloads the first time it is needed.
+
+```bash
+git clone git@github.com:edAi20261/AI-Repo.git
+cd AI-Repo
+python -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+cp .env.example .env
+```
+
+### 2. Fill in `.env`
+
+`.env` holds secrets and connection strings only; every behavioural setting is in
+`config.yaml`.
+
+| Variable | Needed for | Notes |
+|---|---|---|
+| `OPENROUTER_API_KEY` | every model call | one key reaches every model the service uses |
+| `DATABASE_URL` | retrieval, memory, mastery | the platform's Postgres (the `ai.*` schema) |
+| `QDRANT_URL`, `QDRANT_API_KEY` | retrieval | where the lesson vectors live |
+| `AI_WEBHOOK_SHARED_SECRET` | every request | the `x-service-token` the backend sends |
+| `BACKEND_API_BASE_URL` | subject facts, enrolments, answer keys, ingestion | the backend's `…/api/ai-integration` prefix |
+| `APP_ENV` | choosing the config overlay | `local`, `staging` or `production` — see below |
+| `S3_BUCKET`, `S3_REGION`, AWS keys | figures and rendered visuals | without them files go to a local folder |
+
+**Which `APP_ENV`?** `local` searches a separate, usually empty, development index
+(`eduai_chunks_dev`), so every question will be declined until you ingest something into
+it. To try the tutor against lessons that are already ingested, use `staging`, which
+searches `eduai_chunks_v2`. If your `DATABASE_URL` and Qdrant point at shared data, note
+that a chat turn writes conversation memory and a graded answer writes mastery.
+
+### 3. Start the service
+
+```bash
+uvicorn system.asgi:app --host 0.0.0.0 --port 8000
+curl localhost:8000/ready        # {"status":"ready", "graph_ready":true, ...}
+```
+
+Interactive API docs are at `http://localhost:8000/docs` (outside production). Add
+`LOG_FILE=logs/ai-service.log` to keep a copy of the log in a file.
+
+### 4. Ask it something
+
+```bash
+curl -s localhost:8000/ai/chat \
+  -H "content-type: application/json" \
+  -H "x-service-token: <AI_WEBHOOK_SHARED_SECRET from .env>" \
+  -d '{"user_id": "<student uuid>", "user_type": "student",
+       "session_id": "<chat session uuid>", "message": "What is evaporation?"}'
+```
+
+The reply comes back in `response`, with what it cited in `citations`. Conversation
+memory is stored against a real platform user and chat session (the rows are keyed to
+them), so use ids from the platform — or chat through the web app — to see follow-ups
+work. For a sandbox with no platform data, set `agent.conversation.store: memory` in
+`config.yaml` and memory is kept in the process instead.
+
+### 5. Run it with the rest of the platform
+
+Point the backend's `AI_SERVICE_BASE_URL` at `http://localhost:8000`, give it the same
+`AI_WEBHOOK_SHARED_SECRET`, and start the backend and frontend from their repositories.
+A message sent in the app's AI tutor then travels frontend → backend → this service.
+
+### 6. Run the tests
+
+```bash
+pytest          # the unit suite: no keys, no services
+ruff check .
+```
 
 ---
 
@@ -247,25 +384,6 @@ lists the rules this codebase holds itself to and the failure behind each one.
 
 ---
 
-## Getting started
-
-Requirements: Python 3.11+, PostgreSQL 15+, Qdrant 1.12+, and an OpenRouter API key. The
-embedding model (BGE-M3, about 2 GB) runs locally and downloads on first use.
-
-```bash
-git clone git@github.com:edAi20261/AI-Repo.git
-cd AI-Repo
-python -m venv .venv
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt  # or requirements.txt for runtime only
-cp .env.example .env                 # then fill it in
-```
-
-For a local database and Qdrant with nothing in them yet, `python scripts/bootstrap.py`
-creates the `ai.*` tables ingestion writes and the Qdrant collection. It is safe to re-run.
-
----
-
 ## Configuration
 
 | File | Holds | Committed |
@@ -389,6 +507,21 @@ index and models:
 pytest                 # the unit suite: no keys, no services
 ruff check .           # must not regress
 ```
+
+---
+
+## Contributing
+
+- Read [`CLAUDE.md`](CLAUDE.md) first. It lists the rules this codebase holds itself to —
+  fix the producer rather than filter at display, one decision in one place, measure
+  before and after — each with the failure that made it a rule.
+- Work on a branch and open a pull request into **`staging`**. One concern per PR, and the
+  description says what was broken, not what the diff does.
+- `staging` is released to **`main`** by a pull request. A push to `main` runs the tests
+  and deploys the service (`.github/workflows/deploy.yml`).
+- Tests are named for the behaviour they protect and must fail before the fix. `ruff check`
+  must not gain findings; never run `ruff --fix` across the whole repository.
+- A behaviour change comes with a before-and-after number from one of the evaluations.
 
 ---
 
