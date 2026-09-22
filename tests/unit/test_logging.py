@@ -46,3 +46,22 @@ def test_setup_logging_clamps_third_party_loggers():
     assert logging.getLogger().level == logging.DEBUG          # app level honored
     assert logging.getLogger("openai").level == logging.WARNING  # client clamped
     assert logging.getLogger("httpx").level == logging.WARNING
+
+
+def test_a_run_can_be_read_back_from_a_log_file(tmp_path, monkeypatch):
+    """Turns were only on the terminal of whoever started the service."""
+    import json
+    import logging
+
+    from shared.logging import setup_logging
+
+    path = tmp_path / "logs" / "ai.log"
+    monkeypatch.setenv("LOG_FILE", str(path))
+    setup_logging(None, level="INFO", fmt="json")
+    logging.getLogger("agent.graph.nodes").info("turn", extra={"question": "hello"})
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    line = json.loads(path.read_text().strip().splitlines()[-1])
+    assert line["msg"] == "turn" and line["question"] == "hello"
+    monkeypatch.delenv("LOG_FILE")
+    setup_logging(None)
