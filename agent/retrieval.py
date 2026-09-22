@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
-from .tools import get_topic_chunks, get_topic_deps, rag_search
+from .tools import get_topic_deps, rag_search
 
 logger = logging.getLogger(__name__)
 
@@ -120,30 +120,25 @@ _STRENGTH_RANK = {"required": 0, "related": 1}
 
 def resolve_prereqs(
     topic_ids: list[str],
-    namespaces: list[str],
     *,
     depth: int = 2,
     limit: int = DEFAULT_MAX_PREREQS,
-) -> tuple[list[PrereqTopic], list[RetrievedChunk]]:
-    """Prerequisite topics for ``topic_ids`` and the chunks that teach them.
+) -> list[PrereqTopic]:
+    """Prerequisite topics for ``topic_ids``, nearest and most required first.
 
     The walk fans out: two hops over a well-connected subject reaches dozens of
-    topics, each contributing chunks that are fetched by id and so carry no
-    relevance score to filter on. Unbounded, prerequisite material outweighed the
-    lesson the student actually asked about. ``limit`` keeps the nearest few.
+    topics. ``limit`` keeps the nearest few. Only the topics are returned; their
+    passages were once fetched by position in the lesson and handed to the model
+    as citable context, which is how a book's title page came to be cited.
     """
     if not topic_ids:
-        return [], []
+        return []
     found = get_topic_deps(topic_ids, depth=depth)
     prereqs = sorted(
         found, key=lambda p: (p.depth, _STRENGTH_RANK.get(p.strength, 9), p.label)
     )[:limit] if limit else found
-    prereq_ids = [p.topic_id for p in prereqs]
-    prereq_chunks = get_topic_chunks(prereq_ids, namespaces) if prereq_ids else []
-    logger.info("resolve_prereqs", extra={
-        "found": len(found), "prereqs": len(prereqs),
-        "prereq_chunks": len(prereq_chunks)})
-    return prereqs, prereq_chunks
+    logger.info("resolve_prereqs", extra={"found": len(found), "prereqs": len(prereqs)})
+    return prereqs
 
 
 def cite(chunk: RetrievedChunk, n: int) -> Citation:
@@ -156,6 +151,7 @@ def cite(chunk: RetrievedChunk, n: int) -> Citation:
         subject_name=chunk.subject_name,
         lesson_title=chunk.lesson_title,
         lesson_order=chunk.lesson_order,
+        chunk_id=chunk.chunk_id,
     )
 
 

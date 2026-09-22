@@ -66,3 +66,25 @@ def test_shelled_scope_is_unavailable(monkeypatch):
     result = sg.invoke({"scope": "class_analytics", "user_id": "u1"})["result"]
     assert result["available"] is False
     assert result["weak_topics"] == []
+
+
+def test_a_student_with_no_practice_yet_is_told_so_by_the_model(monkeypatch):
+    """The no-data and all-good notes were fixed sentences; the model writes them
+    now from the same numbers, so they read like the rest of the report."""
+    _patch(monkeypatch, mastery=[], trend={"direction": "insufficient", "count": 0,
+                                           "events": []}, deps=[], labels={})
+
+    class _Writer:
+        prompt = None
+
+        def invoke(self, messages):
+            _Writer.prompt = messages[0].content
+
+            class _Msg:
+                content = "There isn't enough practice yet to judge. Try a few questions!"
+            return _Msg()
+
+    sg = build_report_sg(config=get_config(), llm=_Writer())
+    result = sg.invoke({"scope": "student_progress", "user_id": "u1", "language": "en"})["result"]
+    assert result["narrative"].startswith("There isn't enough practice yet")
+    assert "(none)" in _Writer.prompt

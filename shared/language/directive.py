@@ -42,8 +42,8 @@ def language_directive(
     """The reply-language instruction appended to every user-facing prompt."""
     target = name_of(code)
     opening = (
-        f"The student is writing in {target}. You MUST write your ENTIRE reply in "
-        f"{target} — every sentence, heading, label and caption."
+        f"You MUST write your ENTIRE reply in {target} — every sentence, heading, "
+        f"label and caption — whatever language the student's message is in."
     )
     lines = [opening]
     if context_may_differ:

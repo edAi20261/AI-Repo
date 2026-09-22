@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 import sys
 import urllib.error
@@ -30,7 +31,10 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from agent.conversation.store import KINDS
 from shared.config import Config
+from shared.language import LanguagePolicy
+from shared.language.verify import prose_of
 from shared.postgres import connect
 
 CASES = Path(__file__).with_suffix(".json")
@@ -58,12 +62,21 @@ def _forget(config: Config, session_id: str) -> None:
     """Start each conversation with nothing remembered."""
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM ai.user_memory WHERE source_conversation_id = %s::uuid "
-                    "AND kind = 'turn_evidence'", (session_id,))
+                    "AND kind = ANY(%s)", (session_id, list(KINDS)))
         conn.commit()
 
 
 def _ask(url: str, token: str, *, user_id: str, session_id: str, message: str,
          subject_id: str | None) -> dict:
+    started = time.perf_counter()
+    reply = _post(url, token, user_id=user_id, session_id=session_id,
+                  message=message, subject_id=subject_id)
+    reply["ms"] = (time.perf_counter() - started) * 1000
+    return reply
+
+
+def _post(url: str, token: str, *, user_id: str, session_id: str, message: str,
+          subject_id: str | None) -> dict:
     body = {"user_id": user_id, "user_type": "student", "session_id": session_id,
             "message": message}
     if subject_id:
@@ -93,20 +106,29 @@ def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
     right_book = all(str(c.get("lecture_id") or lecture_id) == lecture_id
                      for c in citations) if citations else True
 
+    written = reply.get("response") or ""
+    language = LanguagePolicy().resolve_document(prose_of(written)).code if written else None
+    right_language = language == turn["language"] if turn.get("language") else True
+
     if expect == "answers":
         passed = grounded and on_subject and right_book
     elif expect == "refuses":
         passed = not grounded
-    else:                                   # chats
+    elif expect == "chats":
         passed = not grounded and bool(answer)
+    else:
+        passed = bool(answer)
+    passed = passed and right_language
 
     return {"expect": expect, "passed": passed, "grounded": grounded,
             "on_subject": on_subject, "right_book": right_book,
+            "language": language, "right_language": right_language,
             "citations": len(citations), "error": reply.get("error"),
+            "ms": round(reply.get("ms") or 0.0),
             "answer": (reply.get("response") or "")[:110]}
 
 
-def run(url: str) -> dict:
+def run(url: str, *, quiet: bool = False) -> dict:
     config = Config.load()
     token = config.secret("AI_WEBHOOK_SHARED_SECRET")
     session_id, user_id = _session(config)
@@ -116,7 +138,8 @@ def run(url: str) -> dict:
     conversations = []
     for conversation in data["conversations"]:
         _forget(config, session_id)
-        print(f"\n  {conversation['name']}")
+        if not quiet:
+            print(f"\n  {conversation['name']}")
         turns = []
         for index, turn in enumerate(conversation["turns"], start=1):
             reply = _ask(url, token, user_id=user_id, session_id=session_id,
@@ -128,9 +151,12 @@ def run(url: str) -> dict:
             why = "" if scored["passed"] else "  <- " + ", ".join(
                 name for name, ok in (("not grounded", scored["grounded"]),
                                       ("off subject", scored["on_subject"]),
-                                      ("wrong book", scored["right_book"]))
+                                      ("wrong book", scored["right_book"]),
+                                      ("wrong language", scored["right_language"]))
                 if not ok) or "  <- unexpected"
-            print(f"  {mark}{index}. {turn['say'][:58]:58} {scored['expect']:8}{why}")
+            if not quiet:
+                print(f"  {mark}{index}. {turn['say'][:58]:58} "
+                      f"{scored['expect']:8}{why}")
         conversations.append({"name": conversation["name"], "turns": turns})
     return {"conversations": conversations}
 
@@ -149,13 +175,60 @@ def report(result: dict) -> None:
     print(f"    opening turns   {rate(first):.3f}  ({len(first)} turns)")
     print(f"    later turns     {rate(later):.3f}  ({len(later)} turns)   "
           f"<- the number this eval exists for")
-    for expect in ("answers", "refuses", "chats"):
+    for expect in ("answers", "refuses", "chats", "any"):
         rows = [t for t in turns if t["expect"] == expect]
         if rows:
             print(f"    {expect:8}        {rate(rows):.3f}  ({len(rows)} turns)")
     wrong_book = [t for t in turns if not t["right_book"]]
     if wrong_book:
         print(f"    cited another lecture on {len(wrong_book)} turn(s)")
+
+
+def stability(rounds: list[dict]) -> None:
+    """How often each turn passes, which is what "it is unpredictable" means.
+
+    One pass over the set says whether a turn *can* work. A student meets it
+    every day, so what matters is whether it works *every time*. A turn that
+    passes four rounds in five is not a turn that works — it is the kind of
+    failure that cannot be reproduced on request, and it is the reason this
+    service has been hard to trust.
+    """
+    seen: dict[tuple[str, int], dict] = {}
+    for result in rounds:
+        for conversation in result["conversations"]:
+            for turn in conversation["turns"]:
+                key = (conversation["name"], turn["turn_index"])
+                row = seen.setdefault(key, {"say": turn["say"], "passed": 0,
+                                            "runs": 0, "ms": [], "errors": 0})
+                row["passed"] += int(turn["passed"])
+                row["runs"] += 1
+                row["ms"].append(turn["ms"])
+                row["errors"] += int(bool(turn["error"]))
+
+    n = len(rounds)
+    always = [r for r in seen.values() if r["passed"] == r["runs"]]
+    never = [r for r in seen.values() if r["passed"] == 0]
+    flaky = [r for r in seen.values() if 0 < r["passed"] < r["runs"]]
+    latencies = sorted(ms for r in seen.values() for ms in r["ms"])
+    errors = sum(r["errors"] for r in seen.values())
+
+    def at(fraction):
+        return latencies[min(int(len(latencies) * fraction), len(latencies) - 1)]
+
+    print(f"\n  {len(seen)} turns over {n} rounds")
+    print(f"    passed every round   {len(always):3}/{len(seen)}")
+    print(f"    flaky                {len(flaky):3}/{len(seen)}   "
+          f"<- the number that makes it untestable")
+    print(f"    failed every round   {len(never):3}/{len(seen)}")
+    print(f"    latency   median {at(0.5) / 1000:.1f}s   p95 {at(0.95) / 1000:.1f}s   "
+          f"worst {latencies[-1] / 1000:.1f}s")
+    print(f"    errors    {errors}")
+
+    for label, rows in (("flaky", flaky), ("failed every round", never)):
+        if rows:
+            print(f"\n  {label}:")
+            for row in sorted(rows, key=lambda r: r["passed"]):
+                print(f"    {row['passed']}/{row['runs']}  {row['say'][:64]}")
 
 
 def compare(before: Path, after: Path) -> None:
@@ -169,15 +242,27 @@ def main() -> int:
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--json", type=Path)
     parser.add_argument("--compare", nargs=2, type=Path)
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="run the whole set N times and report how often "
+                             "each turn passes, not just whether it can")
     args = parser.parse_args()
 
     if args.compare:
         compare(*args.compare)
         return 0
-    result = run(args.url)
-    report(result)
+    rounds = []
+    for round_number in range(1, args.repeat + 1):
+        if args.repeat > 1:
+            print(f"\n=== round {round_number}/{args.repeat} ===")
+        rounds.append(run(args.url, quiet=args.repeat > 1))
+        report(rounds[-1])
+
+    if args.repeat > 1:
+        stability(rounds)
+
     if args.json:
-        args.json.write_text(json.dumps(result, indent=2, ensure_ascii=False))
+        payload = rounds[0] if args.repeat == 1 else {"rounds": rounds}
+        args.json.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
         print(f"\n  wrote {args.json}")
     return 0
 

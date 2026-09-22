@@ -1,7 +1,8 @@
-"""Language policy: precedence, refusal, catalogue coverage and verification.
+"""Language policy: what a turn is answered in, catalogue coverage and verification.
 
-The named regressions are the two failures that prompted this layer — a student
-asked "explain column subtraction" and was answered in French.
+The named regressions are the failures that shaped this layer: a student asked
+"explain column subtraction" and was answered in French, and a student who asked
+"why did you answer in French?" was answered in French for the next month.
 """
 
 from __future__ import annotations
@@ -12,16 +13,11 @@ from shared.language import (
     LanguageDecision,
     LanguagePolicy,
     classify,
-    clear_request,
     content_directive,
-    explicit_request,
     language_directive,
-    language_instruction_only,
     looks_arabizi,
-    translate,
     verify_answer,
 )
-from shared.language.catalog import STRINGS
 from shared.language.verify import prose_of
 
 SUPPORTED = ("ar", "en", "fr", "de")
@@ -32,155 +28,118 @@ def policy() -> LanguagePolicy:
     return LanguagePolicy(supported=SUPPORTED, default="en")
 
 
+def _reply_to(policy, message, **facts):
+    return policy.reply(message_language=policy.written_in(message), **facts)
+
+
 # --- the reported bugs ------------------------------------------------------
 
 def test_short_english_question_is_not_french(policy):
     """The reported bug: 24 letters of English scored 0.57 for French."""
-    assert policy.resolve("explain column subtraction").code == "en"
+    assert _reply_to(policy, "explain column subtraction").code == "en"
 
 
 def test_single_word_greeting_is_not_finnish(policy):
-    assert policy.resolve("hello").code == "en"
+    assert _reply_to(policy, "hello").code == "en"
+
+
+def test_the_policy_reads_no_words_as_requests(policy):
+    """"why did you answer in french?" was matched as a request and stored for a
+    month. The policy now ranks facts it is handed; reading a request is the
+    model's job, so no phrasing of a message can switch the language here."""
+    for message in ("why did you answer in french?", "réponds en français",
+                    "is the answer in French correct?"):
+        decision = policy.reply(subject_language="en",
+                                message_language=policy.written_in(message))
+        assert decision.code == "en"
+        assert decision.source == "subject"
 
 
 # --- precedence -------------------------------------------------------------
 
-def test_explicit_request_beats_everything(policy):
-    decision = policy.resolve(
-        "explain photosynthesis, answer in French",
-        api_language="ar", session_language="de", planner_hint="en",
-    )
-    assert (decision.code, decision.source) == ("fr", "explicit")
+def test_a_request_the_student_made_beats_everything(policy):
+    decision = policy.reply(requested="fr", subject_language="ar",
+                            message_language="en", api_language="de")
+    assert (decision.code, decision.source) == ("fr", "session")
 
 
-@pytest.mark.parametrize("text,expected", [
-    ("explain subtraction, reply in Arabic", "ar"),
-    ("explain photosynthesis. Reply in Arabic please", "ar"),
-    ("Explain the water cycle, but in Arabic", "ar"),
-    ("summarize this lesson, and write it in Arabic", "ar"),
-    ("switch to Arabic", "ar"),
-    ("continue in Arabic", "ar"),
-    ("change to French", "fr"),
-    ("please use Arabic", "ar"),
-    ("اشرح لي الدرس بالانجليزي", "en"),
-])
-def test_a_request_at_the_end_of_a_message_is_obeyed(policy, text, expected):
-    """The shape a student actually writes: the question in one language, the
-    instruction tacked on."""
-    assert policy.resolve(text).code == expected
+def test_a_subject_is_taught_in_its_own_language(policy):
+    """An Arabic-speaking student in an English science lesson is answered in
+    English unless they ask otherwise."""
+    decision = policy.reply(subject_language="en", message_language="ar")
+    assert (decision.code, decision.source) == ("en", "subject")
 
 
-@pytest.mark.parametrize("text", [
-    "how do you say hello in Arabic?",
-    "how to say thank you in French",
-])
-def test_asking_about_a_language_is_not_asking_for_it(policy, text):
-    """The question is about Arabic; the answer belongs in the asker's language."""
-    assert policy.resolve(text).code == "en"
+def test_without_a_subject_the_student_is_answered_in_their_language(policy):
+    decision = policy.reply(message_language="ar", api_language="en")
+    assert (decision.code, decision.source) == ("ar", "message")
 
 
-def test_the_message_outranks_the_caller_s_parameter(policy):
-    """The reported bug: the web app sent its interface language on every turn, so
-    Arabic and French questions were both answered in English.
-
-    Assistants people already use settle this the same way — Anthropic: "follow
-    the language of the query unless explicitly requested otherwise", applied even
-    over a stored "my native language is Spanish"."""
-    decision = policy.resolve("اشرح لي عملية البناء الضوئي", api_language="en")
-    assert (decision.code, decision.source) == ("ar", "script")
+def test_a_deployment_can_answer_in_the_student_s_language_instead():
+    policy = LanguagePolicy(supported=SUPPORTED, reply_follows="message")
+    decision = policy.reply(subject_language="en", message_language="ar")
+    assert (decision.code, decision.source) == ("ar", "message")
 
 
-def test_the_parameter_decides_what_the_message_cannot(policy):
-    """It is a default for an undecidable message, not an override of a clear one."""
-    decision = policy.resolve("ok", api_language="fr")
-    assert (decision.code, decision.source) == ("fr", "api")
+def test_the_caller_s_parameter_decides_only_what_nothing_else_can(policy):
+    assert policy.reply(api_language="de").code == "de"
+    assert policy.reply(message_language="ar", api_language="de").code == "ar"
 
 
-def test_a_request_in_the_message_beats_the_parameter(policy):
-    """An English question ending in "reply in Arabic" is answered in Arabic."""
-    decision = policy.resolve("explain subtraction, reply in Arabic", api_language="en")
-    assert (decision.code, decision.source) == ("ar", "explicit")
-
-
-def test_script_beats_detection(policy):
-    decision = policy.resolve("اشرح لي الـ photosynthesis")
-    assert (decision.code, decision.source) == ("ar", "script")
-
-
-def test_planner_hint_only_fills_what_detection_declined(policy):
-    confident = policy.resolve("Erklären Sie mir bitte die Photosynthese", planner_hint="ar")
-    assert confident.code == "de"
-
-    declined = policy.resolve("ok", planner_hint="ar")
-    assert (declined.code, declined.source) == ("ar", "planner")
-
-
-def test_the_last_resort_is_the_default(policy):
-    """There were two tiers between the planner hint and the default — a stored
-    profile preference and the previous turn's language. Nothing ever supplied
-    either, so both arrived None on every call the service ever made."""
-    assert policy.resolve("ok").source == "default"
+def test_the_last_resort_is_the_default_and_is_never_repaired(policy):
+    decision = policy.reply()
+    assert (decision.code, decision.source) == ("en", "default")
+    assert decision.verifiable is False
 
 
 def test_unsupported_values_are_ignored(policy):
-    decision = policy.resolve("explain column subtraction", api_language="es")
-    assert decision.code == "en"
+    decision = policy.reply(requested="it", subject_language="es", message_language="tr")
+    assert decision.source == "default"
 
 
-# --- refusal ----------------------------------------------------------------
+# --- reading the message ----------------------------------------------------
+
+def test_script_decides_arabic(policy):
+    assert policy.written_in("ما هي الجملة الاسمية؟") == "ar"
+
 
 @pytest.mark.parametrize("text", [
     "momken tefhemni el dars da?",
     "ezay a7seb el mesaha?",
-    "3ayez a3raf el drs dah",
+    "ok",
 ])
-def test_arabizi_is_refused_not_guessed(policy, text):
-    """Every detector measured returned a European language for these."""
-    decision = policy.resolve(text)
-    assert decision.refused is True
-    assert decision.script == "arabizi"
+def test_what_the_text_cannot_tell_is_left_undecided(policy, text):
+    """Arabizi and two-letter replies defeat every detector measured; the model
+    reading the conversation decides these, and the policy never guesses."""
+    assert policy.written_in(text) is None
 
-
-def test_arabizi_can_be_routed_to_arabic_by_config():
-    policy = LanguagePolicy(supported=SUPPORTED, default="en", arabizi_hint="ar")
-    assert policy.resolve("ezay a7seb el mesaha?").code == "ar"
-
-
-def test_a_refused_decision_is_not_verified(policy):
-    decision = policy.resolve("ok")
-    assert decision.refused is True
-    assert decision.verifiable is False
-
-
-def test_text_without_letters_keeps_continuity(policy):
-    """"2 + 2 = ?" says nothing about a language, so the conversation's own
-    answer has to carry — which is the session store's job, not a tier nothing
-    populated."""
-    assert policy.resolve("2 + 2 = ?", session_language="ar").code == "ar"
-
-
-# --- the explicit-request matcher -------------------------------------------
 
 @pytest.mark.parametrize("text,expected", [
-    ("answer in French: what is subtraction", "fr"),
-    ("reply in Arabic please", "ar"),
-    ("اشرح لي الدرس بالعربي", "ar"),
-    ("réponds en arabe s'il te plaît", "ar"),
-    ("bitte antworte auf Deutsch", "de"),
-    ("translate into English", "en"),
+    ("explain column subtraction", "en"),
+    ("explique-moi le cycle de l'eau s'il te plaît", "fr"),
+    ("erkläre mir bitte den Wasserkreislauf", "de"),
+    ("اشرح لي عملية الطرح", "ar"),
 ])
-def test_requests_are_recognised(text, expected):
-    assert explicit_request(text)[0] == expected
+def test_widening_the_detector_did_not_cost_the_supported_ones(policy, text, expected):
+    assert _reply_to(policy, text).code == expected
 
 
-@pytest.mark.parametrize("text", [
-    "what happened in the French Revolution?",
-    "I need help with my English literature homework",
-    "we studied the German empire in class",
+@pytest.mark.parametrize("text,detected", [
+    ("explícame el ciclo del agua por favor", "es"),
+    ("spiegami il ciclo dell'acqua per favore", "it"),
+    ("bana su döngüsünü açıkla lütfen", "tr"),
+    ("leg me de waterkringloop uit alsjeblieft", "nl"),
+    ("explique-me o ciclo da água por favor", "pt"),
 ])
-def test_a_topic_is_not_a_request(text):
-    """A language name is a subject here, not an instruction."""
-    assert explicit_request(text) is None
+def test_an_unsupported_language_falls_back_instead_of_guessing(policy, text, detected):
+    """A detector built only from the languages we answer in has to pick the
+    nearest of them, and does so confidently — Turkish scored 1.00 for German,
+    Dutch 0.82. Naming the languages we merely recognise lets us decline."""
+    from shared.language.detect import detect
+
+    assert detect(text, SUPPORTED).code == detected
+    assert policy.written_in(text) is None
+    assert _reply_to(policy, text).code == "en"
 
 
 # --- script -----------------------------------------------------------------
@@ -195,41 +154,6 @@ def test_script_classification():
 def test_arabizi_needs_evidence():
     assert looks_arabizi("a7seb") is True
     assert looks_arabizi("hello there") is False
-
-
-# --- catalogue --------------------------------------------------------------
-
-def test_every_string_exists_in_every_supported_language():
-    missing = {
-        key: sorted(set(SUPPORTED) - set(entries))
-        for key, entries in STRINGS.items()
-        if set(SUPPORTED) - set(entries)
-    }
-    assert not missing, f"untranslated: {missing}"
-
-
-def test_no_translation_is_a_copy_of_the_english():
-    """A copy-pasted English string reads as a translation and is never noticed."""
-    copied = [
-        key for key, entries in STRINGS.items()
-        if entries.get("ar") == entries.get("en") and not _is_language_neutral(entries["en"])
-    ]
-    assert not copied, f"Arabic entries identical to English: {copied}"
-
-
-def _is_language_neutral(text: str) -> bool:
-    return not any(char.isalpha() for char in text) or text.strip() in {"PDF"}
-
-
-def test_a_missing_key_is_reported_not_silently_english(caplog):
-    with caplog.at_level("ERROR", logger="shared.language.catalog"):
-        assert translate("nope.not.a.key", "ar") == "nope.not.a.key"
-    assert "i18n missing key" in caplog.text
-
-
-def test_placeholders_are_filled():
-    assert "5" in translate("compose.assessment_line", "en", n=5)
-    assert "5" in translate("compose.assessment_line", "ar", n=5)
 
 
 # --- the directive ----------------------------------------------------------
@@ -286,197 +210,8 @@ def test_prose_strips_what_carries_no_language():
     assert "$" not in stripped and "[1]" not in stripped and "http" not in stripped
 
 
-# --- languages we do not answer in ------------------------------------------
 
-@pytest.mark.parametrize("text,detected", [
-    ("explícame el ciclo del agua por favor", "es"),
-    ("spiegami il ciclo dell'acqua per favore", "it"),
-    ("bana su döngüsünü açıkla lütfen", "tr"),
-    ("leg me de waterkringloop uit alsjeblieft", "nl"),
-    ("explique-me o ciclo da água por favor", "pt"),
-])
-def test_an_unsupported_language_falls_back_instead_of_guessing(policy, text, detected):
-    """A detector built only from the languages we answer in has to pick the
-    nearest of them, and does so confidently — Turkish scored 1.00 for German,
-    Dutch 0.82. Naming the languages we merely recognise lets us decline."""
-    from shared.language.detect import detect
-
-    assert detect(text, SUPPORTED).code == detected
-    decision = policy.resolve(text)
-    assert decision.code == "en"
-    assert decision.refused is True, "a declined language must not trigger repair"
-
-
-def test_the_caller_s_language_catches_an_unsupported_message(policy):
-    """Falling back is where the parameter earns its place."""
-    decision = policy.resolve("spiegami il ciclo dell'acqua", api_language="ar")
-    assert (decision.code, decision.source) == ("ar", "api")
-
-
-@pytest.mark.parametrize("text,expected", [
-    ("explain column subtraction", "en"),
-    ("explique-moi le cycle de l'eau s'il te plaît", "fr"),
-    ("erkläre mir bitte den Wasserkreislauf", "de"),
-    ("اشرح لي عملية الطرح", "ar"),
-])
-def test_widening_the_detector_did_not_cost_the_supported_ones(policy, text, expected):
-    assert policy.resolve(text).code == expected
-
-
-# --- refusing a language ----------------------------------------------------
-
-@pytest.mark.parametrize("text", [
-    "stop replying in Arabic",
-    "don't answer in French",
-    "do not reply in Arabic",
-    "no longer answer in German",
-    "بلاش ترد بالعربي",
-])
-def test_refusing_a_language_is_not_requesting_it(text):
-    """The anchors include reply/respond/answer, so without a negation guard the
-    escape hatch reads as a request for the very language being refused — and
-    once an override sticks, the student trying to get out locks themselves in."""
-    assert explicit_request(text) is None
-    assert clear_request(text) is not None
-
-
-def test_a_negation_does_not_reach_across_a_clause(policy):
-    """"I don't like maths" must not cancel the request that follows it."""
-    assert policy.resolve("I don't like maths, explain in Arabic").code == "ar"
-
-
-@pytest.mark.parametrize("text", [
-    "answer in the language I write in",
-    "reply in my own language please",
-    "match my language",
-    "رد بنفس لغتي",
-    "réponds dans ma langue",
-])
-def test_asking_to_be_followed_is_a_clear(text):
-    assert clear_request(text) is not None
-
-
-@pytest.mark.parametrize("text", ["reply in Arabic", "explain subtraction", ""])
-def test_an_ordinary_message_clears_nothing(text):
-    assert clear_request(text) is None
-
-
-# --- a message that is only an instruction ----------------------------------
-
-@pytest.mark.parametrize("text,expected", [
-    ("reply in Arabic", "ar"),
-    ("reply in Arabic please", "ar"),
-    ("switch to Arabic", "ar"),
-    ("من فضلك رد بالعربي", "ar"),
-])
-def test_a_bare_instruction_is_recognised(text, expected):
-    found = language_instruction_only(text)
-    assert found is not None and found[1] == expected
-
-
-@pytest.mark.parametrize("text", [
-    "stop replying in Arabic",
-    "answer in the language I write in",
-])
-def test_a_bare_clear_is_recognised(text):
-    found = language_instruction_only(text)
-    assert found is not None and found[1] is None
-
-
-@pytest.mark.parametrize("text", [
-    "explain subtraction, reply in Arabic",
-    "explain subtraction. reply in Arabic",
-    "اشرح لي الدرس بالعربي",
-    "explain subtraction",
-])
-def test_a_question_carrying_an_instruction_still_needs_an_answer(text):
-    """Both halves matter: the instruction is obeyed, and the question answered."""
-    assert language_instruction_only(text) is None
-
-
-# --- a standing request from earlier in the session --------------------------
-
-@pytest.mark.parametrize("message", [
-    "and what about addition?",      # plain English, the common next turn
-    "explique-moi la soustraction",  # a confidently-detected other language
-    "ok",                            # too short to read
-    "2 + 2 = ?",                     # no letters at all
-])
-def test_a_standing_request_outranks_the_message(policy, message):
-    """"Reply in Arabic from now on" means from now on. Only a newer request
-    changes it — not the language of the next thing they happen to type."""
-    decision = policy.resolve(message, session_language="ar")
-    assert (decision.code, decision.source) == ("ar", "session")
-
-
-def test_a_standing_request_is_verified_not_guessed(policy):
-    """These are the turns most likely to drift: the message and the answer are
-    in different languages, so the retrieved material pulls against the answer."""
-    decision = policy.resolve("and what about addition?", session_language="ar")
-    assert decision.refused is False and decision.verifiable is True
-
-
-def test_a_new_request_replaces_the_standing_one(policy):
-    decision = policy.resolve("explain this, reply in French", session_language="ar")
-    assert (decision.code, decision.source) == ("fr", "explicit")
-
-
-def test_the_standing_request_outranks_the_caller(policy):
-    decision = policy.resolve("and what about addition?",
-                              session_language="ar", api_language="en")
-    assert decision.code == "ar"
-
-
-def test_an_unsupported_standing_value_is_ignored(policy):
-    decision = policy.resolve("explain subtraction", session_language="es")
-    assert (decision.code, decision.source) == ("en", "detected")
-
-
-def test_no_standing_request_leaves_everything_as_it_was(policy):
-    assert policy.resolve("explain subtraction").code == "en"
-    assert policy.resolve("اشرح لي عملية الطرح").code == "ar"
-
-
-# --- a message about a language, not in one ---------------------------------
-
-@pytest.mark.parametrize("message", [
-    "how do you say hello in Arabic?",
-    "how to say thank you in French",
-    "wie sagt man Hallo auf Arabisch",
-    "comment dit-on bonjour en arabe",
-])
-def test_a_planner_hint_cannot_turn_a_question_about_a_language_into_one_in_it(
-    policy, message,
-):
-    """"how do you say hello in Arabic?" came back in Arabic, explaining the word
-    أهلاً out of a poetry lesson.
-
-    explicit_request has always refused to read that as a request. The planner
-    reads the same message, is told to report a language only when one is
-    explicitly asked for, and reported Arabic anyway — and its hint reached the
-    resolver without the test the matcher applies. One question, decided two
-    ways in two places."""
-    assert policy.resolve(message, planner_hint="ar").code != "ar"
-
-
-@pytest.mark.parametrize("message,expected", [
-    ("ازاي اقول مرحبا بالانجليزي؟", "ar"),
-    ("كيف أقول شكرا بالفرنسية", "ar"),
-])
-def test_the_same_holds_for_a_student_writing_in_arabic(policy, message, expected):
-    """The pilot corpus is Arabic, so the Arabic form of the question is the one
-    a real student types."""
-    assert policy.resolve(message, planner_hint="en").code == expected
-
-
-def test_asking_for_a_translation_is_still_a_request(policy):
-    """The guard must not swallow a real instruction: "translate hello into
-    Arabic" genuinely asks for Arabic."""
-    assert policy.resolve("translate hello into Arabic").code == "ar"
-    assert policy.resolve("what does مرحبا mean in English?").code == "en"
-
-
-# --- which way a page is read -----------------------------------------------
+# --- reading direction ------------------------------------------------------
 
 def test_a_page_of_latin_prose_is_read_left_to_right():
     """reading_direction was one global config value, set to rtl for the pilot

@@ -1,6 +1,6 @@
 """explain_sg / summarize_sg — structurally identical RAG subgraphs.
 
-    retrieve -> resolve_prereqs -> answer
+    retrieve -> answer -> resolve_prereqs
 
 RAG is hard-wired: no branch goes around ``retrieve``. Both modes
 share this builder; ``mode`` picks the prompt and the artifact label. The subgraph
@@ -20,15 +20,13 @@ from typing import Any, TypedDict
 from langchain_core.messages import HumanMessage
 from pydantic import ValidationError
 
-from shared.language import translate
 
 from ... import render, retrieval
 from ...citations import cited_numbers, has_citation, keep_cited
+from ...errors import TutorUnavailable
 from ...models import Citation, MathFigureSpec, PrereqTopic, RetrievedChunk, Style
-from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, SUMMARIZE_PROMPT
+from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, NO_MATERIAL_PROMPT, SUMMARIZE_PROMPT
 from ...retrieval import DEFAULT_MIN_SCORE, DEFAULT_SCOPE_RATIO
-from ...evidence import EvidenceSet
-from ...search_decision import decide
 from ...scope import StudyScope, lecture_filter, scope_of
 from ...tools import get_chunks_by_id
 
@@ -51,8 +49,8 @@ class ExplainSummarizeState(TypedDict, total=False):
     lecture_ids: list[str] | None  # optional lecture scope; None -> whole subject
     study_scope: dict | None       # the UI selection this turn is bounded by
     message: str                   # what the student typed, before the planner reworded it
-    evidence: EvidenceSet | None   # what the previous answer in this session used
-    mode_chosen: str | None        # the study mode the student chose, if they chose one
+    history: str
+    previous_chunk_ids: list[str]
     grade: str | None
     instructions: str               # subject-specific prompt addendum (e.g. math), or ""
     k: int
@@ -63,7 +61,6 @@ class ExplainSummarizeState(TypedDict, total=False):
     scope_relevance_ratio: float    # in-scope share of the unscoped best score (config agent.scope.relevance_ratio)
     # produced
     chunks: list[RetrievedChunk]
-    prereq_chunks: list[RetrievedChunk]
     prereq_topics: list[PrereqTopic]
     explanation: str
     grounded: bool                  # answer used the context (inline [n] or a math figure); a decline is False
@@ -74,99 +71,81 @@ class ExplainSummarizeState(TypedDict, total=False):
 def _retrieve(state: ExplainSummarizeState, config) -> dict:
     """The passages this turn answers from.
 
-    A turn that carries on the one before it does not search. "Explain that
-    more simply" names nothing to search for, and the passages that answer it
-    are the ones the last answer already used — reached by pointer rather than
-    by embedding words that mean nothing on their own.
-
-    Which of the two a turn is gets decided in ``search_decision``. What any
-    turn is allowed to see gets decided here, and the same way either way: a
-    decision to search still passes through the lesson scope, the score floor
-    and the relevance ratio below.
+    A turn that carries the last answer on starts from the passages that answer
+    rested on, reached by id, and adds whatever a search for the rewritten
+    question finds. The rewrite names its subject, so the search is a real one;
+    the passages already on the table keep the answer continuous. New passages
+    pass the lesson scope, the score floor and the relevance ratio; reused ones
+    passed them on the turn that found them.
     """
-    evidence = state.get("evidence")
-    decision = decide(
-        state.get("message") or state.get("query") or "",
-        previous_question=evidence.query if evidence else "",
-        config=config,
-        mode=state.get("mode_chosen"),
-    )
-
-    if not decision.opens_new_subject and evidence:
-        reused = _reuse_previous_evidence(evidence)
-        if reused is not None:
-            # The subject and topics come back with the chunks. A follow-up
-            # names neither, so re-deriving them from its words sent an English
-            # science answer to the Arabic corpus — prerequisites in Arabic
-            # under an English explanation, and sources from a lesson about
-            # Jabir ibn Hayyan.
-            return {
-                "chunks": reused,
-                "query": decision.question,
-                "topic_ids": evidence.topic_ids,
-                "subject_id": evidence.subject_id or state.get("subject_id"),
-            }
-
     scope = scope_of(state)
     subject_id = scope.subject_id or state.get("subject_id")
-    query = decision.question or state.get("query") or ""
-    chunks = retrieval.retrieve(
+    query = state.get("query") or state.get("message") or ""
+    k = state.get("k", 8)
+    found = retrieval.retrieve(
         query,
         state["namespaces"],
-        k=state.get("k", 8),
+        k=k,
         subject_id=subject_id,
         topic_ids=state.get("topic_ids") or None,
         lecture_ids=lecture_filter(state),
         min_score=state.get("min_score", DEFAULT_MIN_SCORE),
         topic_filter=state.get("topic_filter", "hard"),
     )
-    if chunks and scope.is_narrow:
+    if found and scope.is_narrow:
         ratio = state.get("scope_relevance_ratio") or DEFAULT_SCOPE_RATIO
         if not retrieval.answers_within_scope(
-            query, state["namespaces"], chunks[0].score,
+            query, state["namespaces"], found[0].score,
             subject_id=subject_id, ratio=ratio,
         ):
             logger.info("question falls outside the selected lesson", extra={
-                "lecture_id": scope.lecture_id, "scoped_best": round(chunks[0].score, 3)})
-            return {"chunks": []}
-    return {"chunks": chunks}
-
-
-
-def _reuse_previous_evidence(evidence: EvidenceSet) -> list | None:
-    """The last answer's passages, for a turn that carries it on.
-
-    ``None`` means search after all: a lecture re-ingested between turns
-    re-mints every chunk_id, and answering from passages that have gone is
-    worse than the search the turn would otherwise have done.
-    """
-    if not evidence.chunk_ids:
-        return None
-
-    chunks = get_chunks_by_id(evidence.chunk_ids)
-    if not chunks:
-        logger.info("evidence no longer resolves; searching instead",
-                    extra={"chunks": len(evidence.chunk_ids)})
-        return None
+                "lecture_id": scope.lecture_id, "scoped_best": round(found[0].score, 3)})
+            found = []
+    carried = _carried_passages(state.get("previous_chunk_ids") or [])
+    if not carried:
+        return {"chunks": found}
+    known = {chunk.chunk_id for chunk in carried}
+    merged = carried + [chunk for chunk in found if chunk.chunk_id not in known]
     logger.info("turn continues the last answer", extra={
-        "chunks": len(chunks), "previous_query": evidence.query[:80]})
+        "carried": len(carried), "found": len(found), "kept": min(len(merged), k)})
+    return {"chunks": merged[:k]}
+
+
+def _carried_passages(chunk_ids: list[str]) -> list[RetrievedChunk]:
+    """The last answer's passages, or none when a re-ingest has since replaced them."""
+    if not chunk_ids:
+        return []
+    chunks = get_chunks_by_id(chunk_ids)
+    if not chunks:
+        logger.info("the last answer's passages no longer resolve",
+                    extra={"chunks": len(chunk_ids)})
     return chunks
 
 
 def _resolve_prereqs(state: ExplainSummarizeState) -> dict:
-    # Prerequisites support an answer; they cannot be one. They are fetched by
-    # topic id rather than searched, so they carry no relevance score and pass
-    # straight through the floor — which meant a question the syllabus had just
-    # refused came back cited to five unrelated lessons.
-    if not state.get("chunks"):
-        return {"prereq_topics": [], "prereq_chunks": []}
-    prereq_topics, prereq_chunks = retrieval.resolve_prereqs(
-        state.get("topic_ids") or [],
-        state["namespaces"],
+    """What the student should know first, from the passages the answer cited.
+
+    Walking from topics guessed off the words of the question named whatever the
+    guess touched — a question about wind turbines listed the states of water.
+    The passages an answer actually cites are the only evidence of what it was
+    about, so their topics seed the walk, and an answer that cited nothing has
+    no prerequisites.
+    """
+    cited = {c.chunk_id for c in state.get("citations") or [] if c.chunk_id}
+    if not (state.get("grounded") and cited):
+        return {"prereq_topics": []}
+    seeds: list[str] = []
+    for chunk in state.get("chunks") or []:
+        if chunk.chunk_id in cited:
+            seeds.extend(t for t in chunk.topic_ids if t not in seeds)
+    if not seeds:
+        return {"prereq_topics": []}
+    prereq_topics = retrieval.resolve_prereqs(
+        seeds,
         depth=state.get("prereq_depth", 2),
         limit=state.get("prereq_limit", retrieval.DEFAULT_MAX_PREREQS),
     )
-    return {"prereq_topics": prereq_topics, "prereq_chunks": prereq_chunks}
+    return {"prereq_topics": prereq_topics}
 
 
 def _build_answer(mode: str, llm, config):
@@ -174,27 +153,22 @@ def _build_answer(mode: str, llm, config):
 
     def _answer(state: ExplainSummarizeState) -> dict:
         chunks = state.get("chunks", [])
-        prereq_chunks = state.get("prereq_chunks", [])
         primary_ctx, citations = retrieval.render_context(chunks, start=1)
-        prereq_ctx, prereq_cites = retrieval.render_context(
-            prereq_chunks, start=len(chunks) + 1)
         st = state.get("style")
         style = st.tone if st else "neutral"
 
-        if not chunks and not prereq_chunks:
+        if not chunks:
             scope = scope_of(state)
             logger.info("answer declined (no grounding)", extra={
-                "mode": mode, "chunks": 0, "prereq_chunks": 0,
-                "lecture_id": scope.lecture_id})
-            return {"explanation": _declined(scope, state.get("language", "en")),
+                "mode": mode, "chunks": 0, "lecture_id": scope.lecture_id})
+            return {"explanation": _declined(scope, state, llm, style),
                     "citations": [], "grounded": False}
 
         if llm is None:  # no chat key: deterministic grounded stub
             text = _stub_answer(mode, chunks, state.get("language", "en"))
             return _finalize(text, citations, mode, state, chunks, config)
 
-        logger.info("answer started", extra={
-            "mode": mode, "chunks": len(chunks), "prereq_chunks": len(prereq_chunks)})
+        logger.info("answer started", extra={"mode": mode, "chunks": len(chunks)})
         started = time.perf_counter()
 
         instructions = state.get("instructions", "")
@@ -204,28 +178,28 @@ def _build_answer(mode: str, llm, config):
             style=style,
             instructions=instructions,
             formatting=FORMATTING_CONTRACT,
+            history=state.get("history") or "",
             context=primary_ctx,
-            prereq_context=prereq_ctx or "(none)",
+            message=state.get("message") or state.get("query", ""),
             query=state.get("query", ""),
         ) if mode == "explain" else prompt.render(language=state.get("language", "en"),
             length=state.get("length", "medium"),
             style=style,
             instructions=instructions,
             formatting=FORMATTING_CONTRACT,
+            history=state.get("history") or "",
             context=primary_ctx,
+            message=state.get("message") or state.get("query", ""),
             query=state.get("query", ""),
         )
         try:
             content = llm.invoke([HumanMessage(content=prompt_text)]).content
-        except Exception:
-            # Runtime LLM failure (key present, call failed): a friendly message, not a stub
-            # or a stack trace. No citations/figure on a degraded answer.
+        except Exception as error:
             logger.error("answer LLM call failed", exc_info=True)
-            return {"explanation": translate("common.degraded", state.get("language", "en")),
-                    "citations": [], "grounded": False}
+            raise TutorUnavailable() from error
         logger.info("answer finished", extra={
             "mode": mode, "duration_s": round(time.perf_counter() - started, 3)})
-        return _finalize(content, citations + prereq_cites, mode, state, chunks, config)
+        return _finalize(content, citations, mode, state, chunks, config)
 
     return _answer
 
@@ -296,17 +270,40 @@ def _figure_spec(mode, state, chunks, config) -> dict | None:
             "page": page}
 
 
-def _declined(scope: StudyScope, language: str) -> str:
-    """Why nothing was found, in the terms the student is working in.
+def _declined(scope: StudyScope, state: ExplainSummarizeState, llm, style: str) -> str:
+    """Why nothing was found, told by the tutor in the conversation's own terms.
 
-    Inside a lesson, "there isn't enough syllabus material" is the wrong answer
-    twice over: the material exists, and the student cannot tell that the
-    boundary they chose is what stopped it.
+    A fixed sentence per language answered every miss the same way, whatever was
+    asked and however the conversation had gone. The model writes it instead,
+    told only that the lessons hold nothing on the question and, inside a lesson,
+    which lesson that is, so it cannot answer from its own knowledge. A model
+    that fails to write it fails the turn rather than falling back to a sentence
+    in some language.
     """
+    language = state.get("language", "en")
+    if llm is None:
+        return _decline_without_model(scope)
     lesson = scope.label()
-    if scope.is_narrow and lesson:
-        return translate("explain.out_of_scope", language, lesson=lesson)
-    return translate("explain.no_context", language)
+    where = (f' They are studying the lesson "{lesson}", and this is outside it; say so.'
+             if scope.is_narrow and lesson else "")
+    prompt = NO_MATERIAL_PROMPT.render(
+        language=language, style=style, scope=where,
+        history=state.get("history") or "",
+        message=state.get("message") or state.get("query", ""))
+    try:
+        text = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()
+    except Exception as error:
+        raise TutorUnavailable() from error
+    if not text:
+        raise TutorUnavailable()
+    return text
+
+
+def _decline_without_model(scope: StudyScope) -> str:
+    """The decline for a turn with no model to write one: the lesson that bounded
+    it, when there was one, and nothing a reader must know a language to read."""
+    lesson = scope.label()
+    return f"∅ {lesson}" if scope.is_narrow and lesson else "∅"
 
 
 def _stub_answer(mode: str, chunks: list[RetrievedChunk], language: str) -> str:
@@ -324,9 +321,9 @@ def _build(mode: str, *, config, llm=None):
     graph.add_node("resolve_prereqs", _resolve_prereqs)
     graph.add_node("answer", _build_answer(mode, llm, config))
     graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "resolve_prereqs")
-    graph.add_edge("resolve_prereqs", "answer")
-    graph.add_edge("answer", END)
+    graph.add_edge("retrieve", "answer")
+    graph.add_edge("answer", "resolve_prereqs")
+    graph.add_edge("resolve_prereqs", END)
     return graph.compile()
 
 

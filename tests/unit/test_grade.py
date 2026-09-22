@@ -279,7 +279,7 @@ def test_grade_degrades_on_llm_failure(monkeypatch):
     res = out["result"]
     assert res["degraded"] is True and res["graded"][0]["graded"] is False
     assert res["mastery_events"] == 0 and called["n"] == 0   # no mastery on a failed grade
-    assert "couldn't complete" in res["graded"][0]["feedback"].lower()
+    assert res["graded"][0]["feedback"] == ""                 # the caller words it
 
 
 # --- end-to-end stub --------------------------------------------------------
@@ -321,7 +321,7 @@ def test_grade_sg_declines_without_key_or_context(monkeypatch):
     res = out["result"]
     assert res["summary"]["declined"] == 1 and res["summary"]["count"] == 0
     assert res["mastery_events"] == 0                 # declined -> no mastery
-    assert res["graded"][0]["graded"] is False and "syllabus" in res["graded"][0]["feedback"].lower()
+    assert res["graded"][0]["graded"] is False and res["graded"][0]["feedback"] == ""
 
 
 def test_grade_sg_no_user_id_feedback_only(monkeypatch):
@@ -371,7 +371,8 @@ def test_grade_adapter_source_by_pathway():
     from agent.graph.graph import _build_grade_adapter
     from agent.graph.subgraphs import build_grade_sg
     cfg = get_config()
-    adapter = _build_grade_adapter(build_grade_sg(config=cfg, llm=None), cfg, client=None)
+    from agent.subjects import SubjectDirectory
+    adapter = _build_grade_adapter(build_grade_sg(config=cfg, llm=None), cfg, SubjectDirectory(None))
     base = {"subject_id": None, "user_id": None, "language": "en"}
     # A student chat grade is self-practice even when a quiz is referenced.
     student = adapter({**base, "pathway": "student",

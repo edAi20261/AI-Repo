@@ -1,27 +1,20 @@
-"""Parent graph nodes: classify · load_context · plan · dispatch · compose · persist.
+"""Parent graph nodes: classify · load_context · understand · converse · plan · dispatch ·
+compose · verify_language · persist.
 
-Node callables that need config or an LLM are built by ``build_*`` factories so the
-dependency is captured once at compile time, not looked up per turn. ``classify``
-and ``load_context`` need only config.
+Node callables that need config, an LLM or a store are built by ``build_*`` factories so
+the dependency is captured once at compile time, not looked up per turn.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from langchain_core.messages import HumanMessage
 
-from shared.language import (
-    LanguageDecision,
-    LanguagePolicy,
-    clear_request,
-    explicit_request,
-    language_instruction_only,
-    translate,
-)
-from shared.language.catalog import STRINGS
+from shared.errors import UnprocessableError
+from shared.language import LanguageDecision, LanguagePolicy, name_of
 from shared.language.verify import (
     DEFAULT_MIN_ANSWER_CHARS,
     DEFAULT_MIN_CONFIDENCE,
@@ -30,28 +23,39 @@ from shared.language.verify import (
 from shared.logging import clip
 from shared.structured import call_structured
 
-from ..citations import cited_numbers, renumber
-from ..intent import IntentRouter
+from ..citations import cited_numbers, renumber, strip_markers
+from ..errors import TutorUnavailable
+from ..conversation import (
+    Conversation,
+    ConversationStore,
+    HistoryWindow,
+    SessionState,
+    Turn,
+    fold_if_due,
+)
 from ..models import (
     AssessmentSpec,
     Citation,
     GradeSpec,
-    PlannerOutput,
+    PlannedTask,
     PrereqTopic,
     Style,
+    TurnUnderstanding,
     VisualSpec,
 )
 from ..prompts import (
     COMPOSE_PROMPT,
+    CONVERSE_PROMPT,
     FORMATTING_CONTRACT,
     LANGUAGE_REPAIR_PROMPT,
-    PLAN_PROMPT,
+    NO_MATERIAL_PROMPT,
     TASK_DESCRIPTIONS,
+    UNDERSTAND_PROMPT,
 )
-from ..evidence import EvidenceStore
-from ..search_decision import decide
+from ..retrieval import DEFAULT_MIN_SCORE
 from ..scope import lecture_filter
-from ..tools import resolve_topics
+from ..subjects import SubjectDirectory
+from ..tools import rag_search, resolve_topics
 from .pathways import build_namespaces, resolve_style
 
 logger = logging.getLogger(__name__)
@@ -59,138 +63,29 @@ logger = logging.getLogger(__name__)
 
 # --- classify ---------------------------------------------------------------
 
-# Shown (localized) when the request has no valid role — the graph halts rather than
-# guessing a persona (en is the fallback for any unlisted language).
-
-
-def build_classify(config, sticky=None):
-    policy = LanguagePolicy.from_config(config)
+def build_classify(config, store: ConversationStore, window: HistoryWindow):
     known_pathways = set((config.get("agent.pathways", {}) or {}).keys())
 
     def classify(state) -> dict:
-        message = state.get("message", "")
-
-        # Both are pure regex. A message that gives or revokes an instruction
-        # settles the question by itself, so those turns never read the store.
-        cleared = clear_request(message)
-        requested = None if cleared else explicit_request(message)
-
-        session_language = None
-        if sticky is not None and not requested and not cleared:
-            session_language = sticky.get(
-                state.get("user_id"), state.get("session_id"))
-
-        # The message decides. A standing instruction from earlier in the
-        # session comes next; the caller's parameter is the fallback for a
-        # message that cannot decide — see shared/language/resolver.py.
-        decision = policy.resolve(
-            message,
-            api_language=state.get("language"),
-            session_language=session_language,
-        )
-        language = decision.code
-
-        write = None
-        if cleared:
-            write = {"op": "clear", "evidence": cleared}
-        elif decision.source == "explicit":
-            write = {"op": "set", "code": decision.code,
-                     "evidence": decision.evidence}
         user_type = state.get("user_type")
         pathway = user_type if user_type in known_pathways else None
         if pathway is None:
-            # Unknown/missing role: don't run the graph — ask the user to sign in.
             logger.warning("classify: unknown user_type %r", user_type)
-            return {"pathway": None, "language": language,
-                    "language_decision": decision.model_dump(),
-                    "response": translate("classify.sign_in", language)}
-        logger.info("classify", extra={"pathway": pathway, **decision.log_fields()})
-        return {"pathway": pathway, "language": language,
-                "language_decision": decision.model_dump(),
-                "session_language": session_language,
-                "session_language_write": write}
-
-    return classify
-
-
-def _after_classify(state) -> str:
-    """Halt on an unknown role (classify already set a sign-in response); else continue."""
-    return "route" if state.get("pathway") else "persist"
-
-
-# --- route ------------------------------------------------------------------
-
-def build_route(config, embedder=None):
-    """Decide whether this turn needs the syllabus at all.
-
-    A greeting used to be planned as an explain task, which searched the textbook
-    for "Hi" and answered that the syllabus does not cover it. Deciding before
-    retrieval costs one embedding; deciding after costs a retrieval, a model call,
-    and a worse answer.
-    """
-    router = IntentRouter.from_config(config, embedder)
-
-    def route(state) -> dict:
-        message = state.get("message", "")
-        decision = router.classify(message)
-        if decision.needs_syllabus:
-            logger.info("route", extra=decision.log_fields())
-            return {"intent": decision.intent}
-
-        if decision.intent in RECONSIDERED_MID_LESSON and _follows_an_answer(
-                message, state, config):
-            # "Can you give me an example?" sits close to "can you help me" in
-            # the small-talk seeds, and was answered with the capability blurb
-            # in the middle of a lesson. Those words ask about the tutor at the
-            # start of a conversation and about the lesson inside one.
-            logger.info("route: small talk reconsidered as a follow-up",
-                        extra=decision.log_fields())
-            return {"intent": "question"}
-
-        language = state.get("language", "en")
-        key = f"intent.{decision.intent}"
-        if decision.intent == "language":
-            # Setting a language and revoking one are different answers. classify
-            # already resolved `language`, so the acknowledgement arrives in the
-            # language just asked for without any further plumbing.
-            instruction = language_instruction_only(state.get("message", ""))
-            if instruction and instruction[1] is None:
-                key = "intent.language_cleared"
-        logger.info("route: answered without retrieval", extra=decision.log_fields())
+            raise UnprocessableError(
+                f"user_type must be one of {', '.join(sorted(known_pathways))}.",
+                details={"user_type": user_type})
+        conversation = store.load(state.get("user_id"), state.get("session_id"))
+        logger.info("classify", extra={
+            "pathway": pathway, "remembered_turns": len(conversation.turns),
+            "summarised": bool(conversation.summary)})
         return {
-            "intent": decision.intent,
-            "tasks": [],
-            "response": translate(key, language),
+            "pathway": pathway,
+            "api_language": state.get("language"),
+            "conversation": conversation.model_dump(),
+            "history": window.render(conversation),
         }
 
-    return route
-
-
-
-# Intents whose words could be asking about the lesson rather than about the
-# tutor. A greeting or a thank-you is never a follow-up, whenever it arrives.
-RECONSIDERED_MID_LESSON = frozenset({"meta"})
-
-
-def _follows_an_answer(message: str, state, config) -> bool:
-    """Whether this turn is carrying on an answer already given.
-
-    Only asked when the small-talk router has already claimed the turn, so the
-    evidence lookup stays off the path every real question takes.
-    """
-    store = EvidenceStore(
-        config=config, user_id=state.get("user_id"),
-        user_type=state.get("pathway"), session_id=state.get("session_id"))
-    evidence = store.recall()
-    if not (evidence and evidence.chunk_ids):
-        return False
-    return not decide(message, previous_question=evidence.query, config=config,
-                      mode=state.get("study_mode")).opens_new_subject
-
-
-def _after_route(state) -> str:
-    """A conversational turn is already answered; only a question needs context."""
-    return "load_context" if state.get("intent", "question") == "question" else "persist"
+    return classify
 
 
 # --- load_context -----------------------------------------------------------
@@ -200,80 +95,206 @@ def build_load_context(config):
         pathway = state["pathway"]
         namespaces = build_namespaces(session_id=state.get("session_id"))
         style = resolve_style(pathway)
-        # No default here: subject resolution is explicit -> infer -> default, and
-        # inference happens in plan. Applying the default now would preempt it. Per-turn
-        # retrieval is scoped to this subject by the subject_id payload filter in
-        # rag_search. TODO (re-ingest): switch to the general/subject namespace union
-        # (see build_namespaces).
-        subject_id = state.get("subject_id")
         logger.info("load_context", extra={"pathway": pathway, "namespaces": namespaces})
         return {
             "namespaces": namespaces,
             "style": style,
-            "subject_id": subject_id,
+            "subject_id": state.get("subject_id"),
             "grade": state.get("grade"),
         }
 
     return load_context
 
 
-# --- plan -------------------------------------------------------------------
+# --- understand ---------------------------------------------------------------
 
 def _allowed_descriptions(allowed: list[str]) -> str:
     """The task-description bullets for just the allowed tasks (one source of truth in
-    prompts.TASK_DESCRIPTIONS), so the planner only ever sees runnable tasks."""
+    prompts.TASK_DESCRIPTIONS), so the model only ever sees runnable tasks."""
     return "\n".join(f"- {TASK_DESCRIPTIONS[t]}" for t in allowed if t in TASK_DESCRIPTIONS)
 
 
-def _plan_tasks(
-    message: str, allowed: list[str], llm, *, role: str = "user",
-    languages: str = "ar, en, fr, de", config=None,
-) -> tuple[list[dict], str | None]:
-    """LLM plan when a chat model is available; deterministic single task otherwise.
+def _allowed_tasks(config, pathway: str) -> list[str]:
+    default_tasks = config.get("agent.default_tasks", ["explain", "summarize"])
+    return config.get(f"agent.pathways.{pathway}.tasks") or default_tasks
 
-    Returns ``(tasks, output_language)``. A failure PROPAGATES so the plan node
-    degrades with a friendly message: a reply that could not be read is not the
-    same as a student asking for an explanation, and treating it as one silently
-    answered a different question than the one that was asked.
 
-    An empty task list is a genuine answer — the model read the message and found
-    nothing to do — and still falls back to a single explain task.
-    """
-    if llm is not None:
-        prompt_text = PLAN_PROMPT.render(
-            allowed=", ".join(allowed), task_descriptions=_allowed_descriptions(allowed),
-            role=role, languages=languages, message=message)
-        plan = call_structured(
-            PlannerOutput,
-            [HumanMessage(content=prompt_text)],
-            task="plan", config=config, llm=llm, label="planner",
-        )
-        cleaned = []
-        for task in plan.tasks:
+def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy) -> str:
+    lines = []
+    if subject.name or subject.language:
+        taught = (f", taught in {name_of(subject.language)}"
+                  if policy.supports(subject.language) else "")
+        lines.append(f"- Subject: {subject.name or 'unnamed'}{taught}.")
+    else:
+        lines.append("- Subject: not settled yet.")
+    if requested:
+        lines.append(f"- The student asked to be answered in {name_of(requested)}.")
+    return "\n".join(lines)
+
+
+def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
+    """The checks a schema cannot express, fed back to the model on a retry."""
+    def check(reading: TurnUnderstanding) -> None:
+        if reading.needs_syllabus and not reading.tasks:
+            raise ValueError("needs_syllabus is true, so tasks must hold at least one task")
+        for task in reading.tasks:
             if task.type not in allowed:
-                continue
-            entry = {
-                "type": task.type,
-                "query": task.query or message,
-                "level": task.level,
-                "length": task.length,
-            }
-            # Each sub-spec belongs to exactly one task type; anything else the
-            # model attached is dropped rather than carried into the wrong node.
-            if task.type == "assessment" and task.assessment:
-                entry["assessment"] = task.assessment.model_dump(exclude_none=True)
-            if task.type == "grade" and task.grade:
-                entry["grade"] = task.grade.model_dump(exclude_none=True)
-            if task.type == "visual" and task.visual:
-                entry["visual"] = task.visual.model_dump(exclude_none=True)
-            cleaned.append(entry)
-        if cleaned:
-            return _merge_same_type(cleaned), plan.output_language
-    # No LLM (dev/test), or the model returned nothing usable (not a failure) -> a safe default:
-    # explain the message. A real LLM failure raised above and the plan node degrades instead.
-    typ = "explain" if "explain" in allowed else allowed[0]
-    return [{"type": typ, "query": message, "level": "intermediate", "length": "medium"}], None
+                raise ValueError(f"task type {task.type!r} is not available here; "
+                                 f"use only {', '.join(allowed)}")
+            if not (task.query or "").strip():
+                raise ValueError(f"the {task.type} task needs a query that names what it is about")
+        words = " ".join(reading.student_words.split())
+        if not words or words not in " ".join(message.split()):
+            raise ValueError("student_words must be the student's own words, copied exactly "
+                             "from the message")
+        request = reading.language_request
+        if request.action == "set" and request.code not in supported:
+            raise ValueError(f"language_request.code must be one of {', '.join(supported)}")
+    return check
 
+
+def _read_turn(state, llm, config, *, allowed, subject, requested, policy) -> TurnUnderstanding:
+    """The model's reading of the turn, or a single explain task when there is no model."""
+    message = state.get("message", "")
+    if llm is None:
+        fallback = "explain" if "explain" in allowed else allowed[0]
+        return TurnUnderstanding(
+            student_words=message,
+            needs_syllabus=True,
+            tasks=[PlannedTask(type=fallback, query=message)],
+            message_language=policy.written_in(message),
+        )
+    material = (name_of(subject.language) if policy.supports(subject.language)
+                else "the language the student writes in")
+    prompt = UNDERSTAND_PROMPT.render(
+        role=state["pathway"],
+        task_descriptions=_allowed_descriptions(allowed),
+        allowed=", ".join(allowed),
+        session=_session_facts(subject, requested, policy),
+        history=state.get("history") or "",
+        message=message,
+        material_language=material,
+        languages=", ".join(policy.supported),
+    )
+    return call_structured(
+        TurnUnderstanding,
+        [HumanMessage(content=prompt)],
+        task="understand", config=config, llm=llm, label="understand",
+        validate=_coherent(allowed, policy.supported, message),
+    )
+
+
+def _standing_language(current: Optional[str], reading: TurnUnderstanding,
+                       policy: LanguagePolicy) -> Optional[str]:
+    request = reading.language_request
+    if request.action == "set" and policy.supports(request.code):
+        return request.code
+    if request.action == "clear":
+        return None
+    return current if policy.supports(current) else None
+
+
+def _planned(reading: TurnUnderstanding) -> list[dict]:
+    """The model's tasks as plain dicts, each sub-spec kept only on its own task type."""
+    tasks = []
+    for task in reading.tasks:
+        entry = {"type": task.type, "query": task.query.strip(),
+                 "level": task.level, "length": task.length}
+        if task.type == "assessment" and task.assessment:
+            entry["assessment"] = task.assessment.model_dump(exclude_none=True)
+        if task.type == "grade" and task.grade:
+            entry["grade"] = task.grade.model_dump(exclude_none=True)
+        if task.type == "visual" and task.visual:
+            entry["visual"] = task.visual.model_dump(exclude_none=True)
+        tasks.append(entry)
+    return _merge_same_type(tasks)
+
+
+def build_understand(config, llm, subjects: SubjectDirectory):
+    """Read the turn against the conversation: what is asked, in what language.
+
+    One model call replaces what four hand-written layers used to guess from the
+    words of a single message: whether it was small talk, whether it followed
+    the last answer, whether it named a language, and which task it wanted.
+    """
+    policy = LanguagePolicy.from_config(config)
+
+    def understand(state) -> dict:
+        pathway = state["pathway"]
+        allowed = _allowed_tasks(config, pathway)
+        conversation = Conversation.model_validate(state.get("conversation") or {})
+        subject_id = state.get("subject_id") or conversation.state.subject_id
+        subject = subjects.facts(subject_id)
+        current = conversation.state.language
+        try:
+            reading = _read_turn(state, llm, config, allowed=allowed, subject=subject,
+                                 requested=current, policy=policy)
+        except Exception as error:
+            logger.error("reading the turn failed", exc_info=True)
+            raise TutorUnavailable() from error
+        words = reading.student_words.strip() or state.get("message", "")
+        requested = _standing_language(current, reading, policy)
+        message_language = (reading.message_language
+                            if policy.supports(reading.message_language)
+                            else policy.written_in(words))
+        decision = policy.reply(
+            requested=requested, subject_language=subject.language,
+            message_language=message_language, api_language=state.get("api_language"))
+        kind = "study" if reading.needs_syllabus else "conversation"
+        logger.info("understand", extra={
+            "turn_kind": kind, "tasks": [t.type for t in reading.tasks],
+            "continues_previous": reading.continues_previous,
+            "changes_subject": reading.changes_subject,
+            "language_request": reading.language_request.action,
+            **decision.log_fields()})
+        return {
+            "raw_message": state.get("message", ""),
+            "message": words,
+            "understanding": reading.model_dump(),
+            "turn_kind": kind,
+            "planned_tasks": _planned(reading) if reading.needs_syllabus else [],
+            "requested_language": requested,
+            "message_language": message_language,
+            "language": decision.code,
+            "language_decision": decision.model_dump(),
+        }
+
+    return understand
+
+
+def _after_understand(state) -> str:
+    return "converse" if state.get("turn_kind") == "conversation" else "plan"
+
+
+# --- converse -----------------------------------------------------------------
+
+def build_converse(config, llm):
+    """A reply to a turn that needs no course material, written by the model."""
+    def converse(state) -> dict:
+        language = state.get("language", "en")
+        if llm is None:
+            return {"response": NOTHING_PRODUCED, "reply_body": NOTHING_PRODUCED}
+        allowed = _allowed_tasks(config, state["pathway"])
+        prompt = CONVERSE_PROMPT.render(
+            language=language,
+            role=state["pathway"],
+            tone=(state.get("style") or Style()).tone,
+            capabilities="\n" + _allowed_descriptions(allowed),
+            history=state.get("history") or "",
+            message=state.get("message", ""),
+        )
+        try:
+            reply = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()
+        except Exception as error:
+            raise TutorUnavailable() from error
+        if not reply:
+            raise TutorUnavailable()
+        return {"response": reply, "reply_body": reply}
+
+    return converse
+
+
+# --- plan -------------------------------------------------------------------
 
 # Types whose answer is prose that genuinely combines; the planner should emit one each,
 # and this is the safety net if it over-splits anyway. grade/assessment/visual carry
@@ -301,18 +322,34 @@ def _merge_same_type(tasks: list[dict]) -> list[dict]:
     return out
 
 
-def _infer_subject(message: str, config, enrolled_ids: set | None = None) -> str | None:
-    """Pick the subject for a request that arrived without one (subject_id is an optional
-    contract field): the best-matching topic's subject. When ``enrolled_ids`` is given
-    (a student's own subjects), the inference is CONSTRAINED to those — the best hit that
-    is actually enrolled, never a subject the student can't access. Returns None when
-    nothing clears the resolve threshold (or nothing enrolled matches) — the caller then
-    searches the syllabus unscoped."""
-    k = config.get("agent.infer_subject_k", 5) if enrolled_ids else 1
-    hits = resolve_topics(message, None, k=k, config=config)
-    if enrolled_ids:
-        hits = [h for h in hits if h.subject_id in enrolled_ids]
-    return (hits[0].subject_id or None) if hits else None
+def _infer_subject(query: str, namespaces: list[str], config,
+                   enrolled_ids: set | None = None) -> str | None:
+    """The subject whose material answers ``query`` best, found by searching for it.
+
+    Matching the question against topic labels guessed a subject from a few words
+    of a label; searching the material itself asks the question the answer will be
+    held to. The nearest passages by meaning above the similarity floor vote for
+    their subject with their score; the lexical reordering is left out, because
+    a question's function words match every lesson written in its language. A
+    student's vote is confined to the subjects they are enrolled in.
+    """
+    k = config.get("agent.infer_subject_k", 5)
+    floor = config.get("agent.min_score", DEFAULT_MIN_SCORE)
+    pool = config.get("agent.hybrid.candidates", k)
+    try:
+        hits = rag_search(query, namespaces or ["syllabus"], k=max(k, pool), config=config)
+    except Exception:
+        logger.warning("subject inference search failed", exc_info=True)
+        return None
+    nearest = sorted(hits, key=lambda chunk: chunk.score, reverse=True)[:k]
+    votes: dict[str, float] = {}
+    for chunk in nearest:
+        if chunk.score < floor or not chunk.subject_id:
+            continue
+        if enrolled_ids and chunk.subject_id not in enrolled_ids:
+            continue
+        votes[chunk.subject_id] = votes.get(chunk.subject_id, 0.0) + chunk.score
+    return max(votes, key=votes.get) if votes else None
 
 
 def _validate_assessment_spec(raw: Any) -> AssessmentSpec | None:
@@ -359,58 +396,71 @@ def _assessment_type_mix(spec: AssessmentSpec, default: dict) -> dict:
     return mix or dict(default)
 
 
-def build_plan(config, llm, client=None):
-    default_tasks = config.get("agent.default_tasks", ["explain", "summarize"])
+def _enrolled_subjects(client, state) -> set | None:
+    if not (client and state.get("pathway") == "student" and state.get("user_id")):
+        return None
+    try:
+        subjects = client.get_student_subjects(state["user_id"]) or []
+    except Exception:
+        logger.warning("enrolled-subjects lookup failed; inferring unconstrained",
+                       exc_info=True)
+        return None
+    return {s.get("id") for s in subjects if s.get("id")} or None
+
+
+def _resolve_subject(state, reading: TurnUnderstanding, conversation: Conversation,
+                     raw_tasks: list[dict], config, client) -> tuple[Optional[str], str]:
+    """The subject this turn is scoped to, and how it was decided.
+
+    What the caller sends wins; then the subject the conversation settled on,
+    unless the student has moved to another; then the subject whose material
+    answers the question; the configured default only as a last resort.
+    """
+    if state.get("subject_id"):
+        return state["subject_id"], "request"
+    if conversation.state.subject_id and not reading.changes_subject:
+        return conversation.state.subject_id, "conversation"
+    query = next((t["query"] for t in raw_tasks if t.get("query")), state.get("message", ""))
+    inferred = _infer_subject(query, state.get("namespaces") or [], config,
+                              _enrolled_subjects(client, state))
+    if inferred:
+        return inferred, "inferred"
+    fallback = config.get("agent.default_subject_id")
+    if fallback:
+        return fallback, "default"
+    return conversation.state.subject_id, "conversation" if conversation.state.subject_id else "none"
+
+
+def _previous_evidence(reading: TurnUnderstanding, conversation: Conversation,
+                       subject_id: Optional[str]) -> list[str]:
+    """The passages the last answer rested on, when this turn carries it on."""
+    if not reading.continues_previous:
+        return []
+    last = conversation.last_study_turn
+    if last is None or (subject_id and last.subject_id and last.subject_id != subject_id):
+        return []
+    return list(last.cited_chunk_ids)
+
+
+def build_plan(config, subjects: SubjectDirectory, client=None):
+    """Turn the model's reading into runnable tasks: subject, topics, language, specs."""
     policy = LanguagePolicy.from_config(config)
 
-    languages = ", ".join(config.get("language.supported", ["ar", "en", "fr", "de"]))
-
     def plan(state) -> dict:
-        # (1) route the message to task(s), scoped to what this pathway may run.
         pathway = state["pathway"]
-        allowed = config.get(f"agent.pathways.{pathway}.tasks") or default_tasks
-        try:
-            raw_tasks, req_lang = _plan_tasks(
-                state.get("message", ""), allowed, llm, role=pathway, languages=languages,
-                config=config)
-        except Exception:
-            # Planning itself failed (LLM call error): degrade — a friendly message, no tasks.
-            # dispatch sees no tasks and routes straight to the end (never a silently-picked task).
-            logger.error("planning failed; degrading", exc_info=True)
-            return {"tasks": [], "response": translate("common.degraded", state.get("language", "en"))}
-        # TODO(sprint3-clarify): a clarify node that asks for missing assessment params (count/
-        # types) before generating — the model is variance-prone at copying an explicit count
-        # (e.g. "4 MCQs" sometimes yields 3). A regex over the message is not the fix.
-        # TODO(sprint3-router): report-intent chat turns ("how am I doing", "my progress") still
-        # misroute (to visual/assessment) despite the plan-prompt routing hints — the /ai/reports
-        # endpoint is unaffected. Add a deterministic report-intent router (or fold into clarify).
+        reading = TurnUnderstanding.model_validate(state.get("understanding") or {
+            "needs_syllabus": True})
+        conversation = Conversation.model_validate(state.get("conversation") or {})
+        raw_tasks = state.get("planned_tasks") or []
+        subject_id, subject_source = _resolve_subject(
+            state, reading, conversation, raw_tasks, config, client)
+        subject = subjects.facts(subject_id)
+        decision = policy.reply(
+            requested=state.get("requested_language"),
+            subject_language=subject.language,
+            message_language=state.get("message_language"),
+            api_language=state.get("api_language"))
 
-        # (2) resolve the subject: explicit -> infer -> default (the default is the last
-        # resort only, never allowed to preempt inference; unscoped search contaminates).
-        # so retrieval stays scoped to one subject (unscoped search contaminates). The
-        # default is the last resort only, never allowed to preempt inference.
-        subject_id = state.get("subject_id")
-        inferred = None
-        if not subject_id:
-            # A student's inference is constrained to their enrolled subjects (never infer a
-            # subject they can't access); teacher/parent inference stays unconstrained.
-            enrolled_ids = None
-            if client and pathway == "student" and state.get("user_id"):
-                try:
-                    subs = client.get_student_subjects(state["user_id"]) or []
-                    enrolled_ids = {s.get("id") for s in subs if s.get("id")} or None
-                except Exception:
-                    logger.warning("enrolled-subjects lookup failed; inferring unconstrained",
-                                   exc_info=True)
-            subject_id = inferred = _infer_subject(
-                state.get("message", ""), config, enrolled_ids)
-        used_default = False
-        if not subject_id:
-            subject_id = config.get("agent.default_subject_id")
-            used_default = bool(subject_id)
-
-        # (3) build each task's params: resolve topic_ids (invariant 8) + carry any
-        # task-specific spec (assessment shape / grade reference / visual spec).
         lecture_ids = lecture_filter(state)
         tasks: list[dict] = []
         for t in raw_tasks:
@@ -458,30 +508,20 @@ def build_plan(config, llm, client=None):
             tasks.append({
                 "type": t["type"], "params": params, "task_id": uuid.uuid4().hex[:8],
             })
-        out: dict[str, Any] = {"tasks": tasks}
-        # Propagate a subject resolved here (inferred or default) so dispatch/retrieve
-        # scope to it; an explicit subject is already in state.
+
+        out: dict[str, Any] = {
+            "tasks": tasks,
+            "previous_chunk_ids": _previous_evidence(reading, conversation, subject_id),
+            "language": decision.code,
+            "language_decision": decision.model_dump(),
+        }
         if subject_id and subject_id != state.get("subject_id"):
             out["subject_id"] = subject_id
-        # The planner may read a request the matcher missed, but it re-enters
-        # through the resolver: a model never outranks what the user stated.
-        if req_lang:
-            prior = state.get("language_decision") or {}
-            decision = policy.resolve(
-                state.get("message", ""),
-                api_language=prior.get("code") if prior.get("source") == "api" else None,
-                # Without this a planner hint would outrank the standing
-                # instruction it sits five places below.
-                session_language=state.get("session_language"),
-                planner_hint=req_lang,
-            )
-            if decision.code != state.get("language"):
-                out["language"] = decision.code
-                out["language_decision"] = decision.model_dump()
         logger.info("plan", extra={
-            "pathway": pathway, "tasks": len(tasks),
-            "subject_id": subject_id, "inferred_subject": bool(inferred),
-            "used_default_subject": used_default, "output_language": req_lang})
+            "pathway": pathway, "tasks": len(tasks), "subject_id": subject_id,
+            "subject_source": subject_source,
+            "reused_passages": len(out["previous_chunk_ids"]),
+            **decision.log_fields()})
         return out
 
     return plan
@@ -511,7 +551,7 @@ def dispatch(state) -> list:
     ctx = {k: state.get(k) for k in
            ("namespaces", "style", "language", "subject_id", "lecture_ids", "grade",
             "user_id", "session_id", "pathway", "study_scope", "message",
-            "study_mode")}
+            "history", "previous_chunk_ids")}
     sends = []
     for task in state.get("tasks", []):
         node = _ADAPTER.get(task.get("type"))
@@ -531,116 +571,93 @@ def _dedupe_prereqs(prereqs: list[PrereqTopic]) -> list[PrereqTopic]:
     return out
 
 
-# Localised section headers (en is the fallback for any unlisted language).
+# What follows an answer is marked with symbols rather than words. A heading
+# written in the service is a sentence in some language: it had to be kept for
+# every language the service answers in and was wrong the day one more was
+# added. The text around the marks is the model's, in the reply's language.
+SOURCES_MARK = "📚"
+PREREQUISITES_MARK = "🧩"
+CORRECT_ANSWER_MARK = "→"
+REASON_MARK = "💡"
+REUSED_MARK = "📖"
+VISUAL_MARKS = {
+    "mindmap": "🧠", "chart": "📊", "math": "📈", "geometry": "📐",
+    "flashcards": "🗂️", "pdf": "📄", "image": "🖼️", "figure": "🖼️",
+}
+
 # Trailing punctuation stripped off a heading before appending ", p.N".
 _HEAD_TRAIL = " \t،,;:."
 
 
-def _citation_where(c: Citation, language: str) -> str:
-    """Readable citation label: ``Subject · Lesson N: Title``, degrading to the
-    heading path and finally the lecture id. ``lesson_order`` is rendered raw (the
-    numbering base is confirmed before the re-ingest). Pre-metadata chunks
-    have none of these -> heading_path / lecture_id fallback."""
+def _citation_where(c: Citation) -> str:
+    """Readable citation label: ``Subject · N: Title``, degrading to the heading path
+    and finally the lecture id."""
     subject = (c.subject_name or "").strip()
     title = (c.lesson_title or "").strip()
     order = c.lesson_order
-    lesson = ""
-    if order is not None:
-        lesson = f"{translate('compose.lesson_word', language)} {order}"
-    if title:
-        lesson = f"{lesson}: {title}" if lesson else title
+    if title and order is not None:
+        lesson = f"{order}: {title}"
+    else:
+        lesson = title or (f"#{order}" if order is not None else "")
     label = " · ".join(p for p in (subject, lesson) if p)
     return label or (c.heading_path or c.lecture_id or "").rstrip(_HEAD_TRAIL)
 
 
-def _prereq_line(prereqs: list[PrereqTopic], language: str) -> str:
-    """"You should know X first", from the lesson's own topic graph.
-
-    There used to be a filter here dropping labels whose script did not match the
-    reply, because the extractor had produced English labels for Arabic lessons.
-    That hid the rows rather than fixing them, only ever worked for Arabic, and
-    left the same labels going out on the API. The labels are validated where
-    they are written now, so there is nothing left to hide.
-    """
+def _prereq_line(prereqs: list[PrereqTopic]) -> str:
+    """What to know first, from the topic graph of the passages the answer cited."""
     labels = [p.label for p in prereqs if p.label]
-    if not labels:
-        return ""
-    head = translate("compose.prereq_head", language)
-    return f"{head}: {', '.join(labels)}"
+    return f"{PREREQUISITES_MARK} {', '.join(labels)}" if labels else ""
 
 
-def _assessment_line(assessment: dict, language: str) -> str:
-    # A neutral acknowledgment only — the questions + answer keys are in the structured
-    # `assessment` field. No UI/save framing (the frontend decides what to do with it).
-    n = assessment.get("count", len(assessment.get("items", [])))
-    return translate("compose.assessment_line", language, n=n)
+def _assessment_block(assessment: dict) -> str:
+    """The questions themselves, numbered, without their answers.
+
+    A line announcing a quiz was a sentence in some language, and the questions
+    it announced were not on the screen: the platform does not render the
+    structured assessment. The questions are already in the student's language.
+    """
+    lines = []
+    for index, item in enumerate(assessment.get("items") or [], 1):
+        lines.append(f"{index}. {item.get('question', '')}")
+        for position, option in enumerate(item.get("options") or []):
+            lines.append(f"   {chr(ord('a') + position)}) {option.get('text', '')}")
+    return "\n".join(lines)
 
 
-def _visual_line(visuals: list, language: str) -> str:
-    """A short chat line pointing at the rendered visual(s). A ``slides`` visual is text
-    (inlined); everything else is an artifact the frontend renders from its uri."""
+def _visual_line(visuals: list) -> str:
+    """A link to each rendered visual; a ``slides`` visual is text, so it is inlined."""
     lines = []
     for v in visuals:
         if v.get("kind") == "slides" and v.get("text"):
             lines.append(v["text"])
         elif v.get("s3_uri"):
-            key = f"visual.noun.{v.get('kind')}"
-            label = (translate(key, language) if key in STRINGS
-                     else v.get("kind", "visual").capitalize())
-            reused = translate("compose.from_syllabus", language) if v.get("reused") else ""
-            lines.append(f"[{label}{reused}]({v['s3_uri']})")
+            mark = VISUAL_MARKS.get(v.get("kind"), "🔗")
+            reused = f" {REUSED_MARK}" if v.get("reused") else ""
+            lines.append(f"[{mark}{reused}]({v['s3_uri']})")
     return "\n".join(lines)
 
 
-# A short lead-in for a standalone visual turn (no explanatory prose accompanies it),
-# by kind and language. Slides carry their own text, so they get no caption.
-
-
-def _visual_caption(visuals: list, language: str) -> str:
-    """A one-line caption for the first non-slides visual, e.g. 'Here's your mind map:'.
-    Empty when there is nothing to caption (slides-only, or an unknown kind)."""
-    for v in visuals:
-        kind = v.get("kind")
-        if kind == "slides":
-            continue
-        if f"visual.noun.{kind}" not in STRINGS:
-            continue
-        noun = translate(f"visual.noun.{kind}", language)
-        return translate("visual.caption", language, noun=noun)
-    return ""
-
-
-# Shown when a visual_spec RAISED during render — an honest error, never the off-syllabus decline.
-
-
-# Localised inline labels for the correct answer / explanation shown on a wrong answer.
-
-
-def _grade_line(grade_result: dict, language: str) -> str:
-    """A chat summary of a grade turn: the score, then per answer the feedback and — for a
-    wrong (or partial) answer — the correct answer and the explanation, so the student learns
-    what the right answer was and why (not just that they missed it)."""
+def _grade_line(grade_result: dict) -> str:
+    """The score, then per answer the feedback and — for a wrong answer — the correct
+    answer and why, so the student learns what was right and not only that they missed it."""
     summary = grade_result.get("summary") or {}
     score = summary.get("score", 0)
     total = summary.get("max_score", summary.get("count", 0))
-    graded = grade_result.get("graded") or []
-    head = translate("grade.head", language, score=score, total=total)
-    ans_label = translate("grade.answer_label", language)
-    why_label = translate("grade.why_label", language)
-    lines = [head]
-    for i, g in enumerate(graded, 1):
+    lines = [f"{score:g}/{total:g}" if isinstance(total, (int, float)) else f"{score}/{total}"]
+    for i, g in enumerate(grade_result.get("graded") or [], 1):
+        if g.get("graded") is False:
+            lines.append(f"∅ {i}.")
+            continue
         fb = g.get("feedback")
         if not fb:
             continue
         mark = "✓" if g.get("correct") else "✗"
         lines.append(f"{mark} {i}. {fb}")
-        # On a wrong/declined answer, surface the correct answer + reasoning (the key is only
-        # meaningful when the student got it wrong; a correct answer needs no restatement).
         if not g.get("correct"):
             if g.get("correct_answer"):
-                lines.append(f"   {ans_label}: {g['correct_answer']}")
+                lines.append(f"   {CORRECT_ANSWER_MARK} {g['correct_answer']}")
             if g.get("explanation"):
-                lines.append(f"   {why_label}: {g['explanation']}")
+                lines.append(f"   {REASON_MARK} {g['explanation']}")
     return "\n".join(lines)
 
 
@@ -692,25 +709,19 @@ def _renumber_citations(
     return new_answers, ordered
 
 
-def _sources_block(citations: list[Citation], language: str) -> str:
+def _sources_block(citations: list[Citation]) -> str:
     seen, lines = set(), []
     for c in citations:
         key = (c.lecture_id, c.heading_path, c.page_from)
         if key in seen:
             continue
         seen.add(key)
-        # Prefer Subject · Lesson N: Title; fall back to a punctuation-stripped
-        # heading and finally the lecture id.
-        where = _citation_where(c, language)
         pages = ""
         if c.page_from:
             pages = f", p.{c.page_from}" + (
                 f"–{c.page_to}" if c.page_to and c.page_to != c.page_from else "")
-        lines.append(f"[{c.n}] {where}{pages}")
-    if not lines:
-        return ""
-    head = translate("compose.sources_head", language)
-    return head + ":\n" + "\n".join(lines)
+        lines.append(f"[{c.n}] {_citation_where(c)}{pages}")
+    return f"{SOURCES_MARK}\n" + "\n".join(lines) if lines else ""
 
 
 def _compose_llm(llm, answers, prereqs, language, tone) -> str:
@@ -721,8 +732,32 @@ def _compose_llm(llm, answers, prereqs, language, tone) -> str:
     return llm.invoke([HumanMessage(content=prompt_text)]).content
 
 
+NOTHING_PRODUCED = "∅"
+
+
+def _no_material(state, llm, language: str) -> str:
+    """A turn whose tasks produced nothing, explained by the tutor rather than a fixed line."""
+    if llm is None:
+        return NOTHING_PRODUCED
+    prompt = NO_MATERIAL_PROMPT.render(
+        language=language, style=(state.get("style") or Style()).tone, scope="",
+        history=state.get("history") or "", message=state.get("message", ""))
+    try:
+        text = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()
+    except Exception as error:
+        raise TutorUnavailable() from error
+    if not text:
+        raise TutorUnavailable()
+    return text
+
+
 def build_compose(config, llm):
     def compose(state) -> dict:
+        out = _compose(state)
+        out.setdefault("reply_body", out.get("response", ""))
+        return out
+
+    def _compose(state) -> dict:
         answers = state.get("answers", [])
         language = state.get("language", "en")
         tone = (state.get("style") or Style()).tone
@@ -730,24 +765,27 @@ def build_compose(config, llm):
         assessment = state.get("assessment") or {}
         grade_result = state.get("grade_result") or {}
         visuals = state.get("visuals") or []
-        # No explain/summarize text -> a grade/assessment/visual-only turn: the response IS
-        # that task's own short line (degraded note first — an LLM failure never shows a stub).
+        if grade_result.get("degraded") or assessment.get("degraded"):
+            logger.error("a requested task could not be completed",
+                         extra={"assessment_degraded": bool(assessment.get("degraded")),
+                                "grade_degraded": bool(grade_result.get("degraded"))})
+            raise TutorUnavailable()
+        if state.get("visual_error"):
+            logger.error("a requested visual could not be rendered")
+            if not (answers or visuals or grade_result.get("graded")
+                    or assessment.get("items")):
+                raise TutorUnavailable()
+
         if not answers:
-            if grade_result.get("degraded") or assessment.get("degraded"):
-                return {"response": translate("common.degraded", language)}
+            parts = []
             if grade_result.get("graded"):
-                return {"response": _grade_line(grade_result, language)}
-            if visuals:
-                caption = _visual_caption(visuals, language)
-                line = _visual_line(visuals, language)
-                return {"response": "\n\n".join(p for p in (caption, line) if p)}
+                parts.append(_grade_line(grade_result))
             if assessment.get("items"):
-                return {"response": _assessment_line(assessment, language)}
-            # A visual that RAISED (not merely off-syllabus) gets an honest error, not a decline.
-            if state.get("visual_error"):
-                return {"response": translate("visual.render_error", language)}
-            msg = translate("compose.no_material", language)
-            return {"response": msg}
+                parts.append(_assessment_block(assessment))
+            if visuals:
+                parts.append(_visual_line(visuals))
+            response = "\n\n".join(p for p in parts if p)
+            return {"response": response or _no_material(state, llm, language)}
 
         # One global [n] numbering across tasks before merging (each subgraph numbered from [1]).
         answers, citations = _renumber_citations(
@@ -758,39 +796,33 @@ def build_compose(config, llm):
         # or an LLM failure) is just its text concatenated — real content, never a stub.
         if llm is not None and len(answers) > 1:
             try:
-                body = _compose_llm(llm, answers, prereqs, language, tone)
+                # body = _compose_llm(llm, answers, prereqs, language, tone)
+                body = _compose_llm(llm, answers, [], language, tone)
             except Exception:
                 logger.error("compose LLM call failed; concatenating", exc_info=True)
                 body = "\n\n".join(a.get("text", "") for a in answers)
         else:
             body = "\n\n".join(a.get("text", "") for a in answers)
+        body = strip_markers(body)
 
-        # Assemble the reply: body, then prerequisite pointer, sources, and any task lines.
         # A declined answer (grounded=False, no inline citation) suppresses prereqs — a refusal
-        # must not trail "Prerequisite topics: …" as if it had answered.
-        any_grounded = any(a.get("grounded", True) for a in answers)
+        # must not trail prerequisites as if it had answered.
+        # any_grounded = any(a.get("grounded", True) for a in answers)
         parts = [body]
-        if prereqs and any_grounded and config.get("agent.show_prereqs", True):
-            parts.append(_prereq_line(prereqs, language))
-        sources = _sources_block(citations, language)
-        if sources:
-            parts.append(sources)
-        if assessment.get("degraded"):
-            parts.append(translate("common.degraded", language))
-        elif assessment.get("items"):
-            parts.append(_assessment_line(assessment, language))
-        if grade_result.get("degraded"):
-            parts.append(translate("common.degraded", language))
-        elif grade_result.get("graded"):
-            parts.append(_grade_line(grade_result, language))
+        # if prereqs and any_grounded and config.get("agent.show_prereqs", True):
+        #     parts.append(_prereq_line(prereqs))
+        # parts.append(_sources_block(citations))
+        if assessment.get("items"):
+            parts.append(_assessment_block(assessment))
+        if grade_result.get("graded"):
+            parts.append(_grade_line(grade_result))
         if visuals:
-            parts.append(_visual_line(visuals, language))
-        elif state.get("visual_error"):
-            parts.append(translate("visual.render_error", language))
+            parts.append(_visual_line(visuals))
         logger.info("compose", extra={
             "answers": len(answers), "prereqs": len(prereqs),
             "citations": len(citations)})
         return {"response": "\n\n".join(p for p in parts if p),
+                "reply_body": body,
                 "published_citations": citations}
 
     return compose
@@ -798,28 +830,51 @@ def build_compose(config, llm):
 
 # --- persist ----------------------------------------------------------------
 
-def build_persist(config, sticky=None):
+def _turn_record(state) -> Turn:
+    cited = [c.chunk_id for c in (state.get("published_citations") or []) if c.chunk_id]
+    tasks = state.get("tasks") or []
+    query = next((t.get("params", {}).get("query") for t in tasks
+                  if t.get("params", {}).get("query")), "")
+    return Turn(
+        message=state.get("message", ""),
+        reply=state.get("reply_body") or state.get("response") or "",
+        kind="study" if state.get("turn_kind") == "study" else "conversation",
+        language=state.get("language"),
+        subject_id=state.get("subject_id") if cited else None,
+        tasks=[t.get("type") for t in tasks],
+        query=query,
+        cited_chunk_ids=cited,
+    )
+
+
+def _next_state(state, previous: SessionState, turn: Turn) -> SessionState:
+    subject_id = turn.subject_id if turn.cited_chunk_ids else previous.subject_id
+    return SessionState(subject_id=subject_id, language=state.get("requested_language"))
+
+
+def build_persist(config, store: ConversationStore, window: HistoryWindow, summary_llm=None):
+    """Remember the turn, then fold old turns into the summary when the window is full."""
     def persist(state) -> dict:
-        # TODO (deferred): adaptive_profile / dashboard writes, the
-        # ephemeral-namespace drop, and message history are not implemented yet.
-        write = state.get("session_language_write") or {}
-        session_id = state.get("session_id")
-        if sticky is not None and write and session_id:
-            user_id = state.get("user_id")
-            if write.get("op") == "clear":
-                sticky.clear(user_id, session_id)
-            elif write.get("code"):
-                sticky.set(user_id, session_id, code=write["code"],
-                           user_type=state.get("user_type"),
-                           evidence=write.get("evidence"))
+        user_id, session_id = state.get("user_id"), state.get("session_id")
+        pathway = state.get("pathway")
+        remembered = False
+        if pathway and (state.get("reply_body") or state.get("response")):
+            conversation = Conversation.model_validate(state.get("conversation") or {})
+            turn = _turn_record(state)
+            remembered = store.append(user_id, pathway, session_id, turn)
+            following = _next_state(state, conversation.state, turn)
+            if following != conversation.state:
+                store.save_state(user_id, pathway, session_id, following)
+            fold_if_due(store, window, summary_llm, user_id=user_id,
+                        user_type=pathway, session_id=session_id)
         # One line per turn, carrying everything needed to explain the answer
         # without re-reading five others: what was asked, in what language and
         # why, what it matched, and what came back. Correlated by request_id.
         decision = state.get("language_decision") or {}
         answers = state.get("answers") or []
         logger.info("turn", extra={
-            "pathway": state.get("pathway"),
-            "intent": state.get("intent"),
+            "pathway": pathway,
+            "turn_kind": state.get("turn_kind"),
             "question": clip(state.get("message", "")),
             "language": state.get("language"),
             "language_source": decision.get("source"),
@@ -832,7 +887,7 @@ def build_persist(config, sticky=None):
                 (state.get("published_citations") or [])[:5]
             ],
             "answer_chars": len(state.get("response") or ""),
-            "session_language_op": write.get("op"),
+            "remembered": remembered,
         })
         # Must stay empty: the streaming path merges every node's delta into the
         # response, so anything returned here would show on one endpoint only.
@@ -899,6 +954,7 @@ def build_verify_language(config, llm=None):
 
         logger.info("language repaired", extra={"expected": decision.code,
                                                 "was": check.detected})
-        return {"response": rewritten, "language_repair": "repaired"}
+        return {"response": rewritten, "reply_body": rewritten,
+                "language_repair": "repaired"}
 
     return verify_language

@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 
 from agent.scope import StudyScope, lecture_filter, scope_of
-from shared.language import written_in
 
 LESSON = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
@@ -66,37 +65,22 @@ def test_a_blank_lesson_title_is_not_a_lesson_title():
 
 # --- what the student is told -----------------------------------------------
 
-def _refusal(scope: StudyScope, language: str) -> str:
-    from agent.graph.subgraphs.explain_summarize_sg import _declined
+def _refusal(scope: StudyScope) -> str:
+    from agent.graph.subgraphs.explain_summarize_sg import _decline_without_model
 
-    return _declined(scope, language)
+    return _decline_without_model(scope)
 
 
-def test_inside_a_lesson_the_refusal_names_the_lesson():
-    text = _refusal(StudyScope(lecture_id=LESSON, lesson_title="Photosynthesis"), "en")
+def test_without_a_model_the_refusal_still_names_the_lesson():
+    text = _refusal(StudyScope(lecture_id=LESSON, lesson_title="Photosynthesis"))
     assert "Photosynthesis" in text
-    assert "syllabus material" not in text
 
 
-@pytest.mark.parametrize("language", ["ar", "en", "fr", "de"])
-def test_the_refusal_is_written_in_the_student_s_language(language):
-    text = _refusal(StudyScope(lecture_id=LESSON, lesson_title="البناء الضوئي"), language)
-    assert "البناء الضوئي" in text
-    assert written_in(text.replace("البناء الضوئي", ""), language)
-
-
-def test_without_a_lesson_the_refusal_is_the_ordinary_one():
+def test_without_a_lesson_the_refusal_names_no_boundary():
     """Outside a lesson there is no boundary to explain, and claiming one would
     be a lie: the material genuinely is not in the syllabus."""
-    text = _refusal(StudyScope(subject_id="s"), "en")
-    assert "syllabus material" in text
-
-
-def test_a_lesson_we_cannot_name_falls_back_rather_than_naming_nothing():
-    """The platform may scope by id without sending a title. "We're studying
-    **** right now" is worse than the generic message."""
-    text = _refusal(StudyScope(lecture_id=LESSON), "en")
-    assert "syllabus material" in text
+    assert _refusal(StudyScope(subject_id="s")) == "∅"
+    assert _refusal(StudyScope(lecture_id=LESSON)) == "∅"
 
 
 # --- does the selected lesson actually answer this? -------------------------
@@ -143,6 +127,16 @@ def test_a_corpus_with_nowhere_better_keeps_the_answer(monkeypatch):
 
 # --- the plan node must obey the declared scope too -------------------------
 
+class _NoSubjects:
+    def facts(self, subject_id):
+        from agent.models import SubjectFacts
+        return SubjectFacts()
+
+
+def _quiz(query):
+    return {"type": "assessment", "query": query, "level": "intermediate", "length": "medium"}
+
+
 class _PlanCfg:
     """Minimal config for build_plan with no default subject."""
 
@@ -172,10 +166,11 @@ def test_planning_resolves_topics_inside_the_declared_lesson(monkeypatch):
         return []
 
     monkeypatch.setattr(nmod, "resolve_topics", _spy)
-    plan = nmod.build_plan(_PlanCfg(), None)
+    plan = nmod.build_plan(_PlanCfg(), _NoSubjects())
     plan({
         "pathway": "student",
         "message": "اختبرني في هذا الدرس",
+        "planned_tasks": [_quiz("اختبرني في هذا الدرس")],
         "subject_id": "subjX",
         "study_scope": {"subject_id": "subjX", "lecture_id": LESSON,
                         "lesson_title": "Photosynthesis"},
@@ -194,7 +189,44 @@ def test_planning_still_honours_a_multi_lesson_legacy_filter(monkeypatch):
         return []
 
     monkeypatch.setattr(nmod, "resolve_topics", _spy)
-    plan = nmod.build_plan(_PlanCfg(), None)
-    plan({"pathway": "student", "message": "quiz me",
+    plan = nmod.build_plan(_PlanCfg(), _NoSubjects())
+    plan({"pathway": "student", "message": "quiz me", "planned_tasks": [_quiz("quiz me")],
           "subject_id": "subjX", "lecture_ids": [LESSON, OTHER]})
     assert seen["lecture_ids"] == [LESSON, OTHER]
+
+
+class _Writer:
+    def __init__(self, reply="", error=False):
+        self.reply, self.error, self.prompt = reply, error, None
+
+    def invoke(self, messages):
+        self.prompt = messages[0].content
+        if self.error:
+            raise RuntimeError("model unavailable")
+
+        class _Msg:
+            content = self.reply
+        return _Msg()
+
+
+def test_the_tutor_writes_its_own_refusal_and_names_the_lesson():
+    """A fixed sentence per language answered every miss the same way; the model
+    writes it now, told which lesson bounds the turn and forbidden to answer."""
+    from agent.graph.subgraphs.explain_summarize_sg import _declined
+
+    writer = _Writer("That's outside Photosynthesis, so I can't answer it here.")
+    scope = StudyScope(lecture_id=LESSON, lesson_title="Photosynthesis")
+    text = _declined(scope, {"language": "en", "message": "who was Napoleon?",
+                             "history": ""}, writer, "friendly")
+    assert text == "That's outside Photosynthesis, so I can't answer it here."
+    assert "Photosynthesis" in writer.prompt and "who was Napoleon?" in writer.prompt
+
+
+def test_a_refusal_the_model_cannot_write_fails_the_turn():
+
+    from agent.errors import TutorUnavailable
+    from agent.graph.subgraphs.explain_summarize_sg import _declined
+
+    scope = StudyScope(lecture_id=LESSON, lesson_title="Photosynthesis")
+    with pytest.raises(TutorUnavailable):
+        _declined(scope, {"language": "en", "message": "q"}, _Writer(error=True), "friendly")
