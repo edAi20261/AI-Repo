@@ -70,6 +70,7 @@ embeddings:
   dimensions: 1024
   batch_size: 64
   normalize: true
+  warm_on_start: true
 
 vector_store:
   timeout_seconds: 120         # the write path: a lesson's points go up in batches
