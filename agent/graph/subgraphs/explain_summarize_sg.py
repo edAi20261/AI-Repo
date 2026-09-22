@@ -27,7 +27,10 @@ from ...citations import cited_numbers, has_citation, keep_cited
 from ...models import Citation, MathFigureSpec, PrereqTopic, RetrievedChunk, Style
 from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, SUMMARIZE_PROMPT
 from ...retrieval import DEFAULT_MIN_SCORE, DEFAULT_SCOPE_RATIO
+from ...continuation import Relation, carried_query, relation_of
+from ...evidence import EvidenceSet
 from ...scope import StudyScope, lecture_filter, scope_of
+from ...tools import get_chunks_by_id
 
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
 _MATH_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -47,6 +50,9 @@ class ExplainSummarizeState(TypedDict, total=False):
     subject_id: str | None
     lecture_ids: list[str] | None  # optional lecture scope; None -> whole subject
     study_scope: dict | None       # the UI selection this turn is bounded by
+    message: str                   # what the student typed, before the planner reworded it
+    evidence: EvidenceSet | None   # what the previous answer in this session used
+    mode_chosen: str | None        # the study mode the student chose, if they chose one
     grade: str | None
     instructions: str               # subject-specific prompt addendum (e.g. math), or ""
     k: int
@@ -66,6 +72,19 @@ class ExplainSummarizeState(TypedDict, total=False):
 
 
 def _retrieve(state: ExplainSummarizeState) -> dict:
+    """The passages this turn answers from.
+
+    A turn that carries on the one before it does not search. "Explain that
+    more simply" names nothing to search for, and the passages that answer it
+    are the ones the last answer already used — reached by pointer rather than
+    by embedding words that mean nothing on their own.
+    """
+    reused = _reuse_previous_evidence(state)
+    if reused is not None:
+        evidence = state["evidence"]
+        return {"chunks": reused,
+                "query": carried_query(evidence.query, state.get("message") or "")}
+
     scope = scope_of(state)
     subject_id = scope.subject_id or state.get("subject_id")
     query = state.get("query") or ""
@@ -89,6 +108,34 @@ def _retrieve(state: ExplainSummarizeState) -> dict:
                 "lecture_id": scope.lecture_id, "scoped_best": round(chunks[0].score, 3)})
             return {"chunks": []}
     return {"chunks": chunks}
+
+
+
+def _reuse_previous_evidence(state: ExplainSummarizeState) -> list | None:
+    """The last answer's passages, when this turn is carrying it on.
+
+    ``None`` means search: either the turn opened something new, or the
+    evidence no longer resolves. A lecture re-ingested between turns re-mints
+    every chunk_id, and answering from passages that have gone is worse than
+    the search the turn would otherwise have done.
+    """
+    evidence = state.get("evidence")
+    relation = relation_of(
+        state.get("message") or state.get("query") or "",
+        answered_before=bool(evidence and evidence.chunk_ids),
+        mode=state.get("mode_chosen"),
+    )
+    if relation is Relation.OPENS or not evidence:
+        return None
+
+    chunks = get_chunks_by_id(evidence.chunk_ids)
+    if not chunks:
+        logger.info("evidence no longer resolves; searching instead",
+                    extra={"chunks": len(evidence.chunk_ids)})
+        return None
+    logger.info("turn continues the last answer", extra={
+        "chunks": len(chunks), "previous_query": evidence.query[:80]})
+    return chunks
 
 
 def _resolve_prereqs(state: ExplainSummarizeState) -> dict:

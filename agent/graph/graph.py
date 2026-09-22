@@ -22,6 +22,7 @@ from shared.llm import llm_key_available, maybe_llm
 from .. import retrieval
 from ..config import Config, get_config
 from ..models import Style, SubjectFacts
+from ..evidence import EvidenceSet, EvidenceStore
 from ..scope import lecture_filter
 from ..session_memory import SessionLanguage
 from ..state import MainState
@@ -75,10 +76,19 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
         task_id = task.get("task_id")
         params = task.get("params", {})
         facts = _subject_facts(client, payload.get("subject_id"))
+        # What the last answer in this conversation was built from, so a turn
+        # that carries it on can reuse those passages instead of searching for
+        # words that name nothing.
+        evidence_store = EvidenceStore(
+            config=config, user_id=payload.get("user_id"),
+            user_type=payload.get("pathway"), session_id=payload.get("session_id"))
         # (1) TRANSLATE IN: build the explain/summarize subgraph's private input state.
         result = compiled.invoke({
             "mode": mode,
             "query": params.get("query", ""),
+            "message": payload.get("message") or params.get("query", ""),
+            "evidence": evidence_store.recall(),
+            "mode_chosen": payload.get("study_mode"),
             "level": params.get("level", "intermediate"),
             "length": params.get("length", "medium"),
             "topic_ids": params.get("topic_ids") or [],
@@ -102,6 +112,14 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
         # multi-task turn (each subgraph numbers from [1] independently).
         citations = [c.model_copy(update={"task_id": task_id})
                      for c in result.get("citations", [])]
+        # Keep what this answer was built from, for the turn that follows it.
+        # A declined turn grounded nothing and is deliberately not remembered:
+        # re-presenting a refusal as an explanation is worse than searching.
+        if result.get("grounded", True) and result.get("chunks"):
+            evidence_store.remember(EvidenceSet(
+                chunk_ids=[c.chunk_id for c in result["chunks"] if c.chunk_id],
+                query=params.get("query", ""),
+                lecture_id=(lecture_filter(payload) or [None])[0]))
         # A declined answer (no inline citation / figure) carries grounded=False; compose
         # then suppresses the trailing sources/prereqs so a refusal doesn't read as answered.
         # (Citations and the figure are already dropped by the subgraph on a decline.)

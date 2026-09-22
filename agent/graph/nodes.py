@@ -48,6 +48,8 @@ from ..prompts import (
     PLAN_PROMPT,
     TASK_DESCRIPTIONS,
 )
+from ..continuation import Relation, relation_of
+from ..evidence import EvidenceStore
 from ..scope import lecture_filter
 from ..tools import resolve_topics
 from .pathways import build_namespaces, resolve_style
@@ -129,10 +131,21 @@ def build_route(config, embedder=None):
     router = IntentRouter.from_config(config, embedder)
 
     def route(state) -> dict:
-        decision = router.classify(state.get("message", ""))
+        message = state.get("message", "")
+        decision = router.classify(message)
         if decision.needs_syllabus:
             logger.info("route", extra=decision.log_fields())
             return {"intent": decision.intent}
+
+        if decision.intent in RECONSIDERED_MID_LESSON and _follows_an_answer(
+                message, state, config):
+            # "Can you give me an example?" sits close to "can you help me" in
+            # the small-talk seeds, and was answered with the capability blurb
+            # in the middle of a lesson. Those words ask about the tutor at the
+            # start of a conversation and about the lesson inside one.
+            logger.info("route: small talk reconsidered as a follow-up",
+                        extra=decision.log_fields())
+            return {"intent": "question"}
 
         language = state.get("language", "en")
         key = f"intent.{decision.intent}"
@@ -151,6 +164,28 @@ def build_route(config, embedder=None):
         }
 
     return route
+
+
+
+# Intents whose words could be asking about the lesson rather than about the
+# tutor. A greeting or a thank-you is never a follow-up, whenever it arrives.
+RECONSIDERED_MID_LESSON = frozenset({"meta"})
+
+
+def _follows_an_answer(message: str, state, config) -> bool:
+    """Whether this turn is carrying on an answer already given.
+
+    Only asked when the small-talk router has already claimed the turn, so the
+    evidence lookup stays off the path every real question takes.
+    """
+    store = EvidenceStore(
+        config=config, user_id=state.get("user_id"),
+        user_type=state.get("pathway"), session_id=state.get("session_id"))
+    evidence = store.recall()
+    if not (evidence and evidence.chunk_ids):
+        return False
+    return relation_of(message, answered_before=True,
+                       mode=state.get("study_mode")) is Relation.CONTINUES
 
 
 def _after_route(state) -> str:
@@ -470,9 +505,13 @@ def dispatch(state) -> list:
         return "persist"
     # Shared context every task needs; each Send carries it + that one task's payload, so
     # the adapters run in parallel without sharing MainState. A Send per task = the fan-out.
+    # `message` is what the student typed; `params.query` is what the planner
+    # made of it for searching. A turn is classified on the first — the rewrite
+    # always names a subject, because naming one is what a rewrite is for.
     ctx = {k: state.get(k) for k in
            ("namespaces", "style", "language", "subject_id", "lecture_ids", "grade",
-            "user_id", "session_id", "pathway", "study_scope")}
+            "user_id", "session_id", "pathway", "study_scope", "message",
+            "study_mode")}
     sends = []
     for task in state.get("tasks", []):
         node = _ADAPTER.get(task.get("type"))

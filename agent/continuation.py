@@ -166,3 +166,26 @@ def relation_of(
     if _has_anaphor(tokens) and len(subjects) <= MAX_WORDS_BESIDE_AN_ANAPHOR:
         return Relation.CONTINUES
     return Relation.OPENS
+
+
+def carried_query(previous: str, message: str) -> str:
+    """What to ask the answering model, for a turn that continues another.
+
+    A follow-up names its subject nowhere. The planner turns "can you give me
+    an example?" into the standalone query "example", and a model asked about
+    "example" over a page about evaporation answers that the context is
+    insufficient to explain the concept of example — which is true, and
+    useless.
+
+    So the subject is carried from the turn before and the student's own words
+    are kept beside it, rather than replaced by a paraphrase of them. Frameworks
+    that hand the generator only the rewritten query lose the thing that says
+    what kind of answer is wanted: simpler, shorter, an example, a reason.
+    """
+    previous = (previous or "").strip()
+    message = (message or "").strip()
+    if not previous:
+        return message
+    if not message:
+        return previous
+    return f"{previous}\n\nThe student has now said: {message}"
