@@ -119,7 +119,9 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config, client
             evidence_store.remember(EvidenceSet(
                 chunk_ids=[c.chunk_id for c in result["chunks"] if c.chunk_id],
                 query=params.get("query", ""),
-                lecture_id=(lecture_filter(payload) or [None])[0]))
+                lecture_id=(lecture_filter(payload) or [None])[0],
+                subject_id=payload.get("subject_id"),
+                topic_ids=params.get("topic_ids") or []))
         # A declined answer (no inline citation / figure) carries grounded=False; compose
         # then suppresses the trailing sources/prereqs so a refusal doesn't read as answered.
         # (Citations and the figure are already dropped by the subgraph on a decline.)

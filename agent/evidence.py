@@ -62,11 +62,20 @@ _INSERT = (
 
 
 class EvidenceSet(BaseModel):
-    """The passages one answer was built from, and what was asked for them."""
+    """The passages one answer was built from, and where they came from.
+
+    The subject and topics travel with the chunks because a follow-up names
+    neither. Re-inferring them from "can you explain more?" sent an English
+    science answer to the Arabic corpus: the prerequisite topics came back in
+    Arabic under an English explanation, and the next turn searched the wrong
+    subject entirely.
+    """
 
     chunk_ids: list[str] = Field(default_factory=list)
     query: str = ""
     lecture_id: Optional[str] = None
+    subject_id: Optional[str] = None
+    topic_ids: list[str] = Field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
