@@ -1,121 +1,337 @@
-# EduAI — AI Workflows
+# EduAI — AI Layer
 
-Multilingual (Arabic, English, French, German) educational AI system built on LangGraph.
-It grounds every answer in the uploaded syllabus, generates assessments and grades them,
-tracks what each student has actually mastered at the level of individual skills, produces
-study visuals and progress reports, and gives teachers drafted grades they review before
-anything reaches a student.
-
-The system has three independently deployable parts:
-
-- **`ingestion/`** — an offline pipeline that runs once per uploaded lecture. All the
-  expensive LLM work (topic extraction, prerequisite derivation, embedding) happens here.
-- **`agent/`** — the runtime graph. It only reads: a vector search and table lookups.
-  This is why a chat turn stays fast and predictable.
-- **`system/`** — the HTTP service the platform backend calls. Transport only: it
-  validates, authenticates, and delegates to the two above.
+The AI service of **EduAI**, a learning platform for schools. It turns each school's own
+syllabus into a tutor that students can talk to: it explains lessons, answers follow-up
+questions, sets and marks practice, tracks what every student has mastered, and reports
+progress — in Arabic, English, French and German.
 
 ---
 
-## Table of contents
+## Contents
 
-- [Architecture](#architecture)
+- [What EduAI is](#what-eduai-is)
+- [What this repository does](#what-this-repository-does)
+- [Quickstart](#quickstart)
+- [How a turn is answered](#how-a-turn-is-answered)
+- [Retrieval and grounding](#retrieval-and-grounding)
+- [Ingestion](#ingestion)
+- [Where data lives](#where-data-lives)
 - [Repository layout](#repository-layout)
-- [Getting started](#getting-started)
 - [Configuration](#configuration)
-- [Running the system](#running-the-system)
-- [Testing](#testing)
+- [Running](#running)
+- [HTTP API](#http-api)
+- [Evaluation and tests](#evaluation-and-tests)
+- [Contributing](#contributing)
+- [Known limitations](#known-limitations)
 
 ---
 
-## Architecture
+## What EduAI is
 
-### Runtime graph
+EduAI is a multi-school learning platform for **students, teachers and parents**. A school
+offers one or more curricula (a national curriculum, IGCSE, SAT…) across grades 1 to 12.
+Each grade has its subjects — science, Arabic, English, mathematics, French and so on —
+either official or created by a teacher, and each subject has lessons. When a lesson is
+published, its material becomes something students can learn from and ask about.
+
+Students study their lessons, do homework and quizzes, and follow a study plan. Teachers
+publish lessons, set work and follow their classes. Parents follow their children.
+
+What we are building is a tutor that behaves like a good teacher who has read exactly the
+books the student is studying:
+
+- **It answers from the syllabus, not from the internet.** Every answer is grounded in the
+  student's own lessons and cites them; a question the lessons do not cover is declined
+  honestly instead of answered from general knowledge.
+- **It holds a conversation.** "Explain that more simply", "give me an example" and "what
+  about tornadoes?" are understood in the light of what was said before.
+- **Each subject is taught in its own language.** An English science lesson is answered
+  in English and an Arabic lesson in Arabic, unless the student asks otherwise — and then
+  that choice is kept.
+- **It knows where each student stands.** Every graded answer moves a per-skill mastery
+  score, which drives which topics are practised next and what the progress report says.
+
+---
+
+## What this repository does
+
+EduAI is three codebases. This one is the AI layer; the other two call it.
+
+```
+ student / teacher / parent
+            │
+            ▼
+   frontend  (React)          the web app people use
+            │
+            ▼
+   platform backend (NestJS)  accounts, schools, classes, lessons, homework, quizzes,
+            │                 chat transcripts — and the only caller of this service
+            ▼
+   AI service  (this repo)    tutoring, retrieval, grading, mastery, reports, visuals,
+                              lesson ingestion
+```
+
+The AI layer provides:
+
+| For | What it does |
+|---|---|
+| Students | a tutor chat grounded in their lessons; practice quizzes aimed at their weak topics; marking with feedback and the correct answer; progress reports with the root cause of a weakness; mind maps, charts, flashcards, PDFs and slides; reading homework questions off a photo |
+| Teachers | the same tutor in a professional voice; quizzes, homework and exams generated from a lesson; marking submitted answers |
+| Parents | explanations, summaries and visuals of what their child is studying |
+| The platform | ingesting every published lesson — reading scanned pages, chunking, embedding, extracting skills and their prerequisites — so it can be searched |
+
+It deliberately does **not** handle login, users, schools, classes or chat history: those
+belong to the backend, which authenticates every user and calls this service with a
+shared secret. The service is never exposed to the public internet.
+
+Inside, it is three deployable parts:
+
+- **`ingestion/`** — an offline pipeline that runs once per published lesson; all the
+  expensive reading, embedding and extraction happens here.
+- **`agent/`** — the LangGraph graph a chat turn runs through. It searches the index and
+  reads the catalogue, and writes only its own records: conversation memory, mastery,
+  mistake tags and rendered visuals.
+- **`system/`** — the FastAPI service the backend calls. Transport only: it validates,
+  authenticates and delegates.
+
+---
+
+## Quickstart
+
+### 1. Install
+
+Requirements: **Python 3.11+**, access to a **PostgreSQL** database and a **Qdrant**
+instance, and an **OpenRouter API key**. The embedding model (BGE-M3, about 2 GB) runs
+locally and downloads the first time it is needed.
+
+```bash
+git clone git@github.com:edAi20261/AI-Repo.git
+cd AI-Repo
+python -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+cp .env.example .env
+```
+
+### 2. Fill in `.env`
+
+`.env` holds secrets and connection strings only; every behavioural setting is in
+`config.yaml`.
+
+| Variable | Needed for | Notes |
+|---|---|---|
+| `OPENROUTER_API_KEY` | every model call | one key reaches every model the service uses |
+| `DATABASE_URL` | retrieval, memory, mastery | the platform's Postgres (the `ai.*` schema) |
+| `QDRANT_URL`, `QDRANT_API_KEY` | retrieval | where the lesson vectors live |
+| `AI_WEBHOOK_SHARED_SECRET` | every request | the `x-service-token` the backend sends |
+| `BACKEND_API_BASE_URL` | subject facts, enrolments, answer keys, ingestion | the backend's `…/api/ai-integration` prefix |
+| `APP_ENV` | choosing the config overlay | `local`, `staging` or `production` — see below |
+| `S3_BUCKET`, `S3_REGION`, AWS keys | figures and rendered visuals | without them files go to a local folder |
+
+**Which `APP_ENV`?** `local` searches a separate, usually empty, development index
+(`eduai_chunks_dev`), so every question will be declined until you ingest something into
+it. To try the tutor against lessons that are already ingested, use `staging`, which
+searches `eduai_chunks_v2`. If your `DATABASE_URL` and Qdrant point at shared data, note
+that a chat turn writes conversation memory and a graded answer writes mastery.
+
+### 3. Start the service
+
+```bash
+uvicorn system.asgi:app --host 0.0.0.0 --port 8000
+curl localhost:8000/ready        # {"status":"ready", "graph_ready":true, ...}
+```
+
+Interactive API docs are at `http://localhost:8000/docs` (outside production). Add
+`LOG_FILE=logs/ai-service.log` to keep a copy of the log in a file.
+
+### 4. Ask it something
+
+```bash
+curl -s localhost:8000/ai/chat \
+  -H "content-type: application/json" \
+  -H "x-service-token: <AI_WEBHOOK_SHARED_SECRET from .env>" \
+  -d '{"user_id": "<student uuid>", "user_type": "student",
+       "session_id": "<chat session uuid>", "message": "What is evaporation?"}'
+```
+
+The reply comes back in `response`, with what it cited in `citations`. Conversation
+memory is stored against a real platform user and chat session (the rows are keyed to
+them), so use ids from the platform — or chat through the web app — to see follow-ups
+work. For a sandbox with no platform data, set `agent.conversation.store: memory` in
+`config.yaml` and memory is kept in the process instead.
+
+### 5. Run it with the rest of the platform
+
+Point the backend's `AI_SERVICE_BASE_URL` at `http://localhost:8000`, give it the same
+`AI_WEBHOOK_SHARED_SECRET`, and start the backend and frontend from their repositories.
+A message sent in the app's AI tutor then travels frontend → backend → this service.
+
+### 6. Run the tests
+
+```bash
+pytest          # the unit suite: no keys, no services
+ruff check .
+```
+
+---
+
+## How a turn is answered
 
 ```
 START
-  → classify            the role, and the conversation so far (turns, summary, state)
-  → load_context        retrieval namespaces and the pathway's voice
-  → understand          LLM, structured output. Reads the new message against the
-                        conversation: does it need the syllabus, which tasks, a
-                        self-contained query for each, is it carrying the last answer
-                        on, did the student ask to be answered in a language
-      ├── converse      social turns: a model reply, no retrieval, no canned text
-      └── plan          subject (request → conversation → found by search), topics,
-                        reply language, the last answer's passages when continuing
-            → dispatch  conditional fan-out
+  → classify          role check; load the conversation (recent turns, summary, state)
+  → load_context      retrieval namespaces and the pathway's voice
+  → understand        one structured model call reads the message against the conversation
+      ├── converse    a social turn: a model-written reply, no retrieval
+      └── plan        subject, topics, reply language, the last answer's passages
+            → dispatch       one parallel branch per task
                 ├── explain_sg / summarize_sg   retrieve → answer → prerequisites
-                ├── assessment_sg               batch item generation over the chunk index
-                ├── grade_sg                    the only writer to mastery
-                ├── report_sg                   walks prerequisites to find root causes
-                └── visual_sg                   deterministic renderers
+                ├── assessment_sg               questions generated from retrieved passages
+                ├── grade_sg                    marks answers; the only writer to mastery
+                ├── report_sg                   mastery, trend and root-cause prerequisite
+                └── visual_sg                   charts, mind maps, maths figures, flashcards, PDFs, slides
             → render_visuals → compose
-  → verify_language     the answer is in the language decided, or is repaired once
-  → persist             remembers the turn; folds old turns into a running summary
+  → verify_language   the reply is in the language decided, or is repaired once
+  → persist           remember the turn; fold old turns into a running summary
 END
 ```
 
-**A conversation is remembered.** Each turn is stored with the passages its answer
-cited, and the next turn is read with the recent turns in view and the older ones
-summarised. There are no keyword lists, seed phrases or canned replies deciding
-what a message is: one model reads it in context.
+**1. The conversation is loaded.** Every turn is stored in `ai.user_memory` with the
+passages its answer cited. A turn sees the last six turns verbatim; older turns are
+folded into a running summary (goals, what was covered, preferences, open questions)
+written by a small model. Nothing is re-derived from one message alone.
 
-**A subject is taught in its own language.** The reply language is, in order: a
-language the student asked for in this conversation (it holds until they change
-it), the subject's language, the language they wrote in. `language.reply_follows`
-swaps the last two for a deployment that answers in the student's language.
+**2. One model call reads the turn.** `understand` returns a structured reading of the
+new message in the light of the conversation:
 
-Session uploads, export (PDF / DOCX), and the open-ended Q&A loop land in later sprints.
+- the student's own words, separated from any instruction the app put in front of them
+  (the frontend sends study modes as a prefix such as `Explain this:`);
+- whether the syllabus is needed at all — a greeting, thanks or small talk goes to
+  `converse` and is answered without a search;
+- the tasks (`explain`, `summarize`, `assessment`, `grade`, `visual`, `report`, filtered to
+  the pathway's allowlist), each with a self-contained search query that names what an
+  "example" or "that" refers to;
+- whether the turn carries the last answer on, or moves to another subject;
+- whether the student asked to be answered in a particular language.
 
-Each subgraph is a **separately compiled `StateGraph` with its own private state**. It does
-not inherit the parent state and has no idea pathways exist — the parent wraps each one in
-an adapter node.
+There are no keyword lists, seed phrases or phrase rules deciding what a message is.
+A reading that contradicts itself is sent back to the model with the reason.
+
+**3. The subject and language are settled.** The subject is the one on the request, else
+the one the conversation settled on, else the subject whose material answers the query
+best (found by searching the index, confined to a student's enrolled subjects). The reply
+language is, in order:
+
+1. a language the student asked for in this conversation — it holds until they change it;
+2. the subject's language — an Arabic-speaking student in an English science lesson is
+   answered in English;
+3. the language the student wrote in;
+4. the request's `language` field, then the configured default.
+
+`language.reply_follows: message` swaps 2 and 3 for a deployment that answers in the
+student's language.
+
+**4. The tasks run, and the reply is composed.** Every sentence a student reads is written
+by a model — explanations, refusals, small talk, progress notes. The service writes no
+fixed sentences in any language; the only fixed marks are symbols (✓ ✗ → 💡 ∅) and
+labels. A model call that fails fails the turn with a `503`, and the client shows its own
+message.
+
+**5. The turn is remembered**, along with the settled subject and any standing language
+request; the summary is refolded once the window fills.
 
 ### Pathways
 
-A pathway changes only three things: the retrieval namespace, the task allowlist, and the
-voice.
+A pathway changes the task allowlist and the voice. Parents are answered but not
+remembered: `ai.user_memory` holds student and teacher rows only.
 
 | Pathway | Allowed tasks | Voice |
 |---|---|---|
-| `student` | explain, summarise, assessment, grade, visual, report | encouraging tutor |
-| `teacher` | explain, summarise, assessment, grade, visual | professional |
-| `parent`  | explain, summarise, visual | plain, supportive |
+| `student` | explain, summarize, assessment, grade, visual, report | friendly |
+| `teacher` | explain, summarize, assessment, grade, visual | professional |
+| `parent`  | explain, summarize, visual | friendly |
 
-Persona and classroom scopes (and their additional namespaces) land in a later sprint; a
-student who has joined no classroom still gets the full tutor, which is the normal starting
-state, not a degraded one.
+### Grading and mastery
 
-### Offline ingestion
+Grading is AI-final. An answer is graded against the answer key or rubric when there is
+one, against retrieved syllabus passages otherwise, and declined when there is neither —
+never on the model's own knowledge. Each graded answer is appended to
+`ai.mastery_events`; a topic's answers in one assessment are averaged into one
+difficulty-weighted step of its `ai.mastery` score. A teacher correction is a new event,
+never an edit.
+
+---
+
+## Retrieval and grounding
+
+One multilingual index serves every language: a question in Arabic finds a passage in
+English and the reverse. For an explain or summarise task:
+
+1. **Search** — BGE-M3 dense and sparse vectors over `eduai_chunks_v2`, filtered to the
+   namespace, subject and (when selected) lesson, fused with a BM25 rank. Contents and
+   index pages are excluded, and lessons not marked `ready` are never searched.
+2. **Similarity floor** — passages below `agent.min_score` (0.47, set by a sweep recorded
+   in `config.yaml`) are dropped, so an off-syllabus question grounds in nothing and is
+   declined.
+3. **Lesson scope** — inside one selected lesson, a question another lesson answers
+   better (scoped best / unscoped best < 0.90) is refused by naming the lesson.
+4. **Read the whole section** — the three closest matches by meaning are read with the two
+   chunks either side of them, in lesson order, because a section split at its
+   sub-headings is otherwise found one fragment at a time.
+5. **Continue the last answer** — a turn that carries the previous one on starts from the
+   passages that answer cited.
+6. **Answer** — the model answers only from the numbered passages, citing them inline. It
+   leads with the lesson's own examples and says when an example is its own.
+7. **Grounding check** — an answer that cites nothing is treated as a refusal: no sources,
+   no prerequisites, not remembered as evidence.
+8. **Prerequisites** — walked through the topic graph from the passages the answer cited.
+
+Citations, sources and prerequisites are returned as structured fields (`citations`,
+`prereq_topics`) and are not printed in the reply text.
+
+---
+
+## Ingestion
+
+One PDF (or a lesson's body text) is one lesson:
 
 ```
-lecture uploaded
-  → extract & normalise   PyMuPDF text + NFKC. Scanned and maths pages go to vision
-                          (Qwen3-VL). Born-digital pages whose text is glyph-noise
-                          (subset fonts with no ToUnicode) are detected and sent to
-                          vision for the text too — their embedded figures are still
-                          read directly. Figures come from the embedded rasters where
-                          present (deduped) and from vision-detected boxes on scans;
-                          each is cropped to S3 with vision alt-text. A page the model
-                          cannot read is flagged needs_review and never indexed.
-  → chunk                 structure-aware, ~500–800 tokens, keeps headings + pages
-  → embed                 BGE-M3, one multilingual index (AR + EN + FR)
-  → topics                extract 3–8 skills; on re-ingest, match each against the
-                          lecture's own existing topics and reuse its topic_id (so a
-                          student's mastery history never fragments), tag chunks by topic
-  → dependencies          derive topic → prerequisite edges from the subject catalog,
-                          then clean them (drop self-edges, cap out-degree, break cycles);
-                          the lecture's edges are rewritten, not accreted, on re-ingest
-  → index                 Qdrant points + ai.chunks + ai.vector_index manifest +
-                          a per-lecture ai.lecture_ingestion status row, namespace as
-                          filter metadata. Re-ingesting a lecture replaces its rows,
-                          points and figure objects in place, never duplicating them.
-lecture is live
-
-  pending: review gate (derived edges currently ship unreviewed)
+extract       each page as typed blocks in reading order. The PDF's own text layer is
+              used wherever it has usable text; a page with none (a scan, or glyph noise
+              from subset fonts) is read by a vision model (Qwen3-VL, Claude fallback),
+              and what comes back is checked before it is believed. Figures are cropped
+              to S3 with alt text. A lesson with more than 5% unreadable pages is held
+              back as needs_review and never searched.
+chunk         blocks grouped under their heading; running heads and folios dropped,
+              contents and index pages marked so search never returns them.
+embed         BGE-M3 dense + sparse, each chunk prefixed with its subject, lesson,
+              section and page.
+topics        3–8 skills named in the lesson's language; a re-ingest reuses existing
+              topic ids so mastery history is never orphaned.
+dependencies  prerequisite edges between topics, cleaned (no self-edges, capped
+              out-degree, cycles broken) and rewritten on re-ingest.
+index         ai.chunks, ai.figures, the ai.vector_index manifest, Qdrant points and an
+              ai.lecture_ingestion status row. Re-ingesting replaces a lesson in place.
 ```
 
-Order is not optional: **lectures → assessments → teaching card.**
+The platform triggers ingestion when a lesson is published (`POST /ai/ingest/lesson`),
+and it can be run from the command line (see [Running](#running)).
+
+---
+
+## Where data lives
+
+| Store | What | Written by |
+|---|---|---|
+| `ai.chunks`, `ai.figures`, `ai.vector_index`, `ai.topics`, `ai.topic_dependencies`, `ai.lecture_ingestion`, `ai.page_transcriptions` | the indexed syllabus | ingestion |
+| `ai.user_memory` | conversation turns, running summary, session state (subject, language) | agent |
+| `ai.mastery`, `ai.mastery_events`, `ai.mistake_tags` | per-skill mastery and its history | agent (grading) |
+| `ai.artifacts` | rendered visuals | agent |
+| Qdrant `eduai_chunks_v2` / `eduai_topics` | chunk vectors (dense + sparse) and topic-label vectors | ingestion |
+| S3 | figure crops and rendered artifacts | both |
+
+Everything about users, classes, lessons and chat transcripts belongs to the platform
+backend, which the service reads through `/api/ai-integration`.
 
 ---
 
@@ -123,355 +339,203 @@ Order is not optional: **lectures → assessments → teaching card.**
 
 ```
 .
-├── ingestion/              offline pipeline, own entrypoint (python -m ingestion)
-│   ├── config.py           config.yaml + .env loader, per-task LLM overrides
-│   ├── state.py            IngestionState + domain dataclasses (map onto ai.*)
-│   ├── schemas.py          Pydantic contracts for the LLM / vision JSON outputs
-│   ├── llm_provider.py     vision client factory (re-exports the shared LLM/embedder seams)
-│   ├── extractors.py       topic extraction + dependency derivation over the LLM seam
-│   ├── backend.py          lesson-id → source URI + subject resolver (HTTP or fixtures)
-│   ├── stores.py           Postgres + Qdrant writers behind interfaces (dry-run fallback)
-│   ├── context.py          per-run dependencies handed to every stage
-│   ├── graph.py            LangGraph wiring (sequential fallback if langgraph absent)
-│   ├── stages/             extract · chunk · embed · topics · dependencies · index
-│   ├── prompts/
-│   └── utils/              normalise · pdf · tokens · s3
-├── shared/                 cross-cutting, imported by both halves
-│   ├── config.py           config.yaml + .env loader, per-task LLM overrides
-│   ├── embeddings.py       the bilingual index embedder (BGE-M3), cached per process
-│   ├── llm.py              provider-agnostic chat-model factory
-│   ├── logging.py          structured logging setup (secret / PII-safe)
-│   └── metering.py         per-run LLM cost + token metering
-├── agent/                  runtime graph, read-only
-│   ├── config.py           re-exports the shared Config (agent.* settings)
-│   ├── state.py            MainState (TypedDict)
-│   ├── models.py           typed contracts (assessment items, graded items, citations…)
-│   ├── prompts.py          plan · explain · summarize · assessment · grade · report · visuals · compose
-│   ├── tools.py            rag_search · resolve_topics · fetch_rubric · mastery reads/writes · figures
-│   ├── retrieval.py        shared RAG (namespace-filtered search + prerequisite walk)
-│   ├── render.py           deterministic visual renderers (charts, mind maps, PDFs, geometry, slides)
-│   ├── mastery.py          difficulty-weighted per-skill mastery rollup
+├── agent/                   the runtime graph
+│   ├── conversation/        turn memory: records, store (ai.user_memory), history window
 │   ├── graph/
-│   │   ├── nodes.py        classify, load_context, plan, dispatch, compose, persist
-│   │   ├── pathways.py     build_namespaces + resolve_style (the only pathway-aware fns)
-│   │   ├── grade.py        the /ai/grade entrypoint over grade_sg
-│   │   ├── report.py       the /ai/reports entrypoint over report_sg
-│   │   ├── graph.py        compiles the MainState graph
-│   │   └── subgraphs/      explain_summarize · assessment · grade · report · visual
-│   └── utils.py            language detection · JSON extraction · structured-output helper
-├── system/                 HTTP service (FastAPI) over the graph + pipeline
-│   ├── main.py             app factory; compiles the graph once at startup
-│   ├── asgi.py             uvicorn entrypoint (system.asgi:app)
-│   ├── settings.py         api.* config + service secrets
-│   ├── security.py         service-token auth + startup preflight
-│   ├── runtime.py          agent facade; offloads the sync graph to worker threads
-│   ├── ingestion_jobs.py   background pipeline runs, polled by job id
-│   ├── notifier.py         completion callback to the platform
-│   ├── errors.py           error taxonomy -> one JSON envelope
-│   ├── middleware.py       request id + access logging
-│   ├── routers/            chat · grading · reports · ingestion · health
-│   └── schemas/            request/response contracts
-├── config.yaml             behavioural configuration, committed
-├── scripts/                dev/test bootstrap + maintenance
-│   ├── dev_ai_schema.sql   creates the ai.* tables for a local Postgres
-│   ├── bootstrap.py        applies the SQL + creates the Qdrant collection
-│   ├── verify_ingest.py    checks the live-store invariants per lecture
-│   ├── reembed_chunks.py   re-embeds the indexed chunks in place
-│   └── eval_*.py           retrieval, RAG, answer and conversation evaluations
-├── tests/
-└── data/                   syllabus material — not committed
+│   │   ├── graph.py         compiles the graph; one adapter node per subgraph
+│   │   ├── nodes.py         classify · load_context · understand · converse · plan ·
+│   │   │                    dispatch · compose · verify_language · persist
+│   │   ├── pathways.py      namespaces and voice per pathway
+│   │   ├── grade.py         the /ai/grade entrypoint
+│   │   ├── report.py        the /ai/reports entrypoint
+│   │   └── subgraphs/       explain_summarize · assessment · grade · report · visual
+│   ├── tools.py             search, topic resolution, neighbours, rubric, mastery reads/writes
+│   ├── retrieval.py         retrieval composition: floor, scope, neighbours, prerequisites
+│   ├── citations.py         reading and renumbering [n] markers
+│   ├── prompts.py           every prompt, each declaring its reader and language rule
+│   ├── models.py            typed contracts (turn reading, tasks, items, citations)
+│   ├── subjects.py          subject facts from the backend, cached
+│   ├── scope.py             the lesson a turn is bounded by
+│   ├── mastery.py           the mastery update rule
+│   ├── render.py            deterministic renderers
+│   ├── homework.py          reading questions off a photographed page
+│   └── errors.py            failures a turn reports
+├── ingestion/               the offline pipeline (python -m ingestion)
+│   ├── layout/              page → typed blocks → chunks (tier router, text layer, vision)
+│   ├── stages/              extract · chunk · embed · topics · dependencies · index
+│   ├── prompts/
+│   └── stores.py            Postgres and Qdrant writers (dry-run fallback)
+├── shared/                  imported by both halves
+│   ├── language/            the reply-language policy, detection, directives, verification
+│   ├── llm.py · structured.py · prompting.py   model access, schema-checked output, prompts
+│   ├── embeddings.py · lexical.py · matching.py · vectors.py · vector_store.py
+│   ├── postgres.py · storage.py · backend.py · vision.py
+│   └── config.py · logging.py · metering.py · errors.py
+├── system/                  FastAPI service: routers, schemas, runtime, ingestion jobs
+├── scripts/                 bootstrap, ingest verification, re-embedding, evaluations
+├── tests/unit/
+├── config.yaml              every behavioural setting
+└── .env.example             secrets and connection strings
 ```
 
----
-
-## Getting started
-
-### Prerequisites
-
-- Python 3.11+
-- PostgreSQL 15+
-- Qdrant 1.12+
-- Redis 7+
-- An OpenRouter API key — vision transcription (scanned/maths pages, figure
-  captions) and topic extraction. Both fall back to stubs when it is absent, so
-  the pipeline runs without it, but produces no real transcription or topics.
-- Tesseract OCR — optional; only if `ingestion.ocr.engine` is switched from the
-  default `vision` to `tesseract` for cheap prose-only scanned pages.
-
-### Setup
-
-```bash
-git clone https://github.com/edAi20261/AI-Workflows.git
-cd AI-Workflows
-```
-
-Create and activate a virtual environment:
-
-```bash
-python -m venv .venv
-```
-
-```bash
-source .venv/Scripts/activate
-```
-
-On macOS or Linux use `source .venv/bin/activate`.
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-For development work, install the dev extras instead:
-
-```bash
-pip install -r requirements-dev.txt
-```
-
-Create your environment file and fill it in:
-
-```bash
-cp .env.example .env
-```
+Layering: `shared/` depends on nothing above it; `agent/` and `ingestion/` never import
+each other; `system/` sits on top. Read [`CLAUDE.md`](CLAUDE.md) before changing code — it
+lists the rules this codebase holds itself to and the failure behind each one.
 
 ---
 
 ## Configuration
 
-Configuration is split in two, deliberately:
-
-| File | Contents | Committed |
+| File | Holds | Committed |
 |---|---|---|
-| `.env` | secrets and connection strings only | no |
+| `.env` | secrets and connection strings | no |
 | `config.yaml` | everything that changes behaviour | yes |
 
-If changing a value changes how the system behaves, it belongs in `config.yaml` — where
-it is reviewable and its history lives in git. If it would leak something, it belongs in
-`.env`. Nothing behavioural is hard-coded.
+The model is a config change: `llm.provider` and `llm.model` move the whole system, and
+`llm.overrides` sets a model per task. Today every task runs on Gemini 2.5 through
+OpenRouter (Flash for reading turns and writing answers, Flash-Lite for composition,
+conversation summaries and visual builders), vision on Qwen3-VL, and the evaluation
+judge on GPT-4.1.
 
-The system is **model-agnostic by design**. `shared/llm.py` builds the client from
-`llm.provider` and `llm.model`, so moving the whole system to a different model means
-editing two lines of `config.yaml` and nothing else. Per-task overrides sit under
-`llm.overrides`, so deterministic work such as grading or dependency derivation can run
-at temperature 0 without touching the global default.
+`APP_ENV` selects an overlay from `environments:` in `config.yaml`:
 
-Embeddings are configured separately from the chat model, since the bilingual index has
-different requirements. `environments:` at the bottom of `config.yaml` provides overlays
-merged over the base config, selected by `APP_ENV`.
+| `APP_ENV` | Index it searches | Notes |
+|---|---|---|
+| `local` | `eduai_chunks_dev` | debug logging; keeps a dev index apart from real data |
+| `staging` | `eduai_chunks_v2` | the base configuration |
+| `production` | `eduai_chunks_v2` | no `/docs`, warning-level logs, more model retries |
 
-Behavioural thresholds — retrieval depth, chunk sizes, the topic dedupe cutoff, the
-weak-score threshold, the question source strategy, the loop ceiling — all live there.
+The settings most often tuned: `agent.min_score`, `agent.k`, `agent.expand`,
+`agent.scope.relevance_ratio`, `agent.conversation` (window, folding, TTL),
+`language.reply_follows`, `assessment.*` and `mastery.*`. Each threshold carries the
+measurement that set it.
 
 ---
 
-## Running the system
+## Running
 
-### Local stores (first-time setup for a real run)
-
-In production the backend owns the database schema and the pipeline auto-creates
-the Qdrant collection. To run real writes locally, provision both once:
-
-```bash
-python scripts/bootstrap.py
-```
-
-This applies `scripts/dev_ai_schema.sql` to `DATABASE_URL` (creating the six
-`ai.*` tables ingestion writes — chunks, figures, vector_index, topics,
-topic_dependencies, and the per-lecture lecture_ingestion tracking row) and
-creates the Qdrant collection sized to the embedder. It skips whichever store isn't configured, and is safe to re-run. With
-neither `DATABASE_URL` nor `QDRANT_URL` set, ingestion uses in-memory dry-run
-stores and no bootstrap is needed.
-
-### Ingestion
-
-Ingestion runs as a standalone entrypoint over one already-split lesson file
-(one PDF = one lesson):
-
-```bash
-python -m ingestion path/to/lesson.pdf --lecture-id <uuid> --subject-id <uuid> --grade g8
-```
-
-Add `--subject-is-math` to force every page down the vision route (maths notation
-flattens under plain text extraction). Two further modes resolve a lesson through
-the backend — or a local fixtures manifest — before running:
-
-```bash
-python -m ingestion --resolve <lesson_id> [--fixtures manifest.yaml]
-python -m ingestion --backfill [--fixtures manifest.yaml]
-```
-
-It runs `extract → chunk → embed → topics → dependencies → index` and prints the
-per-stage stats.
-
-**Re-ingesting is safe and needs no wipe.** Running a lecture again replaces its
-chunks, points, figures and dependency edges in place (delete-before-write) and
-**reuses** its `topic_id`s — so nothing duplicates or orphans. Wipe + `bootstrap.py`
-are only for a deliberate clean-slate rebuild, not for a normal re-run.
-
-Behaviour is driven entirely by `config.yaml` + `.env`:
-
-- With `DATABASE_URL` and `QDRANT_URL` set, it writes `ai.chunks` /
-  `ai.figures` / `ai.vector_index` and upserts Qdrant points for real.
-- With neither set, it runs against in-memory dry-run stores — a full pipeline
-  pass needs no external services.
-- The vision model (scanned/maths transcription, figure captions) and the
-  topic-extraction model are read from config; each falls back to a safe stub
-  when its key is absent, so the pipeline always completes.
-
-The embedding model (BGE-M3) runs locally and downloads on first use (~2 GB).
-Set `QDRANT_URL=:memory:` for a real vector-store pass without a Qdrant server.
-
-After a run, `python scripts/verify_ingest.py [--lecture-id <uuid>]` reports the
-per-lecture invariants against the live stores: chunk / manifest / point parity,
-a topic on every chunk, namespace and filter fields on every point, NFKC-clean
-text, and no re-ingest duplicates.
-
-### Runtime graph
-
-The read-time graph turns a question into a grounded, cited answer. It compiles
-`classify → load_context → plan → dispatch → {explain_sg | summarize_sg} → compose
-→ persist`; the planner resolves the message to `topic_id`s, retrieval pulls the
-relevant chunks plus prerequisite-topic chunks, and the answer is written in the
-question's language with inline citations and a prerequisite-topics list.
-
-```python
-from agent.graph import build_graph
-from agent.config import get_config
-
-graph = build_graph(get_config())
-result = graph.invoke({
-    "message": "Explain the fire triangle.",
-    "user_type": "student",
-    "subject_id": "<subject-uuid>",   # scopes retrieval to the subject
-})
-print(result["response"])       # grounded answer + Sources + Prerequisite topics
-```
-
-**How a question is answered:**
-
-1. `classify` — pick the pathway and load the conversation. No LLM.
-2. `load_context` — resolve the retrieval namespaces and style for the pathway.
-3. `understand` — an LLM reads the message against the conversation and returns the tasks
-   (explain, summarise, assessment, grade, visual, report), a self-contained query for each,
-   whether the turn carries the last answer on, and any language request. A purely social
-   turn goes to `converse` instead.
-4. `plan` — settle the subject: the request's, else the conversation's, else the subject whose
-   material answers the query best (found by searching it, confined to a student's enrolled
-   subjects). `resolve_topics` maps each query to `topic_id`s **within that subject**, and the
-   reply language is decided.
-5. `dispatch` — fan each task out to its subgraph.
-6. the task subgraphs run in parallel — `explain_sg` / `summarize_sg` answer from retrieved
-   context with inline citations; `assessment_sg` generates items from the chunk index;
-   `grade_sg` grades against a rubric or the syllabus and updates mastery; `report_sg` builds
-   a progress note; `visual_sg` renders any requested visuals.
-7. `render_visuals` — render every collected visual spec (deduped, capped per turn).
-8. `compose` — merge the tasks, apply the voice, append the prerequisites of the cited passages.
-9. `verify_language` — check the reply's language, repair it once if it drifted.
-10. `persist` — remember the turn and its cited passages; fold old turns into the summary.
-
-The **subject scopes** the search — supplied on the request (optional) or **inferred from
-the question** when absent; the **lecture is discovered by similarity**, not chosen up
-front. The answer comes out in the user's language unless they explicitly requested another.
-
-Retrieval is one multilingual index: a question in one language retrieves the
-relevant passage regardless of the language it was written in, and answers in the
-question's language (`ar` / `en` / `fr` / `de`). The building blocks are read-only,
-deterministic tools — `rag_search` (namespace-filtered vector search), `resolve_topics`,
-`get_topic_deps`, `get_topic_chunks` — every query namespace-scoped, non-`ready`
-lectures excluded.
-
-Beyond retrieval, the runtime also **generates assessments**, **grades** answers (rubric
-first, syllabus material otherwise, declining when neither supports a grade), tracks
-**per-skill mastery** on every graded turn, renders **study visuals**, and produces
-**progress reports** with a trend and root-cause prerequisite. Grading is the only writer to
-mastery, and only a published grade moves it. Persona and classroom scopes, session uploads,
-export, and the open-ended Q&A loop land in later sprints; the HTTP service is in
-`system/` (below).
-
-
-### HTTP service
-
-The service is the transport layer over the runtime graph and the ingestion
-pipeline. It holds no teaching logic: it validates a request, authenticates the
-caller, and delegates.
+**The service:**
 
 ```bash
 uvicorn system.asgi:app --host 0.0.0.0 --port 8000
+curl localhost:8000/ready        # {"status":"ready", "graph_ready":true, ...}
 ```
 
-The graph is compiled once at startup, so the first request is not slower than
-the rest. Startup refuses to continue outside a dev environment when the service
-token or the stores are unconfigured, rather than serving a broken service.
+Set `LOG_FILE=logs/ai-service.log` to also write the log to a size-bounded JSON file.
+Each turn logs one `turn` line with its kind, language and why, subject, tasks and
+citations. Outside a dev environment the service refuses to start without a model key,
+the service token or its stores.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/ai/chat` | A message becomes a grounded, cited reply — plus any assessment, grade or visual the planner produced. |
-| `POST` | `/ai/chat/stream` | The same turn as SSE: a `progress` event per graph stage, then one `result`. |
-| `POST` | `/ai/grade` | Grade submitted answers and move mastery. |
-| `GET` | `/ai/reports/{user_id}` | A progress report with its trend chart rendered. |
-| `POST` | `/ai/ingest` | Queue a lesson. Returns `202` with a job id; ingestion never blocks a request. |
-| `GET` | `/ai/ingest/{job_id}` | Poll one job. `/ai/ingest/lectures/{lecture_id}` reads the latest for a lecture. |
-| `GET` | `/health`, `/ready` | Liveness and readiness. Unauthenticated — they expose no data. |
+**Ingestion from the command line:**
 
-The integration contract for the platform backend is written up in
-[`docs/BACKEND_INTEGRATION.md`](docs/BACKEND_INTEGRATION.md), with the generated spec
-alongside it in [`docs/openapi.json`](docs/openapi.json).
+```bash
+# a local file
+python -m ingestion path/to/lesson.pdf --lecture-id <uuid> --subject-id <uuid> \
+    --lesson-title "The Water Cycle" --lesson-order 4 [--grade g8] [--subject-is-math]
 
-**This service is not public.** The platform backend authenticates the end user
-and calls it with the shared `x-service-token` secret
-(`AI_WEBHOOK_SHARED_SECRET`), the same one the platform accepts in the other
-direction. Login and per-user authorisation stay in the platform.
+# a lesson resolved through the backend (or a fixtures manifest)
+python -m ingestion --resolve <lesson_id> [--fixtures manifest.yaml]
+python -m ingestion --backfill [--fixtures manifest.yaml]
 
-```
-frontend  ->  platform backend  ->  ai service (system/)  ->  agent / ingestion
+python scripts/verify_ingest.py [--lecture-id <uuid>]   # check the stored invariants
 ```
 
-Every failure returns one envelope, and every response carries `x-request-id`
-(an upstream id is honoured, so a request is traceable across both services):
+The direct mode reads the subject's name and language from the backend; without
+`--lesson-title` citations from the lesson are labelled by section headings only. With
+neither `DATABASE_URL` nor `QDRANT_URL` set, ingestion writes to in-memory dry-run stores.
 
-```json
-{"error": {"code": "validation_error", "message": "…", "request_id": "…"}}
+**The graph, in process:**
+
+```python
+from agent.config import get_config
+from agent.graph import build_graph
+
+graph = build_graph(get_config())
+turn = graph.invoke({
+    "user_id": "<uuid>", "user_type": "student", "session_id": "<uuid>",
+    "message": "Can you explain evaporation?",
+})
+print(turn["response"])            # the reply
+print(turn["published_citations"]) # what it cited
 ```
-
-Behaviour is configured under `api:` in `config.yaml` — concurrency, ingestion
-workers, whether `/docs` is served (off in production), and the completion
-callback. Interactive API docs are at `/docs`.
 
 ---
 
-## Testing
+## HTTP API
 
-```bash
-pip install -r requirements-dev.txt
-pytest
+Every route except `/health` and `/ready` requires the `x-service-token` header
+(`AI_WEBHOOK_SHARED_SECRET`). The platform backend authenticates users; this service is
+not public.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/ai/chat` | One message → one reply, with any assessment, grade, visual, citations and prerequisites |
+| `POST` | `/ai/chat/stream` | The same turn as server-sent events: one `progress` per stage, then `result` |
+| `POST` | `/ai/grade` | Grade submitted answers and move mastery |
+| `GET` | `/ai/reports/{user_id}` | A progress report with its trend chart |
+| `POST` | `/ai/homework/capture` | Read the questions off a photographed homework page |
+| `POST` | `/ai/ingest` | Queue a lesson from a source URI; returns `202` and a job id |
+| `POST` | `/ai/ingest/lesson` | Queue a lesson by platform id (fired on publish) |
+| `GET` | `/ai/ingest`, `/ai/ingest/{job_id}`, `/ai/ingest/lectures/{lecture_id}` | Recent jobs, one job, a lecture's latest job |
+| `GET` | `/health`, `/ready` | Liveness and readiness |
+
+Every failure returns one envelope, and every response carries `x-request-id` (an upstream
+id is honoured):
+
+```json
+{"error": {"code": "service_unavailable", "message": "…", "request_id": "…"}}
 ```
 
-The ingestion unit suite (`tests/unit/test_ingestion.py`) covers the pieces that
-must not silently regress — Arabic normalisation, structure-aware chunking,
-config overlay + per-task LLM overrides, topic extraction and dedupe, dependency
-derivation and edge post-process, the Pydantic output contracts, the vision JSON
-parsing and client factory, the backend resolver, the born-digital legibility
-gate, figure box scaling and duplicate dedupe, re-ingest idempotency and the
-per-lecture tracking record — plus an end-to-end fixture-to-pipeline pass into
-dry-run stores. No keys or services required.
+The backend contract is in [`docs/BACKEND_INTEGRATION.md`](docs/BACKEND_INTEGRATION.md) and
+[`docs/openapi.json`](docs/openapi.json).
 
-The agent suite covers the runtime graph without any keys or services — language
-detection, the pathway functions, the planner (with a stub model and a deterministic
-fallback), the compose helpers (grade summary, visual captions, decline suppression,
-render-error handling), and an end-to-end graph run with the tools monkeypatched
-(`test_agent.py`); assessment generation and shape (`test_assessment.py`); grading
-authority order, decline, and mastery movement (`test_grade.py`); the mastery rollup
-(`test_mastery.py`); the progress report and root-cause walk (`test_report.py`); and the
-visual renderers and subgraph, including deterministic geometry (`test_visual.py`).
-`test_logging.py` and `test_metering.py` cover the logging-safety guards (secret masking,
-URI redaction, third-party clamp) and the cost/token meter.
+---
 
-`test_api.py` covers the HTTP layer against a stubbed runtime — service-token auth, request
-validation and the rejection of unknown fields, the response shapes, error-envelope mapping,
-request-id propagation, and the startup preflight that refuses an unauthenticated or store-less
-production service. No keys, no services, no graph compile.
+## Evaluation and tests
 
-`rag_search` is additionally exercised end to end against the live stores with
-same-language and cross-lingual queries and a namespace-isolation check, confirming
-a question in one language retrieves the relevant passage in another.
+A behaviour change is measured before and after. The evaluations run against the real
+index and models:
+
+| Script | Measures |
+|---|---|
+| `scripts/eval_retrieval.py` | whether retrieval finds the right lesson, and separates answerable from unanswerable questions |
+| `scripts/eval_rag.py` | context precision, context recall, faithfulness and answer relevance |
+| `scripts/eval_answers.py` | answer quality, judged by a model from another family |
+| `scripts/eval_conversations.py` | multi-turn behaviour: follow-ups, small talk, refusals, language — against a running service |
+
+```bash
+pytest                 # the unit suite: no keys, no services
+ruff check .           # must not regress
+```
+
+---
+
+## Contributing
+
+- Read [`CLAUDE.md`](CLAUDE.md) first. It lists the rules this codebase holds itself to —
+  fix the producer rather than filter at display, one decision in one place, measure
+  before and after — each with the failure that made it a rule.
+- Work on a branch and open a pull request into **`staging`**. One concern per PR, and the
+  description says what was broken, not what the diff does.
+- `staging` is released to **`main`** by a pull request. A push to `main` runs the tests
+  and deploys the service (`.github/workflows/deploy.yml`).
+- Tests are named for the behaviour they protect and must fail before the fix. `ruff check`
+  must not gain findings; never run `ruff --fix` across the whole repository.
+- A behaviour change comes with a before-and-after number from one of the evaluations.
+
+---
+
+## Known limitations
+
+- **Chunking is per heading and per page.** A section split at its sub-headings is
+  recovered at answer time by reading neighbouring chunks, but chunks never cross a page,
+  do not carry their parent heading, and on magazine-style pages can still hold
+  fill-in answer keys and stray letters from decorative titles. Fixing it in the chunker
+  needs a re-ingest.
+- **Topics are coarse on long documents.** A lesson gets 3–8 topics, so a whole book
+  ingested as one lesson maps most of its pages to a handful of skills, and prerequisite
+  edges are derived by a model without review.
+- **The platform does not yet pass structured citations through** to the frontend, and the
+  frontend sends the study mode inside the message rather than as a field.
+- **Parents have no conversation memory**, and teacher and parent report scopes, classroom
+  scoping and session uploads are not built yet.
