@@ -255,6 +255,17 @@ agent:
     # the real curriculum is indexed. Re-measure then.
     relevance_ratio: 0.90
 
+  evidence:
+    # What an answer was built from, kept for the turn that follows it. A
+    # student saying "explain that more simply" is asking about the passages
+    # the last answer used, and their words name nothing to search for.
+    ttl_hours: 12              # a follow-up arrives in the same sitting or not at all
+    # Read and written on turns a student is waiting through, so the same
+    # limits as language.sticky: refuse rather than hang.
+    connect_timeout_seconds: 2
+    statement_timeout_ms: 500
+    failure_threshold: 3       # consecutive failures before the store is paused
+    breaker_seconds: 30
   # Runtime graph (read-only). Retrieval breadth, prerequisite walk, loop backstop.
   k: 8                       # chunks retrieved per explain/summarize turn
   min_score: 0.44            # retrieval similarity floor; below this a chunk is off-syllabus -> decline.
