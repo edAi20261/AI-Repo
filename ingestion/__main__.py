@@ -3,7 +3,8 @@
 Three modes:
 
   # direct (offline) — you already have the file and its subject facts
-  python -m ingestion <lesson.pdf> --lecture-id <uuid> --subject-id <uuid> [--grade g8] [--subject-is-math]
+  python -m ingestion <lesson.pdf> --lecture-id <uuid> --subject-id <uuid> --lesson-title "…"
+      [--lesson-order N] [--grade g8] [--subject-is-math]
 
   # resolve — turn a lesson_id into source + subject via the backend, then run
   python -m ingestion --resolve <lesson_id> [--fixtures manifest.yaml]
@@ -50,14 +51,34 @@ def _report(lesson_id: str, result: dict) -> None:
         logger.warning(err, extra={"lecture_id": lesson_id})
 
 
+def _subject_of(config, subject_id: str) -> dict:
+    """The subject's name and language, so a direct run labels its chunks the way a
+    resolved run does. A citation without them is labelled by whatever the layout
+    parser took for a heading."""
+    try:
+        return get_backend_client(config).get_subject(subject_id) or {}
+    except Exception:
+        logger.warning("subject facts unavailable; chunks will carry no subject name "
+                       "or language", extra={"subject_id": subject_id}, exc_info=True)
+        return {}
+
+
 def _run_direct(args, config) -> int:
+    subject = _subject_of(config, args.subject_id)
+    if not args.lesson_title:
+        logger.warning("no --lesson-title: citations from this lecture will be labelled "
+                       "by section headings only", extra={"lecture_id": args.lecture_id})
     state = new_state(
         lecture_id=args.lecture_id,
         subject_id=args.subject_id,
         source_uri=_to_uri(args.source),
         grade=to_platform_grade(args.grade),
+        subject_name=subject.get("name"),
+        lesson_title=args.lesson_title,
+        lesson_order=args.lesson_order,
         namespace=args.namespace,
         version=args.version,
+        language_hint=subject.get("language"),
         subject_is_math=args.subject_is_math,
     )
     _report(args.lecture_id, run_ingestion(state, config=config))
@@ -114,6 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lecture-id", help="direct mode: content.lessons.id (uuid)")
     parser.add_argument("--subject-id", help="direct mode subject id, or backfill filter")
     parser.add_argument("--grade", default=None, help="grade level of the subject")
+    parser.add_argument("--lesson-title", default=None, help="direct mode: the lesson's title")
+    parser.add_argument("--lesson-order", type=int, default=None,
+                        help="direct mode: the lesson's position in its subject")
     parser.add_argument(
         "--subject-is-math",
         action="store_true",
