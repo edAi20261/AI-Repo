@@ -26,7 +26,7 @@ fi
 
 command=$(python3 - "$@" <<'PY'
 import json, sys
-print(json.dumps(sys.argv[1:]))
+print(json.dumps(["-m", "ingestion", *sys.argv[1:]]))
 PY
 )
 
