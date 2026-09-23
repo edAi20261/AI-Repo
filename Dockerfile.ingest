@@ -64,4 +64,8 @@ USER appuser
 # hoster is slow — which is how the first attempt at this was measured.
 RUN python -c "from paddleocr import PPStructureV3; PPStructureV3(device='cpu')"
 
-ENTRYPOINT ["python", "-m", "ingestion"]
+# python, not `python -m ingestion`: a task override replaces the command, and
+# the same image has to be able to run the comparison script as well as the
+# ingester. The default command is still an ingest.
+ENTRYPOINT ["python"]
+CMD ["-m", "ingestion"]

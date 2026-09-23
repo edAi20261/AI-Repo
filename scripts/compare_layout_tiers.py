@@ -1,4 +1,4 @@
-"""Read the same pages twice — text layer, then layout model — and count.
+"""Read the same pages by each parser we have, and count what the index gets.
 
 Ingesting a book is a decision about which parser reads it, and until now that
 decision was made from a comment in the extractor rather than from a number.
@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import fitz  # noqa: E402
 
-from ingestion.layout import parse_page, tier2  # noqa: E402
+from ingestion.layout import parse_page, tier2, tier3  # noqa: E402
 from ingestion.layout.blocks import PageMeta, ParsedPage  # noqa: E402
 from ingestion.layout.chunker import page_to_chunks  # noqa: E402
 from ingestion.utils.tokens import count_tokens  # noqa: E402
@@ -68,10 +68,15 @@ def _salad(text: str) -> bool:
     return sum(1 for w in words if len(w) <= 2) / len(words) > 0.5
 
 
-def read(page, meta: PageMeta, *, dpi: int, config, model: bool) -> ParsedPage | None:
-    if not model:
+def read(page, meta: PageMeta, tier: str, *, dpi: int, config,
+         language: str | None) -> ParsedPage | None:
+    if tier == "text":
         return parse_page(page, meta, direction=meta.reading_direction)
-    return tier2.parse_page(page.get_pixmap(dpi=dpi).tobytes("png"), meta, config=config)
+    rendered = page.get_pixmap(dpi=dpi).tobytes("png")
+    if tier == "layout":
+        return tier2.parse_page(rendered, meta, config=config)
+    return tier3.parse_page(rendered, meta, config=config, language_hint=language,
+                            direction=meta.reading_direction)
 
 
 def main() -> int:
@@ -80,6 +85,10 @@ def main() -> int:
     parser.add_argument("--pages", default="1-10", help="1-based, e.g. 16-25 or 3,9,17")
     parser.add_argument("--dpi", type=int, default=200)
     parser.add_argument("--show", type=int, default=0, help="print this many chunks from each")
+    parser.add_argument("--tiers", default="text,layout",
+                        help="which parsers to run: text, layout, vision (comma separated). "
+                             "A scanned book has no text layer, so there it is layout,vision")
+    parser.add_argument("--language", default=None, help="language hint for the vision tier")
     args = parser.parse_args()
 
     config = get_config()
@@ -88,15 +97,17 @@ def main() -> int:
     wanted = pages(args.pages, doc.page_count)
     print(f"{Path(args.pdf).name}: {len(wanted)} of {doc.page_count} pages\n")
 
+    labels = {"text": "text layer", "layout": "layout model", "vision": "vision model"}
     results = {}
-    for model in (False, True):
-        label = "layout model" if model else "text layer"
+    for tier in [t.strip() for t in args.tiers.split(",") if t.strip()]:
+        label = labels.get(tier, tier)
         chunks, unread, started = [], 0, time.time()
         for index in wanted:
             page = doc[index]
             meta = PageMeta(doc_id="compare", page=index + 1,
                             width=float(page.rect.width), height=float(page.rect.height))
-            parsed = read(page, meta, dpi=args.dpi, config=config, model=model)
+            parsed = read(page, meta, tier, dpi=args.dpi, config=config,
+                          language=args.language)
             if parsed is None:
                 unread += 1
                 continue
