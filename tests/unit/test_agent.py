@@ -299,12 +299,24 @@ def test_a_continuing_turn_brings_the_last_answer_s_passages(monkeypatch):
     assert fresh["previous_chunk_ids"] == []
 
 
-def test_the_reply_language_follows_the_subject_once_it_is_known(monkeypatch):
+def test_the_reply_language_follows_a_subject_the_student_opened(monkeypatch):
+    """A lesson opened in the app teaches in its own language: an English
+    literature lesson answers in English whatever the student types in.
+
+    It used to hold for a guessed subject too, and that is how a student who
+    wrote 'ممكن تشرح لي الكهربية الساكنة؟' was answered in French — one earlier
+    English question had settled the conversation on the French science book.
+    A subject nobody chose does not get to overrule the student."""
     monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
     monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [_hit("bio", 0.9)])
     plan = nmod.build_plan(get_config(), _Subjects(bio={"language": "en"}))
-    out = plan(_plan_state(message_language="ar"))
-    assert out["language"] == "en"
+
+    opened = plan(_plan_state(message_language="ar", subject_id="bio"))
+    assert opened["language"] == "en"
+
+    guessed = plan(_plan_state(message_language="ar"))
+    assert guessed["language"] == "ar"
+
     assert plan(_plan_state(message_language="ar", requested_language="ar"))["language"] == "ar"
 
 
@@ -790,3 +802,76 @@ def test_the_answer_key_is_never_shown_to_the_model(monkeypatch):
 
     assert "Name the process" in captured["prompt"]
     assert "sublimation-of-the-hydrosphere" not in captured["prompt"]
+
+
+# --- a term that exists in two languages ---------------------------------------
+
+class _Subjects2:
+    """Subject facts for a corpus that holds the same term twice."""
+
+    def __init__(self, **facts):
+        from agent.models import SubjectFacts
+        self._facts = {k: SubjectFacts(subject_id=k, **v) for k, v in facts.items()}
+
+    def facts(self, subject_id):
+        from agent.models import SubjectFacts
+        return self._facts.get(subject_id) or SubjectFacts(subject_id=subject_id)
+
+
+def test_a_settled_subject_is_left_behind_when_the_student_changes_language(monkeypatch):
+    """One English question settled the conversation on the French science
+    subject; every Arabic question after it was answered from the French book,
+    in French. A student who switches language is asking for their own."""
+    from agent.conversation import Conversation, SessionState
+
+    seen = {}
+
+    def fake_infer(query, namespaces, config, enrolled, language=None):
+        seen["language"] = language
+        return "sci-ar"
+
+    monkeypatch.setattr(nmod, "_infer_subject", fake_infer)
+    conversation = Conversation(state=SessionState(subject_id="sci-fr"))
+    subject_id, source = nmod._resolve_subject(
+        {"message": "ما هي الكهربية الساكنة؟", "message_language": "ar", "namespaces": []},
+        _reading(message_language="ar"), conversation, [], get_config(), None,
+        subjects=_Subjects2(**{"sci-fr": {"language": "fr"}, "sci-ar": {"language": "ar"}}))
+
+    assert subject_id == "sci-ar"
+    assert source == "inferred"
+    assert seen["language"] == "ar"
+
+
+def test_a_settled_subject_is_kept_when_the_language_still_matches(monkeypatch):
+    from agent.conversation import Conversation, SessionState
+
+    monkeypatch.setattr(nmod, "_infer_subject",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not re-infer")))
+    conversation = Conversation(state=SessionState(subject_id="sci-ar"))
+    subject_id, source = nmod._resolve_subject(
+        {"message": "اشرح أكثر", "message_language": "ar", "namespaces": []},
+        _reading(message_language="ar"), conversation, [], get_config(), None,
+        subjects=_Subjects2(**{"sci-ar": {"language": "ar"}}))
+
+    assert subject_id == "sci-ar" and source == "conversation"
+
+
+def test_the_vote_prefers_material_in_the_language_the_student_wrote_in(monkeypatch):
+    """Both books answer the question; the one the student can read wins."""
+    from agent.models import RetrievedChunk
+
+    def chunk(subject, language, score):
+        return RetrievedChunk(chunk_id=f"{subject}-{score}", score=score, text="x",
+                              lecture_id="l", topic_ids=[], page_from=1, page_to=1,
+                              heading_path=None, language=language, subject_id=subject)
+
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [
+        chunk("sci-fr", "fr", 0.72), chunk("sci-fr", "fr", 0.70),
+        chunk("sci-ar", "ar", 0.66), chunk("sci-ar", "ar", 0.64)])
+
+    assert nmod._infer_subject("الكهربية الساكنة", [], get_config(), None,
+                               language="ar") == "sci-ar"
+    assert nmod._infer_subject("électricité statique", [], get_config(), None,
+                               language="fr") == "sci-fr"
+    assert nmod._infer_subject("static electricity", [], get_config(), None,
+                               language="en") == "sci-fr"

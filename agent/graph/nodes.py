@@ -334,7 +334,8 @@ def _merge_same_type(tasks: list[dict]) -> list[dict]:
 
 
 def _infer_subject(query: str, namespaces: list[str], config,
-                   enrolled_ids: set | None = None) -> str | None:
+                   enrolled_ids: set | None = None,
+                   language: Optional[str] = None) -> str | None:
     """The subject whose material answers ``query`` best, found by searching for it.
 
     Matching the question against topic labels guessed a subject from a few words
@@ -353,6 +354,14 @@ def _infer_subject(query: str, namespaces: list[str], config,
         logger.warning("subject inference search failed", exc_info=True)
         return None
     nearest = sorted(hits, key=lambda chunk: chunk.score, reverse=True)[:k]
+    # The same term is taught in Arabic and in French, and a question about
+    # static electricity matches both — the embedder was chosen for exactly
+    # that. Where the student's own language is among the answers, the rest are
+    # another class's material, however well they score.
+    if language:
+        in_language = [chunk for chunk in nearest if chunk.language == language]
+        if in_language:
+            nearest = in_language
     votes: dict[str, float] = {}
     for chunk in nearest:
         if chunk.score < floor or not chunk.subject_id:
@@ -420,26 +429,46 @@ def _enrolled_subjects(client, state) -> set | None:
 
 
 def _resolve_subject(state, reading: TurnUnderstanding, conversation: Conversation,
-                     raw_tasks: list[dict], config, client) -> tuple[Optional[str], str]:
+                     raw_tasks: list[dict], config, client,
+                     subjects: Optional[SubjectDirectory] = None) -> tuple[Optional[str], str]:
     """The subject this turn is scoped to, and how it was decided.
 
     What the caller sends wins; then the subject the conversation settled on,
-    unless the student has moved to another; then the subject whose material
-    answers the question; the configured default only as a last resort.
+    unless the student has moved to another or is no longer writing in its
+    language; then the subject whose material answers the question; the
+    configured default only as a last resort.
+
+    The language clause is the one a two-language corpus needs. One English
+    question settled a conversation on the French science subject, and every
+    Arabic question after it was answered from the French book, because a
+    settled subject was kept whatever the student then wrote in.
     """
+    message_language = state.get("message_language")
     if state.get("subject_id"):
         return state["subject_id"], "request"
-    if conversation.state.subject_id and not reading.changes_subject:
-        return conversation.state.subject_id, "conversation"
+    settled = conversation.state.subject_id
+    if settled and not reading.changes_subject and not _wrong_language(
+            settled, message_language, subjects):
+        return settled, "conversation"
     query = next((t["query"] for t in raw_tasks if t.get("query")), state.get("message", ""))
     inferred = _infer_subject(query, state.get("namespaces") or [], config,
-                              _enrolled_subjects(client, state))
+                              _enrolled_subjects(client, state),
+                              language=message_language)
     if inferred:
         return inferred, "inferred"
     fallback = config.get("agent.default_subject_id")
     if fallback:
         return fallback, "default"
-    return conversation.state.subject_id, "conversation" if conversation.state.subject_id else "none"
+    return settled, "conversation" if settled else "none"
+
+
+def _wrong_language(subject_id: str, message_language: Optional[str],
+                    subjects: Optional[SubjectDirectory]) -> bool:
+    """Whether the settled subject is taught in a language the student left behind."""
+    if not (message_language and subjects):
+        return False
+    taught_in = subjects.facts(subject_id).language
+    return bool(taught_in) and taught_in != message_language
 
 
 def _previous_evidence(reading: TurnUnderstanding, conversation: Conversation,
@@ -464,13 +493,14 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
         conversation = Conversation.model_validate(state.get("conversation") or {})
         raw_tasks = state.get("planned_tasks") or []
         subject_id, subject_source = _resolve_subject(
-            state, reading, conversation, raw_tasks, config, client)
+            state, reading, conversation, raw_tasks, config, client, subjects)
         subject = subjects.facts(subject_id)
         decision = policy.reply(
             requested=state.get("requested_language"),
             subject_language=subject.language,
             message_language=state.get("message_language"),
-            api_language=state.get("api_language"))
+            api_language=state.get("api_language"),
+            subject_chosen=subject_source == "request")
 
         lecture_ids = lecture_filter(state)
         tasks: list[dict] = []
