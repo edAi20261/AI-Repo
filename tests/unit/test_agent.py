@@ -743,3 +743,50 @@ def test_a_section_split_into_chunks_is_read_whole(monkeypatch):
     out = rmod.with_neighbours([far, wind], anchors=1, window=2, limit=10)
     assert [c.chunk_id for c in out] == ["s10", "s11", "s12", "s13", "x"]
     assert out[1].score == 0.72
+
+
+# --- a quiz waiting for its answers -------------------------------------------
+
+def _open_quiz():
+    from agent.conversation import PendingAssessment, PendingQuestion
+
+    return PendingAssessment(items=[
+        PendingQuestion(id="q1", question="Which process moves water into the air?",
+                        type="mcq", options=["condensation", "evaporation"],
+                        answer="evaporation", topic_id="t1", lecture_id="l1"),
+        PendingQuestion(id="q2", question="Most ocean wave energy comes from the sun.",
+                        type="true_false", answer="True", topic_id="t2", lecture_id="l1"),
+    ])
+
+
+def test_the_open_questions_are_put_in_front_of_the_model(monkeypatch):
+    """A student who answers a quiz says only "d) evaporation". Without the
+    questions in view the turn was read as "explain evaporation" and the answers
+    came back explained instead of marked."""
+    _, captured = _understand(
+        monkeypatch, _reading(message_language="en"),
+        state={"message": "d) evaporation\nTrue",
+               "conversation": {"state": {"subject_id": "bio", "pending": _open_quiz().model_dump()}}},
+        subjects=_Subjects(bio={"language": "en", "name": "Biology"}))
+
+    prompt = captured["prompt"]
+    assert "Which process moves water into the air?" in prompt
+    assert "Most ocean wave energy comes from the sun." in prompt
+    assert "evaporation" not in prompt.split("Which process")[0]   # never the answer key
+
+
+def test_the_answer_key_is_never_shown_to_the_model(monkeypatch):
+    """The key is the server's. A model that can see it can hand it to the
+    student, and a student who asks "what was the answer?" would be told."""
+    from agent.conversation import PendingAssessment, PendingQuestion
+
+    quiz = PendingAssessment(items=[PendingQuestion(
+        id="q1", question="Name the process that moves water into the air.",
+        answer="sublimation-of-the-hydrosphere")])
+    _, captured = _understand(
+        monkeypatch, _reading(message_language="en"),
+        state={"message": "evaporation",
+               "conversation": {"state": {"pending": quiz.model_dump()}}})
+
+    assert "Name the process" in captured["prompt"]
+    assert "sublimation-of-the-hydrosphere" not in captured["prompt"]
