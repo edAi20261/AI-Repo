@@ -433,3 +433,46 @@ def test_an_unreadable_reply_is_logged_with_its_reason(config, caplog):
 
     record = next(r for r in caplog.records if r.name == "shared.structured")
     assert getattr(record, "error_detail", "")
+
+
+def _rejected_by_our_own_validator() -> Exception:
+    """What a schema's own validator raises — 'value_error', not 'json_invalid'."""
+    from pydantic import field_validator
+
+    class Item(BaseModel):
+        kind: str
+
+        @field_validator("kind")
+        @classmethod
+        def _known(cls, v):
+            raise ValueError("an mcq needs correct_indices naming at least one option")
+
+    try:
+        Item(kind="mcq")
+    except Exception as exc:
+        return exc
+    raise AssertionError("expected a validation error")
+
+
+def test_a_rule_the_schema_enforces_is_the_models_mistake_not_the_gateways(config):
+    """A quiz turn died twice in production with 'the tutor could not answer'.
+    The model had returned an MCQ with no correct option — exactly what the
+    retry exists to correct — but the classifier read anything that was not
+    'json_invalid' as an unreadable envelope, re-sent the same request, and
+    gave up."""
+    llm = ExplodingLLM(parsed(items=[{"id": "b1", "type": "mcq"}]),
+                       explosions=1, error=_rejected_by_our_own_validator())
+
+    result = call_structured(Batch, [{"role": "user", "content": "quiz me"}],
+                             task="assessment", config=config, llm=llm)
+
+    assert result.items[0].id == "b1"
+    assert "correct_indices" in llm.conversations[-1][-1]["content"]
+
+
+def test_an_unreadable_envelope_is_still_the_gateway(config):
+    from shared.structured import StructuredProviderError
+
+    llm = ExplodingLLM(parsed(), explosions=99, error=_provider_error())
+    with pytest.raises(StructuredProviderError):
+        call_structured(Batch, [], task="assessment", config=config, llm=llm)

@@ -222,7 +222,10 @@ FORMATTING_CONTRACT = """Write in Markdown:
   Never write mathematics as plain text when it has notation.
 - No tables unless the material is genuinely tabular.
 - Do not open with a heading that restates the question, and do not close with a
-  summary of what you just said."""
+  summary of what you just said.
+- No greeting and no praise for the question: "Bonjour!", "أهلاً بك!", "That's a
+  great question" — the student is mid-lesson and asked for an explanation.
+  Start with the answer."""
 
 # A stronger grounding contract was written for these two prompts and measured
 # against it: an explicit "the context is the only thing you know", a ban on
