@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# EduAI — ingestion image.
+#
+# The service image is the one a student waits on: it starts when a deploy
+# rolls, and every megabyte in it is a megabyte of cold start. The layout
+# models this image carries are gigabytes, and they are needed by a job that
+# runs when a book is ingested and then stops. So they live here instead, and
+# the two images share the same source tree and the same config.
+#
+# Built by the same workflow, pushed to its own repository, and run as an ECS
+# task rather than a service:
+#
+#   aws ecs run-task --cluster edu-ai-ai --task-definition edu-ai-ingest \
+#     --overrides '{"containerOverrides":[{"name":"ingest",
+#       "command":["s3://bucket/book.pdf","--lecture-id","...","--subject-id",
+#                  "...","--layout-model"]}]}'
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS builder
+
+ENV PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10 \
+    PIP_NO_CACHE_DIR=1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+COPY requirements.txt requirements-ingest.txt ./
+RUN pip install --no-compile --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 \
+    && pip install --no-compile -r requirements.txt \
+    && pip install --no-compile -r requirements-ingest.txt
+
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+# The layout models are read through OpenCV, which wants these at runtime and
+# is the one part of the stack that does not ship its own.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PADDLE_PDX_MODEL_SOURCE=huggingface \
+    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
+    PADDLE_PDX_CACHE_HOME=/opt/paddle
+
+COPY agent/ agent/
+COPY shared/ shared/
+COPY ingestion/ ingestion/
+COPY system/ system/
+COPY scripts/ scripts/
+COPY config.yaml .
+
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /opt/paddle && chown -R appuser /opt/paddle
+USER appuser
+
+# The weights, fetched at build time. A job that downloads gigabytes on its
+# first page pays for it on every cold task, and fails the whole run when the
+# hoster is slow — which is how the first attempt at this was measured.
+RUN python -c "from paddleocr import PPStructureV3; PPStructureV3(device='cpu')"
+
+ENTRYPOINT ["python", "-m", "ingestion"]

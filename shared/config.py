@@ -87,6 +87,24 @@ class Config:
             node = node[part]
         return node
 
+    def override(self, dotted_key: str, value: Any) -> None:
+        """Set one value for this process, above the file and its overlay.
+
+        For a switch an operator flips for a single run — reading one book with
+        a parser the deployment does not use by default. It is not a second
+        home for a default: the value in config.yaml is still the one that
+        ships, and nothing that is not asked for on a command line lands here.
+        """
+        node: Any = self._data
+        parts = dotted_key.split(".")
+        for part in parts[:-1]:
+            child = node.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                node[part] = child
+            node = child
+        node[parts[-1]] = value
+
     def section(self, dotted_key: str) -> dict[str, Any]:
         """A copy of a config sub-tree; ``{}`` if absent."""
         node = self.get(dotted_key, {})

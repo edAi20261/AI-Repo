@@ -1,0 +1,5 @@
+# Ingestion-only dependencies: the document layout models. Kept out of
+# requirements.txt because the service image installs that one, and these
+# weigh gigabytes it must not carry.
+paddleocr[doc-parser]==3.7.0
+paddlepaddle==3.3.1
