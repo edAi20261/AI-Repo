@@ -153,11 +153,16 @@ def call_structured(
                                   "error_detail": str(exc)[:MAX_ERROR_CHARS]})
             if attempt >= budget:
                 break
-            # A model that ran out of room did not get anything wrong, so asking
-            # it to try again in the same space asks for the same reply. Give it
-            # more room instead.
-            room = _more_room(room)
-            runnable = _bind(_with_room(client, room), schema, settings)
+            if _ran_out_of_room(exc):
+                # A model that ran out of room did not get anything wrong, so
+                # asking it to try again in the same space asks for the same
+                # reply. Give it more room instead.
+                room = _more_room(room)
+                runnable = _bind(_with_room(client, room), schema, settings)
+            else:
+                # A rule the schema enforces — an MCQ with no correct option —
+                # is a mistake the model can fix once it is told which one.
+                conversation = _with_feedback(messages, "", feedback)
             continue
         raw = result.get("raw") if isinstance(result, dict) else None
         parsed = result.get("parsed") if isinstance(result, dict) else result
@@ -277,18 +282,36 @@ class _ProviderFailure(Exception):
         self.cause = cause
 
 
-def _from_the_gateway(exc: BaseException) -> bool:
-    """True when the response envelope was unreadable, not the model's own JSON.
+# The envelope a chat completion arrives in. A validation error about one of
+# these is the gateway's reply being unreadable; an error about anything else is
+# the model's own output, whatever the object was called.
+ENVELOPE_FIELDS = frozenset({"choices", "object", "created", "model", "usage", "id"})
 
-    Both arrive as a ``ValidationError`` out of ``invoke``, and the two need
-    opposite treatment: a reply cut off mid-object needs a bigger budget, while a
-    gateway that answered with an error body needs the same request sent again.
-    They are told apart by what pydantic objected to — ``json_invalid`` is text
-    the model wrote, anything else is a field the SDK expected of the envelope.
+
+def _ran_out_of_room(exc: BaseException) -> bool:
+    """Whether the reply was cut off mid-object rather than written wrongly."""
+    return isinstance(exc, PydanticValidationError) and any(
+        error.get("type") == "json_invalid" for error in exc.errors())
+
+
+def _from_the_gateway(exc: BaseException) -> bool:
+    """True when the response envelope was unreadable, not the model's own output.
+
+    Both arrive as a ``ValidationError`` out of ``invoke`` and need opposite
+    treatment: an envelope the SDK could not read needs the same request sent
+    again, while anything the model got wrong needs the model told about it.
+
+    Read narrowly on purpose. Calling a model's mistake a gateway fault re-sends
+    a request that cannot succeed and ends the turn — a quiz died twice in
+    production that way, because an MCQ with no correct option was reported as
+    ``value_error`` and everything that was not ``json_invalid`` counted as the
+    gateway. The opposite mistake costs one wasted correction.
     """
     if not isinstance(exc, PydanticValidationError):
         return False
-    return not any(error.get("type") == "json_invalid" for error in exc.errors())
+    locations = [error.get("loc") or () for error in exc.errors()]
+    return bool(locations) and all(
+        location and str(location[0]) in ENVELOPE_FIELDS for location in locations)
 
 
 def _invoke(runnable: Any, conversation: Sequence[Any], *,

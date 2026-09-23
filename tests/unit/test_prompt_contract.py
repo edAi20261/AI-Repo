@@ -111,3 +111,15 @@ def test_transcription_never_carries_a_reply_directive(name, prompt):
     with pytest.raises(ValueError):
         prompt.render(language="ar",
                       **{s: "x" for s in prompt.placeholders() if s != prompt.slot})
+
+
+def test_an_answer_does_not_open_with_a_greeting():
+    """Every answer opened with "أهلاً بك!" or "Bonjour! C'est une excellente
+    question" — the model's own habit, because nothing told it otherwise. A
+    student mid-lesson is greeted once, by the tutor's first reply, not on
+    every explanation they ask for."""
+    from agent.prompts import FORMATTING_CONTRACT
+
+    contract = FORMATTING_CONTRACT.lower()
+    assert "greeting" in contract
+    assert "start with the answer" in contract
