@@ -51,6 +51,9 @@ USER appuser
 # request isn't the one paying for it.
 RUN python -c "import matplotlib.pyplot" || true
 
+RUN python -c "from shared.config import get_config; from shared.embeddings import get_embedder; get_embedder(get_config())"
+ENV HF_HUB_OFFLINE=1
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
