@@ -250,3 +250,37 @@ def test_a_page_is_read_by_what_most_of_it_is_written_in():
 
     mixed = "جابر بن حيان عالم عربي اشتهر في الكيمياء. Figure 1: the alembic."
     assert reading_direction(mixed) == "rtl"
+
+
+# --- the same subject in two languages ---------------------------------------
+
+def test_a_student_writing_arabic_is_not_answered_in_french():
+    """A term now exists twice, in Arabic and in French. A student asked
+    'ممكن تشرح لي الكهربية الساكنة؟' and was answered in French, because the
+    conversation had settled on the French subject two turns earlier and the
+    reply language followed the subject rather than the student."""
+    policy = LanguagePolicy(supported=("ar", "en", "fr"), default="en")
+
+    decision = policy.reply(subject_language="fr", message_language="ar",
+                            subject_chosen=False)
+    assert decision.code == "ar"
+    assert decision.source == "message"
+
+
+def test_an_opened_lesson_still_teaches_in_its_own_language():
+    """The rule this does not overturn: a student inside an English literature
+    lesson is answered in English, whatever language they type in."""
+    policy = LanguagePolicy(supported=("ar", "en", "fr"), default="en")
+
+    decision = policy.reply(subject_language="en", message_language="ar",
+                            subject_chosen=True)
+    assert decision.code == "en"
+    assert decision.source == "subject"
+
+
+def test_asking_for_a_language_still_beats_everything():
+    policy = LanguagePolicy(supported=("ar", "en", "fr"), default="en")
+    for chosen in (True, False):
+        decision = policy.reply(requested="fr", subject_language="ar",
+                                message_language="ar", subject_chosen=chosen)
+        assert decision.code == "fr" and decision.source == "session"

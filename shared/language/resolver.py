@@ -111,10 +111,20 @@ class LanguagePolicy:
         subject_language: Optional[str] = None,
         message_language: Optional[str] = None,
         api_language: Optional[str] = None,
+        subject_chosen: bool = True,
     ) -> LanguageDecision:
-        """The language this turn is answered in, and the fact that decided it."""
+        """The language this turn is answered in, and the fact that decided it.
+
+        ``subject_chosen`` is whether the student is in that subject or the
+        system guessed it. A subject opened in the app teaches in its own
+        language — an English literature lesson answers in English however the
+        student types. A guessed one does not get to overrule them: the same
+        term now exists in Arabic and in French, so one English question can
+        settle the conversation on the French book and answer a student writing
+        Arabic in French, which is what it did.
+        """
         ranked = [("session", requested)]
-        if self.reply_follows == "subject":
+        if self.reply_follows == "subject" and subject_chosen:
             ranked += [("subject", subject_language), ("message", message_language)]
         else:
             ranked += [("message", message_language), ("subject", subject_language)]
