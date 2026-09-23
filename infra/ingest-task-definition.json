@@ -1,0 +1,39 @@
+{
+  "family": "edu-ai-ingest",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "4096",
+  "memory": "16384",
+  "ephemeralStorage": {"sizeInGiB": 50},
+  "executionRoleArn": "arn:aws:iam::649631967545:role/edu-ai-ecs-task-execution",
+  "taskRoleArn": "arn:aws:iam::649631967545:role/edu-ai-ai-service-task",
+  "runtimePlatform": {"cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX"},
+  "containerDefinitions": [
+    {
+      "name": "ingest",
+      "image": "649631967545.dkr.ecr.eu-central-1.amazonaws.com/edu-ai-ingest:latest",
+      "essential": true,
+      "environment": [
+        {"name": "APP_ENV", "value": "production"},
+        {"name": "S3_BUCKET", "value": "edu-ai-media-649631967545"},
+        {"name": "S3_REGION", "value": "eu-central-1"},
+        {"name": "QDRANT_URL", "value": "https://29fe5ab1-e8df-43a4-8b0d-daa78b4d6f85.eu-central-1-0.aws.cloud.qdrant.io"},
+        {"name": "BACKEND_API_BASE_URL", "value": "https://pwqfiqua63.eu-central-1.awsapprunner.com/api/ai-integration"}
+      ],
+      "secrets": [
+        {"name": "DATABASE_URL", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/AI_SERVICE_DATABASE_URL"},
+        {"name": "AI_WEBHOOK_SHARED_SECRET", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/AI_WEBHOOK_SHARED_SECRET"},
+        {"name": "QDRANT_API_KEY", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/ai-service/QDRANT_API_KEY"},
+        {"name": "OPENROUTER_API_KEY", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/ai-service/OPENROUTER_API_KEY"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/edu-ai-ingest",
+          "awslogs-region": "eu-central-1",
+          "awslogs-stream-prefix": "ingest"
+        }
+      }
+    }
+  ]
+}
