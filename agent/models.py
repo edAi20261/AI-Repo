@@ -157,12 +157,21 @@ class AssessmentItem(BaseModel):
 # The shapes the planner and the assessment generator ask the model to return via
 # `with_structured_output`. Validated by the provider; extract_json is the fallback.
 
+class GradeAnswer(BaseModel):
+    """One open question paired with what the student answered it with."""
+    question: str = Field(description="The open question's number, as it was asked.")
+    answer: str = Field(description="The student's answer to that question, copied as written.")
+
+
 class GradeSpec(BaseModel):
     """Grade params the planner parses from a chat 'grade me this' turn. A DB reference
     (fetch the rubric via ``fetch_rubric``) vs inline free-text (rubric/answers in the
     message) — both optional; absent ``assessment_id`` means grade the inline text."""
     assessment_id: Optional[str] = None
     kind: Optional[str] = None
+    answers: list[GradeAnswer] = Field(
+        default_factory=list,
+        description="One entry per open question the message answers, when a quiz is open.")
 
     @field_validator("kind")
     @classmethod

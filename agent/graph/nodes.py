@@ -29,6 +29,8 @@ from ..conversation import (
     Conversation,
     ConversationStore,
     HistoryWindow,
+    PendingAssessment,
+    PendingQuestion,
     SessionState,
     Turn,
     fold_if_due,
@@ -119,7 +121,8 @@ def _allowed_tasks(config, pathway: str) -> list[str]:
     return config.get(f"agent.pathways.{pathway}.tasks") or default_tasks
 
 
-def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy) -> str:
+def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
+                   pending: Optional[PendingAssessment] = None) -> str:
     lines = []
     if subject.name or subject.language:
         taught = (f", taught in {name_of(subject.language)}"
@@ -129,6 +132,12 @@ def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy) ->
         lines.append("- Subject: not settled yet.")
     if requested:
         lines.append(f"- The student asked to be answered in {name_of(requested)}.")
+    if pending and pending.items:
+        lines.append("- These questions are open. The student has been asked them and "
+                     "has not been marked yet:\n" + pending.numbered())
+        lines.append("- If the new message answers them, even partly and even without "
+                     "asking to be marked, that is a grade task. If it asks something "
+                     "else, answer that and leave the questions open.")
     return "\n".join(lines)
 
 
@@ -153,7 +162,8 @@ def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
     return check
 
 
-def _read_turn(state, llm, config, *, allowed, subject, requested, policy) -> TurnUnderstanding:
+def _read_turn(state, llm, config, *, allowed, subject, requested, policy,
+               pending: Optional[PendingAssessment] = None) -> TurnUnderstanding:
     """The model's reading of the turn, or a single explain task when there is no model."""
     message = state.get("message", "")
     if llm is None:
@@ -170,7 +180,7 @@ def _read_turn(state, llm, config, *, allowed, subject, requested, policy) -> Tu
         role=state["pathway"],
         task_descriptions=_allowed_descriptions(allowed),
         allowed=", ".join(allowed),
-        session=_session_facts(subject, requested, policy),
+        session=_session_facts(subject, requested, policy, pending),
         history=state.get("history") or "",
         message=message,
         material_language=material,
@@ -228,7 +238,8 @@ def build_understand(config, llm, subjects: SubjectDirectory):
         current = conversation.state.language
         try:
             reading = _read_turn(state, llm, config, allowed=allowed, subject=subject,
-                                 requested=current, policy=policy)
+                                 requested=current, policy=policy,
+                                 pending=conversation.state.pending)
         except Exception as error:
             logger.error("reading the turn failed", exc_info=True)
             raise TutorUnavailable() from error
@@ -551,7 +562,7 @@ def dispatch(state) -> list:
     ctx = {k: state.get(k) for k in
            ("namespaces", "style", "language", "subject_id", "lecture_ids", "grade",
             "user_id", "session_id", "pathway", "study_scope", "message",
-            "history", "previous_chunk_ids")}
+            "history", "previous_chunk_ids", "conversation")}
     sends = []
     for task in state.get("tasks", []):
         node = _ADAPTER.get(task.get("type"))
@@ -847,9 +858,58 @@ def _turn_record(state) -> Turn:
     )
 
 
+def _issued_questions(state) -> Optional[PendingAssessment]:
+    """The quiz this turn put in front of the student, with its answer key."""
+    items = (state.get("assessment") or {}).get("items") or []
+    questions = []
+    for index, item in enumerate(items, 1):
+        item = item if isinstance(item, dict) else item.model_dump()
+        question = (item.get("question") or "").strip()
+        if not question:
+            continue
+        questions.append(PendingQuestion(
+            id=item.get("id") or f"q{index}",
+            question=question,
+            type=item.get("type") or "short_answer",
+            options=[o.get("text", "") if isinstance(o, dict) else str(o)
+                     for o in (item.get("options") or [])],
+            answer=_answer_key(item),
+            topic_id=item.get("topic_id"),
+            lecture_id=item.get("lecture_id"),
+        ))
+    return PendingAssessment(items=questions) if questions else None
+
+
+def _answer_key(item: dict) -> str:
+    answer = item.get("answer")
+    if isinstance(answer, list):
+        return ", ".join(str(a) for a in answer)
+    if answer:
+        return str(answer)
+    correct = [o.get("text", "") for o in (item.get("options") or [])
+               if isinstance(o, dict) and o.get("is_correct")]
+    return ", ".join(correct)
+
+
+def _still_open(state, previous: SessionState, turn: Turn) -> Optional[PendingAssessment]:
+    """A quiz stays open until it is marked, or a new one replaces it.
+
+    A student who breaks off to ask something else comes back to the same
+    questions: re-asking them over the student's own question is how the tutor
+    would talk past them.
+    """
+    issued = _issued_questions(state)
+    if issued:
+        return issued
+    if "grade" in turn.tasks and (state.get("grade_result") or {}).get("graded"):
+        return None
+    return previous.pending
+
+
 def _next_state(state, previous: SessionState, turn: Turn) -> SessionState:
     subject_id = turn.subject_id if turn.cited_chunk_ids else previous.subject_id
-    return SessionState(subject_id=subject_id, language=state.get("requested_language"))
+    return SessionState(subject_id=subject_id, language=state.get("requested_language"),
+                        pending=_still_open(state, previous, turn))
 
 
 def build_persist(config, store: ConversationStore, window: HistoryWindow, summary_llm=None):

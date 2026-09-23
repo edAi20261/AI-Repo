@@ -160,8 +160,11 @@ def test_a_failed_summary_keeps_every_turn():
 
 # --- persist --------------------------------------------------------------------
 
-def _persisted(state):
+def _persisted(state, *, standing=None):
     store = InMemoryConversationStore()
+    if standing is not None:
+        store.save_state(USER, "student", SESSION, standing)
+        state = {**state, "conversation": {"state": standing.model_dump()}}
     node = nmod.build_persist(get_config(), store, HistoryWindow(), None)
     base = {"user_id": USER, "session_id": SESSION, "pathway": "student",
             "message": "Explain this: what is evaporation?", "conversation": {}}
@@ -262,3 +265,59 @@ def test_a_continuing_turn_answers_from_the_last_passages_and_new_ones(monkeypat
     out = esg._retrieve({"query": "examples of evaporation", "namespaces": ["syllabus"],
                          "previous_chunk_ids": ["old"], "k": 8}, get_config())
     assert [c.chunk_id for c in out["chunks"]] == ["old", "new"]
+
+
+# --- an open quiz ---------------------------------------------------------------
+
+def _quiz_state(**over):
+    state = {
+        "turn_kind": "study", "subject_id": "bio",
+        "reply_body": "1. Which process moves water into the air?\n   a) condensation\n   d) evaporation",
+        "tasks": [{"type": "assessment", "params": {"query": "water cycle quiz"}}],
+        "assessment": {"items": [
+            {"type": "mcq", "question": "Which process moves water into the air?",
+             "topic_id": "t1", "lecture_id": "l1", "answer": "d) evaporation",
+             "options": [{"text": "condensation", "is_correct": False},
+                         {"text": "evaporation", "is_correct": True}]}]},
+    }
+    state.update(over)
+    return state
+
+
+def test_an_issued_quiz_is_remembered_with_its_answer_key():
+    """The items were sent to the student and dropped. Nothing could be marked
+    afterwards, so an answer came back explained instead of graded."""
+    loaded = _persisted(_quiz_state())
+    open_quiz = loaded.state.pending
+    assert open_quiz and len(open_quiz.items) == 1
+    item = open_quiz.items[0]
+    assert item.answer == "d) evaporation"
+    assert item.question.startswith("Which process")
+    assert item.topic_id == "t1" and item.lecture_id == "l1"
+
+
+def test_a_marked_quiz_is_closed():
+    """A quiz already marked must not swallow the next message as an answer."""
+    from agent.conversation import PendingAssessment, PendingQuestion, SessionState
+
+    open_quiz = PendingAssessment(items=[PendingQuestion(
+        id="q1", question="Which process moves water into the air?", answer="d) evaporation")])
+    loaded = _persisted({
+        "turn_kind": "study", "subject_id": "bio", "reply_body": "Correct — 1 out of 1.",
+        "tasks": [{"type": "grade", "params": {"query": "d) evaporation"}}],
+        "grade_result": {"graded": 1},
+    }, standing=SessionState(subject_id="bio", pending=open_quiz))
+    assert loaded.state.pending is None
+
+
+def test_a_question_asked_while_a_quiz_is_open_leaves_it_open():
+    from agent.conversation import PendingAssessment, PendingQuestion, SessionState
+
+    open_quiz = PendingAssessment(items=[PendingQuestion(
+        id="q1", question="Which process moves water into the air?", answer="d) evaporation")])
+    loaded = _persisted({
+        "turn_kind": "study", "subject_id": "bio", "reply_body": "Evaporation is ...",
+        "tasks": [{"type": "explain", "params": {"query": "evaporation"}}],
+    }, standing=SessionState(subject_id="bio", pending=open_quiz))
+    assert loaded.state.pending is not None
+    assert loaded.state.pending.items[0].answer == "d) evaporation"

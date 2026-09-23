@@ -1,7 +1,13 @@
 """What the tutor remembers of a conversation, and how a turn reads it."""
 
 from .history import HistoryWindow, fold_if_due
-from .records import Conversation, SessionState, Turn
+from .records import (
+    Conversation,
+    PendingAssessment,
+    PendingQuestion,
+    SessionState,
+    Turn,
+)
 from .store import ConversationStore, InMemoryConversationStore, PostgresConversationStore
 
 __all__ = [
@@ -9,6 +15,8 @@ __all__ = [
     "ConversationStore",
     "HistoryWindow",
     "InMemoryConversationStore",
+    "PendingAssessment",
+    "PendingQuestion",
     "PostgresConversationStore",
     "SessionState",
     "Turn",

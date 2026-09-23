@@ -15,6 +15,7 @@ before compose.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from shared.backend import get_backend_client
@@ -22,7 +23,7 @@ from shared.llm import llm_key_available, maybe_llm
 
 from .. import retrieval
 from ..config import Config, get_config
-from ..conversation import ConversationStore, HistoryWindow
+from ..conversation import Conversation, ConversationStore, HistoryWindow
 from ..errors import TutorUnavailable
 from ..models import Style, SubjectFacts
 from ..scope import lecture_filter
@@ -205,6 +206,55 @@ def _kind_source(kind: Optional[str], grade_cfg: dict) -> str:
     return grade_cfg.get("source", "practice")
 
 
+def _question_key(reference: str) -> str:
+    """A question named as "2", "2." or "2. Which process ...", reduced to one key.
+
+    Which of those a model returns is not worth constraining: it varies by model
+    and by how the question was phrased, and pairing an answer onto the wrong
+    question marks the student down for someone else's mistake.
+    """
+    reference = (reference or "").strip()
+    leading = re.match(r"^\s*(\d+)[.)\s]", reference) or re.fullmatch(r"\s*(\d+)\s*", reference)
+    if leading:
+        return leading.group(1)
+    return " ".join(reference.lower().split())
+
+
+def _answered_questions(payload, spec: dict, answer: str) -> list[dict]:
+    """The tutor's own open questions, paired with what the student answered them with.
+
+    The questions the tutor asked in chat are not in any rubric table — they were
+    generated for this conversation — so the answer key is the one kept on the
+    session. Without it a student's "d) evaporation" was marked on its merits, or
+    read as a new question and explained back at them.
+    """
+    conversation = Conversation.model_validate(payload.get("conversation") or {})
+    pending = conversation.state.pending
+    if not (pending and pending.items):
+        return []
+
+    paired = {_question_key(a.get("question", "")): a.get("answer", "")
+              for a in (spec.get("answers") or []) if isinstance(a, dict)}
+    lines = [line.strip() for line in (answer or "").splitlines() if line.strip()]
+    submissions = []
+    for index, item in enumerate(pending.items, 1):
+        given = (paired.get(str(index)) or paired.get(item.id)
+                 or paired.get(_question_key(item.question)) or "")
+        if not given and len(lines) == len(pending.items):
+            given = lines[index - 1]
+        if not given:
+            continue
+        submissions.append({
+            "question": item.question,
+            "student_answer": given,
+            "correct_answer": item.answer,
+            "type": item.type,
+            "topic_id": item.topic_id,
+            "lecture_id": item.lecture_id,
+        })
+    return submissions
+
+
 def _build_grade_adapter(compiled, config: Config, subjects: SubjectDirectory):
     """Chat 'grade me this' path. Normalizes the turn into grade_sg's private state:
     structured ``submissions`` when the request carries them, else a single inline item
@@ -218,8 +268,9 @@ def _build_grade_adapter(compiled, config: Config, subjects: SubjectDirectory):
         facts = subjects.facts(payload.get("subject_id"))
         answer = params.get("query", "")
         # Inline "grade my answer": the message is both the question and the student's answer.
-        submissions = params.get("submissions") or [
-            {"question": answer, "student_answer": answer}]
+        submissions = (params.get("submissions")
+                       or _answered_questions(payload, spec, answer)
+                       or [{"question": answer, "student_answer": answer}])
         # A student chat grade is self-practice (source=practice) even if it references a
         # quiz; a teacher grading in chat is assigned work (source=quiz/homework by kind).
         source = ("practice" if payload.get("pathway") == "student"
