@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Callable, Sequence
 from typing import Any, Optional, TypeVar
 
@@ -34,6 +35,7 @@ M = TypeVar("M", bound=BaseModel)
 DEFAULT_ATTEMPTS = 2
 MAX_REPORTED_ERRORS = 8
 MAX_OBSERVED_CHARS = 80
+MAX_ERROR_CHARS = 300
 
 REFUSAL_FINISH_REASONS = frozenset({"content_filter"})
 TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
@@ -74,6 +76,14 @@ class StructuredRefusal(StructuredOutputError):
 
 class StructuredTruncation(StructuredOutputError):
     """The reply was cut off by the token limit. A retry produces the same cut."""
+
+
+class StructuredProviderError(StructuredOutputError):
+    """The gateway answered with a body its own SDK could not read.
+
+    The model never saw a schema it could get wrong, so feeding a correction back
+    is answering the wrong question: the request is retried unchanged instead.
+    """
 
 
 def _as_conversation(messages: Any) -> list[Any]:
@@ -122,7 +132,14 @@ def call_structured(
     room = settings.get("max_tokens")
     for attempt in range(1, budget + 1):
         try:
-            result = runnable.invoke(conversation)
+            result = _invoke(runnable, conversation, config=config,
+                             task=task, label=name)
+        except _ProviderFailure as failure:
+            raise StructuredProviderError(
+                f"{name}: the model gateway returned a reply that could not be read.",
+                task=task, label=name, attempts=attempt,
+                errors=[str(failure.cause)[:MAX_ERROR_CHARS]], raw=raw_replies,
+            ) from failure.cause
         except PARSE_ERRORS as exc:
             # A reply the provider could not parse arrives as an exception from
             # inside its own parser, not as a parsing_error on the result — so
@@ -132,7 +149,8 @@ def call_structured(
             failures.append(feedback)
             logger.warning("structured output could not be parsed",
                            extra={"task": task, "label": name, "attempt": attempt,
-                                  "error": type(exc).__name__})
+                                  "error": type(exc).__name__,
+                                  "error_detail": str(exc)[:MAX_ERROR_CHARS]})
             if attempt >= budget:
                 break
             # A model that ran out of room did not get anything wrong, so asking
@@ -178,6 +196,7 @@ def call_structured(
         failures.append(feedback)
         logger.warning("structured output rejected",
                        extra={"task": task, "label": name, "attempt": attempt,
+                              "error_detail": str(error)[:MAX_ERROR_CHARS] if error else "",
                               "reason": feedback.splitlines()[0] if feedback else ""})
         if attempt < budget:
             conversation = _with_feedback(messages, raw_text, feedback)
@@ -248,6 +267,48 @@ def align_by_id(
 # A reply the provider's own parser rejected. Raised from inside `invoke`, so it
 # has to be caught rather than read off the result.
 PARSE_ERRORS = (PydanticValidationError, json.JSONDecodeError, ValueError)
+
+
+class _ProviderFailure(Exception):
+    """The gateway, not the model. Carries the SDK's own error."""
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+def _from_the_gateway(exc: BaseException) -> bool:
+    """True when the response envelope was unreadable, not the model's own JSON.
+
+    Both arrive as a ``ValidationError`` out of ``invoke``, and the two need
+    opposite treatment: a reply cut off mid-object needs a bigger budget, while a
+    gateway that answered with an error body needs the same request sent again.
+    They are told apart by what pydantic objected to — ``json_invalid`` is text
+    the model wrote, anything else is a field the SDK expected of the envelope.
+    """
+    if not isinstance(exc, PydanticValidationError):
+        return False
+    return not any(error.get("type") == "json_invalid" for error in exc.errors())
+
+
+def _invoke(runnable: Any, conversation: Sequence[Any], *,
+            config: Config, task: str, label: str) -> Any:
+    """One model call, retrying a gateway that answered with an unreadable body."""
+    delay = config.get("llm.provider_retry_delay_seconds", 0.5) if config else 0.5
+    budget = config.get("llm.provider_retries", 2) if config else 2
+    for retry in range(budget + 1):
+        try:
+            return runnable.invoke(conversation)
+        except PARSE_ERRORS as exc:
+            if not _from_the_gateway(exc):
+                raise
+            if retry >= budget:
+                raise _ProviderFailure(exc) from exc
+            logger.warning("the model gateway returned an unreadable reply; retrying",
+                           extra={"task": task, "label": label, "retry": retry + 1,
+                                  "error_detail": str(exc)[:MAX_ERROR_CHARS]})
+            time.sleep(delay * (2 ** retry))
+    raise AssertionError("unreachable")
 
 # How much more room a retry gets. Doubling rather than adding a constant: the
 # shortfall is proportional to how much the model chose to reason, not fixed.

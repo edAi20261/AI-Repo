@@ -369,7 +369,6 @@ def test_the_grade_endpoint_grounds_a_keyless_answer_in_the_syllabus(monkeypatch
 
 def test_grade_adapter_source_by_pathway():
     from agent.graph.graph import _build_grade_adapter
-    from agent.graph.subgraphs import build_grade_sg
     cfg = get_config()
     from agent.subjects import SubjectDirectory
     adapter = _build_grade_adapter(build_grade_sg(config=cfg, llm=None), cfg, SubjectDirectory(None))
@@ -441,3 +440,89 @@ def test_unparseable_grading_moves_no_mastery():
     assert result.get("mastery_events", 0) == 0, "no mastery may move on a grade we did not compute"
     assert not any(g.get("correct") for g in result.get("graded", [])), \
         "a correct answer must never be marked wrong by a fallback the caller cannot see"
+
+
+# --- marking the quiz the tutor itself asked --------------------------------
+
+def test_answers_to_an_open_quiz_are_marked_against_the_stored_key():
+    """The tutor's own quiz left no answer key behind, so a student's answers
+    were graded on merit — or explained back at them — instead of marked."""
+    from agent.conversation import PendingAssessment, PendingQuestion
+    from agent.graph.graph import _build_grade_adapter
+    from agent.subjects import SubjectDirectory
+
+    cfg = get_config()
+    captured = {}
+
+    class _Recording:
+        def invoke(self, payload):
+            captured.update(payload)
+            return {"result": {"graded": 0}}
+
+    quiz = PendingAssessment(items=[
+        PendingQuestion(id="q1", question="Which process moves water into the air?",
+                        type="mcq", options=["condensation", "evaporation"],
+                        answer="evaporation", topic_id="t1", lecture_id="l1"),
+        PendingQuestion(id="q2", question="Ocean wave energy comes from the sun.",
+                        type="true_false", answer="True", topic_id="t2", lecture_id="l1"),
+    ])
+    adapter = _build_grade_adapter(_Recording(), cfg, SubjectDirectory(None))
+    adapter({"pathway": "student", "subject_id": "bio", "user_id": "u1", "language": "en",
+             "conversation": {"state": {"pending": quiz.model_dump()}},
+             "task": {"params": {"query": "d) evaporation\nTrue"}}})
+
+    submissions = captured["submissions"]
+    assert len(submissions) == 2
+    assert submissions[0]["question"].startswith("Which process")
+    assert submissions[0]["correct_answer"] == "evaporation"
+    assert submissions[0]["student_answer"] == "d) evaporation"
+    assert submissions[0]["topic_id"] == "t1" and submissions[0]["lecture_id"] == "l1"
+    assert submissions[1]["student_answer"] == "True"
+
+
+def test_an_answer_with_no_open_quiz_is_still_graded_on_its_merits():
+    from agent.graph.graph import _build_grade_adapter
+    from agent.subjects import SubjectDirectory
+
+    cfg = get_config()
+    captured = {}
+
+    class _Recording:
+        def invoke(self, payload):
+            captured.update(payload)
+            return {"result": {}}
+
+    adapter = _build_grade_adapter(_Recording(), cfg, SubjectDirectory(None))
+    adapter({"pathway": "student", "subject_id": None, "user_id": None, "language": "en",
+             "task": {"params": {"query": "photosynthesis makes sugar"}}})
+    assert captured["submissions"] == [{"question": "photosynthesis makes sugar",
+                                        "student_answer": "photosynthesis makes sugar"}]
+
+
+def test_dispatch_carries_the_open_quiz_to_the_grader():
+    """The adapter reads the answer key off the conversation; a fan-out that
+    drops it marks every answer on its merits and the quiz is never closed."""
+    sends = nmod.dispatch({
+        "tasks": [{"type": "grade", "params": {"query": "d) evaporation"}, "task_id": "x"}],
+        "namespaces": ["syllabus"], "language": "en", "user_id": "u1",
+        "conversation": {"state": {"pending": {"items": [
+            {"id": "q1", "question": "Which process moves water into the air?",
+             "answer": "evaporation"}]}}},
+    })
+    assert sends[0].arg["conversation"]["state"]["pending"]["items"][0]["answer"] == "evaporation"
+
+
+def test_a_question_named_with_its_text_still_pairs_with_the_right_answer():
+    """Models name the question as "2", "2." or "2. Which process ..."; pairing
+    an answer onto the wrong question marks a student down for that."""
+    from agent.graph.graph import _answered_questions
+
+    pending = {"items": [
+        {"id": "q1", "question": "Which process moves water into the air?", "answer": "evaporation"},
+        {"id": "q2", "question": "Ocean wave energy comes from the sun.", "answer": "True"}]}
+    payload = {"conversation": {"state": {"pending": pending}}}
+    spec = {"answers": [{"question": "2. Ocean wave energy comes from the sun.", "answer": "False"},
+                        {"question": "1", "answer": "condensation"}]}
+
+    submissions = _answered_questions(payload, spec, "irrelevant text")
+    assert [s["student_answer"] for s in submissions] == ["condensation", "False"]

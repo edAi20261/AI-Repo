@@ -19,9 +19,12 @@ TASK_DESCRIPTIONS = {
     "summarize": '"summarize": the student wants a condensed overview of a body of material.',
     "assessment": ('"assessment": the student wants NEW questions to answer: practice, a quiz, '
                    'homework, a test or an exam. It is never a check on their own progress.'),
-    "grade": ('"grade": the student gives an answer and wants it marked. Put the text to mark in '
-              '"query". If they refer to a SAVED quiz or homework, also fill "grade" with its '
-              'assessment_id and kind so its rubric is used.'),
+    "grade": ('"grade": the student gives an answer to be marked — including a bare answer to a '
+              'question the tutor has open, with no request to mark it. Put the text to mark in '
+              '"query". When questions are open, also fill "grade".answers with one entry per '
+              'question the message answers: the question\'s number, and their answer to it, '
+              'copied as written. If they refer to a SAVED quiz or homework, fill "grade" with '
+              'its assessment_id and kind so its rubric is used.'),
     "visual": ('"visual": the student wants a study visual: a mind map, a chart or graph, a maths '
                'figure, flashcards, a PDF or slides. Fill "visual" with the kind.'),
     "report": ('"report": the student asks about their OWN performance: their progress, strengths, '
@@ -74,6 +77,11 @@ an example or a memory aid) belongs to the answer, not the search. Write the que
 level is basic or intermediate; length is short or medium.
 For "assessment", copy only what the student stated: a question count only if they gave one,
 question types only if they named them, a difficulty only if they said one. Omit the rest.
+
+A message that answers questions the tutor has open is a grade task, and only that: mark
+what they wrote rather than explaining it again, unless they also ask something of their own.
+A mode instruction the app put in front of it does not make it one: a student answering a
+question is not asking for the answer they just gave to be explained to them.
 
 continues_previous: true when the message asks about what the tutor's last answer covered, in
 more depth, another form, an example or a reason; false when it opens something new.

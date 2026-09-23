@@ -60,7 +60,7 @@ def get_llm(config: Config, task: str | None = None):
         from .metering import MeteringCallback
 
         base_url, key_env = _OPENAI_COMPAT[provider]
-        extra_body = _openrouter_body(config) if provider == "openrouter" else None
+        extra_body = _openrouter_body(config, model) if provider == "openrouter" else None
         return ChatOpenAI(
             model=model,
             base_url=spec.get("base_url", base_url),
@@ -75,16 +75,25 @@ def get_llm(config: Config, task: str | None = None):
     return init_chat_model(model=model, model_provider=provider, **common)
 
 
-def _openrouter_body(config: Config) -> dict:
+def _openrouter_body(config: Config, model: str) -> dict:
     """Per-call cost accounting, and routing that can actually honour a schema.
 
     OpenRouter serves the same model from several providers and only some enforce
     ``strict`` — ``require_parameters`` keeps a structured call off the endpoints
     that would treat the schema as a suggestion and hand back prose.
+
+    ``models`` is the same idea one level up: when the chosen endpoint answers
+    with an error instead of a completion, the gateway serves the next model in
+    the list rather than handing us a body the SDK cannot read. Every model named
+    here must itself honour ``json_schema``, or the fallback trades a failed turn
+    for an unstructured one.
     """
     body: dict = {"usage": {"include": True}}
     if config.get("llm.require_structured_endpoints", True):
         body["provider"] = {"require_parameters": True}
+    fallbacks = [m for m in (config.get("llm.fallback_models") or []) if m and m != model]
+    if fallbacks:
+        body["models"] = [model, *fallbacks]
     return body
 
 
