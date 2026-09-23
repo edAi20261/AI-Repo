@@ -173,6 +173,24 @@ ingestion:
     detect_direction: true
     reading_direction: ltr        # used only when detect_direction is false
     cache: true                   # store what a model read, keyed on model + prompt digest
+    # The tier between a text layer that cannot be trusted with a page and a
+    # chat model asked to transcribe it. A document layout model reads the page
+    # from pixels, so scattered boxes cost it nothing, and it reports the
+    # regions, their kinds and their reading order rather than prose. Off until
+    # a deployment installs the model: the package and its weights are hundreds
+    # of megabytes, and a deployment without them must keep ingesting.
+    tier2:
+      enabled: false
+      # structure: small detection + recognition models, seconds a page on a
+      # CPU. vl: one 0.9B vision-language model, the better reader, but
+      # gigabytes of memory and minutes a page without a GPU.
+      pipeline: structure       # structure | vl
+      version: v1.6             # PaddleOCR-VL pipeline version, vl only
+      device: cpu               # cpu | gpu:0
+      language: null            # OCR language hint, e.g. ar, en, fr; null detects
+      read_charts: true         # a chart becomes a table instead of a picture
+      read_images: true         # the words set inside a diagram are read too
+      cache: true
   # How much of a lesson has to be unreadable before it is held back from
   # retrieval. A share, not a count: any-page-failed does not scale. A 371-page
   # textbook read into 545 good chunks answered nothing, because one page came

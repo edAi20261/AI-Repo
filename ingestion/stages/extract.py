@@ -25,7 +25,17 @@ from ..state import Element, Figure, IngestionState, PageResult
 from ..utils import is_garbage, normalise_text, pdf
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
-from ..layout import TEXT_LAYER, PageMeta, ParsedPage, choose_tier, parse_page, tier3
+from ..layout import (
+    LAYOUT_MODEL,
+    TEXT_LAYER,
+    VISION,
+    PageMeta,
+    ParsedPage,
+    choose_tier,
+    parse_page,
+    tier2,
+    tier3,
+)
 from ..layout.chunker import content_blocks
 from ..layout.page_cache import PageCache
 from ..prompts.page_layout import PAGE_LAYOUT_PROMPT
@@ -337,6 +347,21 @@ def _page_cache(cfg: Any, layout_cfg: dict) -> Optional[PageCache]:
                      prompt_version=PAGE_LAYOUT_PROMPT.fingerprint)
 
 
+@lru_cache(maxsize=4)
+def _layout_model_cache(config: Any):
+    """The cache for pages the layout model read.
+
+    Its own entry per page, keyed on the layout model rather than the vision
+    one: the two read the same page differently, and a parse stored under the
+    wrong reader is served to a run that asked for the other.
+    """
+    settings = (config.get("ingestion.layout.tier2") if config else None) or {}
+    if not settings.get("cache", True):
+        return None
+    version = str(settings.get("version", "v1.6"))
+    return PageCache(config, model=f"paddleocr-vl:{version}", prompt_version=version)
+
+
 def _page_direction(page: Any, layout_cfg: dict) -> str:
     """Which side this page's columns are read from.
 
@@ -382,12 +407,18 @@ def _parse_layout(
     if wanted == TEXT_LAYER:
         return ParsedPage(meta=meta, blocks=blocks).model_dump()
 
-    # A model call is worth paying for exactly when the text layer has nothing
-    # to offer. A page the router wants a richer parser for, but whose text
-    # layer does read, is left alone until someone measures that vision beats
-    # it: on a 40-page magazine textbook 39 pages ask for a richer tier, and
-    # the text layer already chunks them cleanly.
-    if not content_blocks(blocks):
+    # A page the router sent here has a text layer that cannot be trusted with
+    # it: scattered boxes whose drawing order is not their reading order, or no
+    # text at all. The layout model reads the page from pixels, so neither
+    # hurts it; the vision model is what answers a page it cannot read, and a
+    # page with no text layer at all has always gone straight there.
+    if wanted == LAYOUT_MODEL and tier2.enabled(config):
+        read = _read_page_with_layout_model(
+            page, page_no, state, meta, render_dpi, config, counts)
+        if read is not None:
+            return read.model_dump()
+
+    if not content_blocks(blocks) or wanted == VISION:
         read = _read_page_with_vision(
             page, page_no, state, meta, render_dpi, config, cache, counts)
         if read is not None:
@@ -402,6 +433,34 @@ def _parse_layout(
                 extra={"lecture_id": state["lecture_id"], "page": page_no,
                        "wanted_tier": wanted})
     return ParsedPage(meta=meta, blocks=blocks).model_dump()
+
+
+def _read_page_with_layout_model(
+    page: Any,
+    page_no: int,
+    state: IngestionState,
+    meta: PageMeta,
+    render_dpi: int,
+    config: Any,
+    counts: dict,
+) -> Optional[ParsedPage]:
+    """The page as the layout model read it, from the cache when it has been read."""
+    layout_cache = _layout_model_cache(config)
+    if layout_cache is not None:
+        stored = layout_cache.get(state["lecture_id"], page_no)
+        if stored is not None:
+            return stored
+
+    parsed = tier2.parse_page(
+        pdf.render_page_png(page, dpi=render_dpi), meta, config=config)
+    if parsed is None:
+        counts["layout_model_unread"] = counts.get("layout_model_unread", 0) + 1
+        return None
+
+    counts["layout_model_read"] = counts.get("layout_model_read", 0) + 1
+    if layout_cache is not None:
+        layout_cache.put(state["lecture_id"], page_no, parsed, dpi=render_dpi)
+    return parsed
 
 
 def _read_page_with_vision(
