@@ -77,3 +77,37 @@ jobs:
             --cluster edu-ai-ai \
             --service edu-ai-ai-service \
             --region eu-central-1
+
+  # The ingestion image carries the layout models — gigabytes the service image
+  # must never pay for at start-up. It is built on the same commit and run as a
+  # task when a book is ingested, so it is deployed by existing, not by rolling.
+  ingest-image:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::649631967545:role/edu-ai-github-actions-ai-service
+          aws-region: eu-central-1
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Make room for the models
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: Build and push the ingestion image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: edu-ai-ingest
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -f Dockerfile.ingest \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
