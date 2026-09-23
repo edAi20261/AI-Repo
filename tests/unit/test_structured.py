@@ -351,3 +351,85 @@ def test_a_truncated_reply_is_retried_with_more_room_not_more_words(monkeypatch)
 
     assert llm.budgets, "the retry must rebind the model with a bigger budget"
     assert llm.budgets[-1] > Config.load().llm_for("extract_topics")["max_tokens"]
+
+
+# --- the provider, not the model --------------------------------------------
+
+class _Choiceless(BaseModel):
+    """Stands in for the SDK's own response model."""
+    choices: list[str]
+
+
+def _provider_error() -> Exception:
+    """What the OpenAI SDK raises when the gateway returns a body it cannot read."""
+    try:
+        _Choiceless()
+    except Exception as exc:
+        return exc
+    raise AssertionError("expected a validation error")
+
+
+class ExplodingLLM(FakeLLM):
+    """Raises on its first ``explosions`` calls, then replays its results."""
+
+    def __init__(self, *results, explosions: int, error: Exception):
+        super().__init__(*results)
+        self.explosions = explosions
+        self.error = error
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls <= self.explosions:
+            raise self.error
+        return super().invoke(messages)
+
+
+def test_a_gateway_hiccup_is_retried_rather_than_read_as_a_schema_mistake(config):
+    """OpenRouter can answer with a body the SDK cannot read. That raised out of
+    `invoke`, was counted as the model getting the shape wrong, and killed the
+    turn on the second one — a student saw "the tutor could not answer"."""
+    llm = ExplodingLLM(parsed(items=[{"id": "b1", "type": "mcq"}]),
+                       explosions=1, error=_provider_error())
+    result = call_structured(Batch, [{"role": "user", "content": "go"}],
+                             task="assessment", config=config, llm=llm)
+
+    assert result.items[0].id == "b1"
+    assert llm.calls == 2
+    assert len(llm.conversations) == 1          # the prompt was never rewritten
+    assert llm.conversations[0][-1]["content"] == "go"
+
+
+def test_a_gateway_that_keeps_failing_says_it_was_the_gateway(config):
+    from shared.structured import StructuredProviderError
+
+    llm = ExplodingLLM(parsed(), explosions=99, error=_provider_error())
+    with pytest.raises(StructuredProviderError) as excinfo:
+        call_structured(Batch, [], task="assessment", config=config, llm=llm)
+
+    assert "choices" in " ".join(excinfo.value.errors)
+
+
+def test_a_schema_mistake_still_reaches_the_model_as_feedback(config):
+    """The classifier must not swallow a real schema violation."""
+    llm = FakeLLM(
+        unparsed('{"items": [{"id": "b1", "type": "multiple_choice"}]}', _validation_error()),
+        parsed(items=[{"id": "b1", "type": "mcq"}]),
+    )
+    call_structured(Batch, [{"role": "user", "content": "grade"}],
+                    task="grade", config=config, llm=llm)
+    assert "multiple_choice" in llm.conversations[1][-1]["content"]
+
+
+def test_an_unreadable_reply_is_logged_with_its_reason(config, caplog):
+    """`error: ValidationError` with no field and no raw text is not diagnosable:
+    a week of production failures said nothing about what was wrong."""
+    import logging
+
+    llm = FakeLLM(unparsed("nope", _validation_error()))
+    with caplog.at_level(logging.WARNING, logger="shared.structured"):
+        with pytest.raises(StructuredOutputError):
+            call_structured(Batch, [], task="grade", config=config, llm=llm, attempts=1)
+
+    record = next(r for r in caplog.records if r.name == "shared.structured")
+    assert getattr(record, "error_detail", "")
