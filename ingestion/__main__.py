@@ -149,9 +149,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resolve", metavar="LESSON_ID", help="resolve one lesson id and run")
     parser.add_argument("--backfill", action="store_true", help="run every pending lesson")
     parser.add_argument("--fixtures", default=None, help="fixtures manifest for offline resolve")
+    parser.add_argument("--layout-model", dest="layout_model", action="store_true", default=None,
+                        help="read magazine-style pages with the document layout model")
+    parser.add_argument("--no-layout-model", dest="layout_model", action="store_false",
+                        help="read every page with the text layer or the vision model")
 
     args = parser.parse_args(argv)
     config = get_config()
+    if args.layout_model is not None:
+        config.override("ingestion.layout.tier2.enabled", args.layout_model)
     setup_logging(config)
 
     if args.backfill:

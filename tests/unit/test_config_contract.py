@@ -145,3 +145,17 @@ def test_an_environment_with_no_overrides_still_loads():
             os.environ.pop("APP_ENV", None)
         else:
             os.environ["APP_ENV"] = previous
+
+
+def test_an_operator_can_turn_one_setting_on_for_a_single_run():
+    """A book whose pages need a parser the deployment does not use by default
+    is read by asking for it on the command line, not by editing what ships."""
+    from shared.config import Config
+
+    config = Config.load()
+    assert config.get("ingestion.layout.tier2.enabled") is False
+
+    config.override("ingestion.layout.tier2.enabled", True)
+    assert config.get("ingestion.layout.tier2.enabled") is True
+    assert config.get("ingestion.layout.tier2.version")      # siblings survive
+    assert Config.load().get("ingestion.layout.tier2.enabled") is False   # not the file
