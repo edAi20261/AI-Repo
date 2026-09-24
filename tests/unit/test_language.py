@@ -284,3 +284,39 @@ def test_asking_for_a_language_still_beats_everything():
         decision = policy.reply(requested="fr", subject_language="ar",
                                 message_language="ar", subject_chosen=chosen)
         assert decision.code == "fr" and decision.source == "session"
+
+
+# --- the rule is written in the language it governs ---------------------------
+
+def test_an_answer_is_told_not_to_greet_in_the_language_it_answers_in():
+    """16 of 40 production replies opened with a greeting, and every one of them
+    was Arabic or French — the English replies opened with the answer. The rule
+    was in English while the model composed in Arabic, where أهلاً بك is simply
+    how a message starts."""
+    from shared.language.directive import language_directive
+
+    arabic = language_directive("ar", greeting=False)
+    assert "أهلا" in arabic or "ترحيب" in arabic
+
+    french = language_directive("fr", greeting=False)
+    assert "Bonjour" in french or "salutation" in french.lower()
+
+    english = language_directive("en", greeting=False)
+    assert "greeting" in english.lower()
+
+
+def test_a_social_turn_keeps_its_greeting():
+    """A student who says hello is answered by the converse prompt, and that one
+    should say hello back."""
+    from shared.language.directive import language_directive
+
+    assert "greeting" not in language_directive("en").lower()
+
+
+def test_every_supported_language_has_the_rule_in_its_own_words():
+    """An English sentence inside an Arabic prompt is the defect, not the fix."""
+    from shared.language.directive import NO_GREETING
+    from shared.language.resolver import DEFAULT_SUPPORTED
+
+    for code in DEFAULT_SUPPORTED:
+        assert code in NO_GREETING, code

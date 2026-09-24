@@ -27,6 +27,7 @@ from __future__ import annotations
 import string
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from typing import Any
 
 from .language.directive import content_directive, language_directive
@@ -46,6 +47,11 @@ class LanguageRule(Enum):
     REPLY = "reply"
     """Addressed to the student: their language, whatever the sources are in."""
 
+    ANSWER = "answer"
+    """The same, for a turn that answers a question rather than a greeting: it
+    opens with the answer. Which prompts may greet is decided here, once, rather
+    than by a line each prompt has to remember."""
+
     CONTENT = "content"
     """Generated material — quiz items, labels, captions — in a named language."""
 
@@ -59,8 +65,15 @@ class LanguageRule(Enum):
 
 _RENDERERS = {
     LanguageRule.REPLY: language_directive,
+    LanguageRule.ANSWER: partial(language_directive, greeting=False),
     LanguageRule.CONTENT: content_directive,
 }
+
+
+# The rules whose directive this module writes. Anything that enumerates them by
+# hand goes stale the next time one is added, and a prompt then quietly skips the
+# check that was meant to cover it.
+DIRECTED_RULES = frozenset(_RENDERERS)
 
 
 @dataclass(frozen=True)
@@ -100,6 +113,12 @@ class Prompt:
         """Every ``{name}`` the template expects to be filled."""
         return {field for _, field, _, _ in string.Formatter().parse(self.template)
                 if field}
+
+    def render_language(self, language: Lang) -> str:
+        """This prompt's language directive on its own — what the model is told
+        about the language it writes in, and whether it may greet."""
+        renderer = _RENDERERS.get(self.language_rule)
+        return renderer(language) if renderer is not None else ""
 
     def render(self, *, language: Lang | None = None, **values: Any) -> str:
         """The prompt text, with the language directive supplied by the rule.
