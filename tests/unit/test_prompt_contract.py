@@ -123,3 +123,22 @@ def test_an_answer_does_not_open_with_a_greeting():
     contract = FORMATTING_CONTRACT.lower()
     assert "greeting" in contract
     assert "start with the answer" in contract
+
+
+def test_an_answer_does_not_open_by_greeting_a_student_it_is_already_talking_to():
+    """16 of 40 production replies opened with a greeting, one of them 'أهلاً بك
+    مرة أخرى!' on the fifth reply of a conversation. The model had the whole
+    conversation in its prompt and greeted anyway: nothing told it not to, and
+    its Arabic and French registers open that way by default."""
+    from agent.prompts import FORMATTING_CONTRACT, NO_MATERIAL_PROMPT
+
+    for text in (FORMATTING_CONTRACT, NO_MATERIAL_PROMPT.template):
+        assert "greeting" in text.lower(), text[:60]
+
+
+def test_the_social_turn_may_still_greet():
+    """A student who says hello is answered by the converse prompt, and that one
+    must stay free to say hello back."""
+    from agent.prompts import CONVERSE_PROMPT
+
+    assert "greeting" not in CONVERSE_PROMPT.template.lower()
