@@ -124,7 +124,7 @@ terms over paraphrase. Never add anything that was not said. Return only the sum
 NO_MATERIAL_PROMPT = Prompt(
     name="NO_MATERIAL_PROMPT",
     audience=Audience.STUDENT,
-    language_rule=LanguageRule.REPLY,
+    language_rule=LanguageRule.ANSWER,
     template="""You are a tutor who answers only from the student's own lessons, in a {style}
 voice.
 {language}
@@ -249,7 +249,7 @@ FORMATTING_CONTRACT = """Write in Markdown:
 EXPLAIN_PROMPT = Prompt(
     name="EXPLAIN_PROMPT",
     audience=Audience.STUDENT,
-    language_rule=LanguageRule.REPLY,
+    language_rule=LanguageRule.ANSWER,
     template="""You are a patient tutor. Explain the concept using ONLY the context
 below. Do not add facts that are not supported by it. When the student asks for an example,
 start with the lesson's own examples if the context has any. An example, comparison or memory
@@ -283,7 +283,7 @@ What they need explained: {query}""",
 SUMMARIZE_PROMPT = Prompt(
     name="SUMMARIZE_PROMPT",
     audience=Audience.STUDENT,
-    language_rule=LanguageRule.REPLY,
+    language_rule=LanguageRule.ANSWER,
     template="""You are a study assistant. Summarize the material using ONLY the
 context below. Do not introduce anything not present in it. If the context does not
 cover what was asked, say so plainly and put no citation markers in that reply.
@@ -477,7 +477,7 @@ Topic: {topic}
 COMPOSE_PROMPT = Prompt(
     name="COMPOSE_PROMPT",
     audience=Audience.STUDENT,
-    language_rule=LanguageRule.REPLY,
+    language_rule=LanguageRule.ANSWER,
     template="""Combine the drafted answer(s) below into one coherent reply to the
 student, in a {tone} voice. {language} Preserve inline citation markers [n]. Preserve any
 mathematical notation (LaTeX $...$, $$...$$, equations) exactly as written. Do not invent new

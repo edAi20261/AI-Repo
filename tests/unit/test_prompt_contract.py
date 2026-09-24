@@ -24,7 +24,7 @@ from importlib import import_module
 
 import pytest
 
-from shared.prompting import Audience, LanguageRule, Prompt
+from shared.prompting import DIRECTED_RULES, Audience, LanguageRule, Prompt
 
 SUPPORTED = ("ar", "en", "fr", "de")
 
@@ -61,7 +61,7 @@ def test_a_prompt_a_student_reads_says_what_language_it_is_in(name, prompt):
 
 @pytest.mark.parametrize("name,prompt", _every_prompt())
 def test_a_language_rule_has_somewhere_to_put_the_directive(name, prompt):
-    if prompt.language_rule in (LanguageRule.REPLY, LanguageRule.CONTENT):
+    if prompt.language_rule in DIRECTED_RULES:
         assert prompt.slot in prompt.placeholders(), (
             f"{name} declares a language rule with no {{{prompt.slot}}} slot")
 
@@ -70,7 +70,7 @@ def test_a_language_rule_has_somewhere_to_put_the_directive(name, prompt):
 def test_every_placeholder_can_be_filled(name, prompt):
     """A `{placeholder}` with nothing to fill it is a KeyError at answer time,
     and the degrade path would turn it into "something went wrong" forever."""
-    directed = prompt.language_rule in (LanguageRule.REPLY, LanguageRule.CONTENT)
+    directed = prompt.language_rule in DIRECTED_RULES
     # A directed prompt has its slot filled by the rule; for the others the slot
     # is an ordinary placeholder the caller supplies.
     values = {slot: "x" for slot in prompt.placeholders()
@@ -81,7 +81,7 @@ def test_every_placeholder_can_be_filled(name, prompt):
 
 @pytest.mark.parametrize("name,prompt", [
     (n, p) for n, p in _every_prompt()
-    if p.language_rule in (LanguageRule.REPLY, LanguageRule.CONTENT)
+    if p.language_rule in DIRECTED_RULES
 ])
 @pytest.mark.parametrize("language", SUPPORTED)
 def test_the_directive_names_the_language_in_every_supported_one(name, prompt, language):
@@ -95,7 +95,7 @@ def test_a_caller_cannot_hand_over_a_directive_instead_of_a_language(name, promp
     """How "Write the content in Write the content in Arabic" happened: the
     parameter was a code, someone passed the rendered directive, and nothing
     objected because both are strings."""
-    if prompt.language_rule not in (LanguageRule.REPLY, LanguageRule.CONTENT):
+    if prompt.language_rule not in DIRECTED_RULES:
         return
     values = {slot: "x" for slot in prompt.placeholders() if slot != prompt.slot}
     with pytest.raises((ValueError, KeyError)):
@@ -142,3 +142,24 @@ def test_the_social_turn_may_still_greet():
     from agent.prompts import CONVERSE_PROMPT
 
     assert "greeting" not in CONVERSE_PROMPT.template.lower()
+
+
+def test_a_taught_answer_carries_the_no_greeting_rule_and_small_talk_does_not():
+    """Which prompts may greet is a property of the prompt, not of a line
+    somebody remembered to add: an answer to a question may not, an answer to
+    "hello" must."""
+    from shared.prompting import LanguageRule
+    from agent.prompts import (
+        COMPOSE_PROMPT,
+        CONVERSE_PROMPT,
+        EXPLAIN_PROMPT,
+        NO_MATERIAL_PROMPT,
+        SUMMARIZE_PROMPT,
+    )
+
+    for prompt in (EXPLAIN_PROMPT, SUMMARIZE_PROMPT, COMPOSE_PROMPT, NO_MATERIAL_PROMPT):
+        assert prompt.language_rule is LanguageRule.ANSWER, prompt.name
+        assert "أهلا" in prompt.render_language("ar"), prompt.name
+
+    assert CONVERSE_PROMPT.language_rule is LanguageRule.REPLY
+    assert "أهلا" not in CONVERSE_PROMPT.render_language("ar")

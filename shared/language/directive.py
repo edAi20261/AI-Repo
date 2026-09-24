@@ -18,6 +18,23 @@ CONTEXT_PULL = (
     "the language you reply in."
 )
 
+# Written in the language it governs, because that is where it failed: the rule
+# sat in English while the model composed in Arabic, and "أهلاً بك" is simply how
+# a message opens there. Sixteen of forty production replies greeted, and every
+# one of them was Arabic or French.
+NO_GREETING = {
+    "ar": "ابدأ بالإجابة مباشرة. لا تبدأ بتحية مثل «أهلاً بك» أو «مرحباً»، "
+          "ولا بمجاملة للسؤال مثل «سؤال ممتاز»؛ الطالب معك في المحادثة بالفعل.",
+    "fr": "Commence directement par la réponse. Pas de salutation comme "
+          "« Bonjour », pas de compliment sur la question comme « excellente "
+          "question » : l'élève est déjà dans la conversation.",
+    "de": "Beginne direkt mit der Antwort. Keine Begrüßung wie „Hallo“ und kein "
+          "Lob für die Frage wie „gute Frage“ — der Schüler ist bereits im Gespräch.",
+    "en": "Open with the answer. No greeting such as \"Hi there\" and no praise for "
+          "the question such as \"great question\" — the student is already in this "
+          "conversation.",
+}
+
 
 def name_of(code: str) -> str:
     """``ar`` -> ``Arabic (العربية)`` — how a language is named to a model.
@@ -37,9 +54,15 @@ def name_of(code: str) -> str:
 
 
 def language_directive(
-    code: str, *, keep_terms: bool = True, context_may_differ: bool = True
+    code: str, *, keep_terms: bool = True, context_may_differ: bool = True,
+    greeting: bool = True
 ) -> str:
-    """The reply-language instruction appended to every user-facing prompt."""
+    """The reply-language instruction appended to every user-facing prompt.
+
+    ``greeting`` is whether this prompt may open with one. A turn that answers a
+    question may not — the student is mid-conversation — while a turn that
+    answers "hello" must be free to say hello back.
+    """
     target = name_of(code)
     opening = (
         f"You MUST write your ENTIRE reply in {target} — every sentence, heading, "
@@ -50,6 +73,8 @@ def language_directive(
         lines.append(CONTEXT_PULL)
     if keep_terms:
         lines.append(KEEP_TERMS)
+    if not greeting:
+        lines.append(NO_GREETING.get(code, NO_GREETING["en"]))
     return " ".join(lines)
 
 
