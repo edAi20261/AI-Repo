@@ -1363,3 +1363,36 @@ def test_a_direct_run_labels_its_chunks_like_a_resolved_one(monkeypatch):
     assert captured["lesson_title"] == "The Water Cycle"
     assert captured["lesson_order"] == 4
     assert captured["language_hint"] == "en"
+
+
+# --- a heading longer than its column -----------------------------------------
+
+def test_a_heading_path_never_outgrows_the_column_it_is_written_to():
+    """A French textbook died on its last stage with `value too long for type
+    character varying(500)`. One page had a paragraph styled large enough to
+    read as a heading, the path grew past the column, and the insert took the
+    whole book with it — 106 pages read, nothing written."""
+    from ingestion.state import Chunk
+
+    chunk = Chunk(
+        lecture_id="l1",
+        text="body",
+        heading_path=" > ".join(["Apprenons le français avec des phrases longues"] * 40),
+        page_from=1,
+        page_to=1,
+        language="fr",
+        order_index=0,
+    )
+
+    assert len(chunk.heading_path) <= 500
+    assert chunk.heading_path.endswith("…")
+    assert chunk.heading_path.startswith("Apprenons")
+
+
+def test_a_heading_path_that_fits_is_left_exactly_as_it_is():
+    from ingestion.state import Chunk
+
+    path = "Unité 1 > Leçon 2 > Les salutations"
+    chunk = Chunk(lecture_id="l1", text="body", heading_path=path,
+                  page_from=1, page_to=1, language="fr", order_index=0)
+    assert chunk.heading_path == path
