@@ -7,6 +7,8 @@ match the columns so the store layer is a straight copy.
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal, Optional, TypedDict
@@ -68,6 +70,15 @@ class Figure:
     topic_ids: list[str] = field(default_factory=list)
 
 
+# ai.chunks.heading_path is varchar(500). A heading longer than that is not a
+# heading — it is a paragraph a page styled large enough to look like one — but
+# the database does not care which it is, and the insert takes the whole book
+# with it: a 106-page French textbook was read in full and wrote nothing.
+logger = logging.getLogger(__name__)
+
+MAX_HEADING_PATH = 500
+
+
 @dataclass
 class Chunk:
     """A ~500-800 token unit of lesson text. Mirrors ``ai.chunks`` plus the filter
@@ -94,6 +105,14 @@ class Chunk:
     subject_name: Optional[str] = None
     lesson_title: Optional[str] = None
     lesson_order: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.heading_path and len(self.heading_path) > MAX_HEADING_PATH:
+            logger.warning(
+                "heading path too long for its column; keeping the head of it",
+                extra={"lecture_id": self.lecture_id, "page": self.page_from,
+                       "length": len(self.heading_path)})
+            self.heading_path = self.heading_path[:MAX_HEADING_PATH - 1].rstrip() + "…"
 
     def for_embedding(self) -> str:
         """What this chunk is searched by — never what a student reads.
