@@ -6,6 +6,8 @@ scores turns independently reports a system like that as healthy.
 
 Each turn is scored on what a student would notice:
 
+    greeted      it opened with hello, mid-conversation, to a student it
+                 is already talking to
     grounded     it answered from the syllabus, with citations
     on subject   the answer still concerns what the conversation is about
     right book   the sources come from the lesson in play, not another corpus
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from pathlib import Path
 import sys
@@ -92,6 +95,18 @@ def _post(url: str, token: str, *, user_id: str, session_id: str, message: str,
         return {"error": type(error).__name__, "response": "", "citations": []}
 
 
+# Every greeting seen opening a production reply, in the languages the corpus is
+# taught in. A turn that answers "hello" is allowed one; a turn that answers a
+# question is not, and it is that second kind this counts.
+OPENING_GREETING = re.compile(
+    r"^\s*\W*(أهلا|أهلاً|مرحبا|مرحباً|السلام\s+عليكم|يا\s+هلا|سلام"
+    r"|bonjour|salut|bonsoir|coucou"
+    r"|hello|hi\b|hey\b|welcome\b"
+    r"|hallo|guten\s+tag)",
+    re.IGNORECASE,
+)
+
+
 def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
     """What this turn got right, as a student would judge it."""
     citations = reply.get("citations") or []
@@ -110,6 +125,11 @@ def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
     language = LanguagePolicy().resolve_document(prose_of(written)).code if written else None
     right_language = language == turn["language"] if turn.get("language") else True
 
+    # A greeting is not what makes a turn wrong, so it does not fail one: it is
+    # counted, because a rate is the only way to tell a prompt that works from a
+    # prompt that was merely written.
+    greeted = bool(OPENING_GREETING.match(written)) and expect != "chats"
+
     if expect == "answers":
         passed = grounded and on_subject and right_book
     elif expect == "refuses":
@@ -120,7 +140,7 @@ def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
         passed = bool(answer)
     passed = passed and right_language
 
-    return {"expect": expect, "passed": passed, "grounded": grounded,
+    return {"expect": expect, "passed": passed, "greeted": greeted, "grounded": grounded,
             "on_subject": on_subject, "right_book": right_book,
             "language": language, "right_language": right_language,
             "citations": len(citations), "error": reply.get("error"),
@@ -182,6 +202,11 @@ def report(result: dict) -> None:
     wrong_book = [t for t in turns if not t["right_book"]]
     if wrong_book:
         print(f"    cited another lecture on {len(wrong_book)} turn(s)")
+    taught = [t for t in turns if t["expect"] != "chats"]
+    greeted = [t for t in taught if t.get("greeted")]
+    if taught:
+        print(f"    opened with a greeting   {len(greeted) / len(taught):.3f}  "
+              f"({len(greeted)}/{len(taught)} taught turns)")
 
 
 def stability(rounds: list[dict]) -> None:
