@@ -6,6 +6,8 @@ scores turns independently reports a system like that as healthy.
 
 Each turn is scored on what a student would notice:
 
+    remembers    it still knows something only an earlier turn established —
+                 across the fold, or across a new chat thread
     greeted      it opened with hello, mid-conversation, to a student it
                  is already talking to
     grounded     it answered from the syllabus, with citations
@@ -61,11 +63,27 @@ def _session(config: Config) -> tuple[str, str]:
     return row
 
 
-def _forget(config: Config, session_id: str) -> None:
+def _spare_session(config: Config, besides: str) -> str | None:
+    """Another chat session belonging to the same student, or None.
+
+    Two foreign keys bind a turn to an existing session, so the second thread
+    has to be one the platform already has; an invented id would remember
+    nothing and the case would pass by measuring the wrong thing.
+    """
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute("SELECT id::text FROM engagement.ai_chat_sessions "
+                    "WHERE student_id = (SELECT student_id FROM engagement.ai_chat_sessions "
+                    "                    WHERE id = %s::uuid) "
+                    "  AND id <> %s::uuid LIMIT 1", (besides, besides))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _forget(config: Config, *session_ids: str) -> None:
     """Start each conversation with nothing remembered."""
     with connect(config) as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM ai.user_memory WHERE source_conversation_id = %s::uuid "
-                    "AND kind = ANY(%s)", (session_id, list(KINDS)))
+        cur.execute("DELETE FROM ai.user_memory WHERE source_conversation_id = ANY(%s::uuid[]) "
+                    "AND kind = ANY(%s)", ([s for s in session_ids if s], list(KINDS)))
         conn.commit()
 
 
@@ -130,8 +148,17 @@ def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
     # prompt that was merely written.
     greeted = bool(OPENING_GREETING.match(written)) and expect != "chats"
 
+    # What a later turn knows that its own message never said. `about` is the
+    # word only an earlier turn can account for, so a reply carrying it is a
+    # reply written with the conversation in view — and one that does not is
+    # the amnesia this measures, whether it lost it to the fold or to a new
+    # chat thread.
+    remembers = on_subject if expect == "remembers" else None
+
     if expect == "answers":
         passed = grounded and on_subject and right_book
+    elif expect == "remembers":
+        passed = bool(answer) and on_subject
     elif expect == "refuses":
         passed = not grounded
     elif expect == "chats":
@@ -141,6 +168,7 @@ def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
     passed = passed and right_language
 
     return {"expect": expect, "passed": passed, "greeted": greeted, "grounded": grounded,
+            "remembers": remembers,
             "on_subject": on_subject, "right_book": right_book,
             "language": language, "right_language": right_language,
             "citations": len(citations), "error": reply.get("error"),
@@ -155,14 +183,26 @@ def run(url: str, *, quiet: bool = False) -> dict:
     data = json.loads(CASES.read_text())
     lecture_id = data["lecture_id"]
 
+    # The student's other chat thread. A case that asks what survives a new
+    # conversation needs a second one to move to, and the same student behind
+    # both: memory that only ever saw one session id cannot be told apart from
+    # memory that does not cross sessions at all.
+    other_session = _spare_session(config, session_id)
+
     conversations = []
     for conversation in data["conversations"]:
-        _forget(config, session_id)
+        _forget(config, session_id, other_session)
         if not quiet:
             print(f"\n  {conversation['name']}")
         turns = []
+        speaking_in = session_id
         for index, turn in enumerate(conversation["turns"], start=1):
-            reply = _ask(url, token, user_id=user_id, session_id=session_id,
+            if turn.get("session") == "new":
+                if not other_session:
+                    print("    (skipped: this student has only one chat session)")
+                    break
+                speaking_in = other_session
+            reply = _ask(url, token, user_id=user_id, session_id=speaking_in,
                          message=turn["say"], subject_id=data.get("subject_id"))
             scored = _score(turn, reply, lecture_id)
             scored.update(turn_index=index, say=turn["say"])
@@ -195,7 +235,7 @@ def report(result: dict) -> None:
     print(f"    opening turns   {rate(first):.3f}  ({len(first)} turns)")
     print(f"    later turns     {rate(later):.3f}  ({len(later)} turns)   "
           f"<- the number this eval exists for")
-    for expect in ("answers", "refuses", "chats", "any"):
+    for expect in ("answers", "remembers", "refuses", "chats", "any"):
         rows = [t for t in turns if t["expect"] == expect]
         if rows:
             print(f"    {expect:8}        {rate(rows):.3f}  ({len(rows)} turns)")

@@ -4,14 +4,17 @@
     "Single-turn evals cannot see the failure these exist to measure: a turn",
     "is only wrong relative to the turns before it.",
     "",
-    "expect: answers  -> grounded, cites the syllabus, and stays on `about`",
-    "        refuses  -> no citations; the syllabus does not cover it",
-    "        chats    -> answered without searching at all",
-    "        any      -> any non-empty reply; only its language is checked",
+    "expect: answers   -> grounded, cites the syllabus, and stays on `about`",
+    "        remembers -> still knows something only an earlier turn established",
+    "        refuses   -> no citations; the syllabus does not cover it",
+    "        chats     -> answered without searching at all",
+    "        any       -> any non-empty reply; only its language is checked",
     "about:  a word the answer must contain, which is how continuity is checked",
     "        without asking a model whether two answers are about the same thing",
     "language: the language the reply must be in; a subject is taught in its own",
-    "        language unless the student asks for another"
+    "        language unless the student asks for another",
+    "session: \"new\" moves the rest of the case to the student's other chat",
+    "        thread — what survives that is cross-session memory, not history"
   ],
   "subject_id": "b9ec8535-7c88-40a2-a1a3-251a2b7cdb45",
   "lecture_id": "aaaaaaaa-0000-4000-8000-00000000f001",
@@ -245,6 +248,172 @@
         {
           "say": "thank you so much",
           "expect": "chats",
+          "language": "en"
+        }
+      ]
+    },
+    {
+      "name": "what was said before the window rolled",
+      "turns": [
+        {
+          "say": "Can you explain evaporation to me? I want to understand it for my exam.",
+          "expect": "answers",
+          "about": "evaporat",
+          "language": "en"
+        },
+        {
+          "say": "What is condensation?",
+          "expect": "answers",
+          "about": "condens",
+          "language": "en"
+        },
+        {
+          "say": "What is precipitation?",
+          "expect": "answers",
+          "about": "precipitat",
+          "language": "en"
+        },
+        {
+          "say": "What is a watershed?",
+          "expect": "answers",
+          "about": "watershed",
+          "language": "en"
+        },
+        {
+          "say": "How do ocean currents move?",
+          "expect": "answers",
+          "about": "current",
+          "language": "en"
+        },
+        {
+          "say": "What is groundwater?",
+          "expect": "answers",
+          "about": "groundwater",
+          "language": "en"
+        },
+        {
+          "say": "What makes the wind blow?",
+          "expect": "answers",
+          "about": "wind",
+          "language": "en"
+        },
+        {
+          "say": "What is a glacier?",
+          "expect": "answers",
+          "about": "glacier",
+          "language": "en"
+        },
+        {
+          "say": "How do clouds form?",
+          "expect": "answers",
+          "about": "cloud",
+          "language": "en"
+        },
+        {
+          "say": "What is humidity?",
+          "expect": "answers",
+          "about": "humid",
+          "language": "en"
+        },
+        {
+          "say": "What is the water table?",
+          "expect": "answers",
+          "about": "water",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. What is condensation?",
+          "expect": "answers",
+          "about": "condens",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. What is precipitation?",
+          "expect": "answers",
+          "about": "precipitat",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. What is a watershed?",
+          "expect": "answers",
+          "about": "watershed",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. How do ocean currents move?",
+          "expect": "answers",
+          "about": "current",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. What is groundwater?",
+          "expect": "answers",
+          "about": "groundwater",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. What makes the wind blow?",
+          "expect": "answers",
+          "about": "wind",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. What is a glacier?",
+          "expect": "answers",
+          "about": "glacier",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. How do clouds form?",
+          "expect": "answers",
+          "about": "cloud",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. What is humidity?",
+          "expect": "answers",
+          "about": "humid",
+          "language": "en"
+        },
+        {
+          "say": "Tell me a bit more about that. What is the water table?",
+          "expect": "answers",
+          "about": "water",
+          "language": "en"
+        },
+        {
+          "say": "Going back to the very first thing I asked you about today — what was it?",
+          "expect": "remembers",
+          "about": "evaporat",
+          "language": "en"
+        },
+        {
+          "say": "And why did I say I wanted to understand it?",
+          "expect": "remembers",
+          "about": "exam",
+          "language": "en"
+        }
+      ]
+    },
+    {
+      "name": "a student who comes back in a new chat",
+      "turns": [
+        {
+          "say": "Can you explain evaporation to me, please?",
+          "expect": "answers",
+          "about": "evaporat",
+          "language": "en"
+        },
+        {
+          "say": "Please always keep your answers short from now on.",
+          "expect": "any",
+          "language": "en"
+        },
+        {
+          "say": "Hi again. What have we been working on together?",
+          "session": "new",
+          "expect": "remembers",
+          "about": "biolog",
           "language": "en"
         }
       ]
