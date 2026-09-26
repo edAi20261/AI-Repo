@@ -74,7 +74,14 @@ echo "waiting for ${#names[@]} lesson(s)…"
 failed=0
 for entry in "${names[@]}"; do
   title="${entry%%|*}"; arn="${entry##*|}"
-  aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$arn" --region "$REGION" 2>/dev/null || true
+  # `aws ecs wait` gives up after about ten minutes and returns as though the
+  # task had stopped. A book takes longer than that, so the exit code read
+  # straight afterwards was None and every long ingestion was reported FAILED
+  # while it was still running. Wait on the status itself.
+  until [ "$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$arn" --region "$REGION" \
+             --query 'tasks[0].lastStatus' --output text 2>/dev/null || echo STOPPED)" = "STOPPED" ]; do
+    aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$arn" --region "$REGION" 2>/dev/null || true
+  done
   code=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$arn" --region "$REGION" \
     --query 'tasks[0].containers[0].exitCode' --output text 2>/dev/null || echo "?")
   if [ "$code" = "0" ]; then

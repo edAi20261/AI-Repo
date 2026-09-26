@@ -14,7 +14,7 @@ from agent.config import get_config
 from agent.conversation import HistoryWindow, InMemoryConversationStore
 from agent.conversation.history import NO_HISTORY
 from agent.graph import nodes as nmod
-from agent.models import StatedPreference
+from agent.models import StatedPreference, SubjectFacts
 from agent.profile import Carryover, carried_over, record
 from agent.subjects import SubjectDirectory
 
@@ -24,15 +24,20 @@ FRENCH = str(uuid.uuid4())
 
 
 class _Subjects:
-    """A subject directory that can name two subjects and no others."""
+    """A subject directory that can name two subjects and no others.
 
-    def __init__(self, titles):
-        self.titles = titles
+    Returns real ``SubjectFacts``, not an object with whatever attribute the
+    test happened to want. The first version of this defined its own class with
+    a ``title`` on it; SubjectFacts calls that field ``name``, so the test
+    passed while production raised AttributeError on the first turn of every
+    new conversation.
+    """
 
-    def facts(self, subject_id):
-        class _Facts:
-            title = self.titles.get(subject_id, "")
-        return _Facts()
+    def __init__(self, names):
+        self.names = names
+
+    def facts(self, subject_id) -> SubjectFacts:
+        return SubjectFacts(name=self.names.get(subject_id))
 
 
 def _turn(language=None, subject_id=None):
