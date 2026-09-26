@@ -26,6 +26,7 @@ from shared.structured import call_structured
 from ..citations import cited_numbers, renumber, strip_markers
 from ..errors import TutorUnavailable
 from ..conversation.store import REMEMBERING_TYPES
+from ..conversation.transcript import recover
 from ..conversation import (
     Conversation,
     ConversationStore,
@@ -80,11 +81,22 @@ def build_classify(config, store: ConversationStore, window: HistoryWindow,
             raise UnprocessableError(
                 f"user_type must be one of {', '.join(sorted(known_pathways))}.",
                 details={"user_type": user_type})
-        conversation = store.load(state.get("user_id"), state.get("session_id"))
+        user_id, session_id = state.get("user_id"), state.get("session_id")
+        conversation = store.load(user_id, session_id)
+        # A thread the student can still see, that this service can no longer
+        # remember: what we keep expires at ttl_hours, the transcript never
+        # does. Read it back rather than meet them as a stranger inside a
+        # conversation they are looking at.
+        if conversation.is_new and store.remembers(user_id, pathway, session_id):
+            recovered, recovered_state = recover(session_id, turns=window.recent_turns,
+                                                 config=config)
+            if recovered and store.restore(user_id, pathway, session_id,
+                                           recovered, recovered_state):
+                conversation = store.load(user_id, session_id)
         # Only when there is nothing better to go on. A conversation with turns
         # in it has the student in front of it; what they did last week is two
         # queries for something the last six turns already say better.
-        carried = (carried_over(state.get("user_id"), subjects, config=config)
+        carried = (carried_over(user_id, subjects, config=config)
                    if conversation.is_new and pathway == "student" else Carryover())
         logger.info("classify", extra={
             "pathway": pathway, "remembered_turns": len(conversation.turns),

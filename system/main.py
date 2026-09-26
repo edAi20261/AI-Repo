@@ -22,7 +22,7 @@ from .errors import register_exception_handlers
 from .ingestion_jobs import IngestionJobManager
 from .middleware import RequestContextMiddleware
 from .notifier import build_notifier
-from .routers import chat, grading, health, homework, ingestion, reports
+from .routers import chat, grading, health, homework, ingestion, memory, reports
 from .runtime import AgentRuntime
 from .security import (
     assert_stores_configured,
@@ -68,12 +68,15 @@ def create_app(config: Config | None = None) -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins,
-            allow_methods=["GET", "POST"],
+            # DELETE is here for /ai/memory/{user_id}: a student asking to be
+            # forgotten is the one request this service must not refuse on a
+            # preflight.
+            allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["*"],
         )
 
     register_exception_handlers(app)
-    for module in (health, chat, grading, homework, reports, ingestion):
+    for module in (health, chat, grading, homework, reports, ingestion, memory):
         app.include_router(module.router)
     return app
 

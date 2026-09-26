@@ -37,7 +37,7 @@ from typing import Optional
 
 from shared.postgres import connect
 
-from .conversation.store import FOLDED, TURN
+from .conversation.store import FOLDED, SUMMARY, TURN
 from .models import StatedPreference
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,20 @@ _STATED = (
     "SELECT explanation_length, prefers_examples, prefers_visual, pace "
     "FROM ai.adaptive_profile WHERE user_id = %s::uuid"
 )
+
+_HELD = (
+    "SELECT kind, source_conversation_id::text, fact, created_at, expires_at "
+    "FROM ai.user_memory WHERE user_id = %s::uuid "
+    "  AND (expires_at IS NULL OR expires_at > now()) "
+    "ORDER BY created_at"
+)
+
+_FORGET_MEMORY = "DELETE FROM ai.user_memory WHERE user_id = %s::uuid"
+_FORGET_ONE = (
+    "DELETE FROM ai.user_memory WHERE user_id = %s::uuid "
+    "  AND source_conversation_id = %s::uuid"
+)
+_FORGET_PROFILE = "DELETE FROM ai.adaptive_profile WHERE user_id = %s::uuid"
 
 _RECORD = (
     "INSERT INTO ai.adaptive_profile AS p "
@@ -230,3 +244,63 @@ def _stated_from_row(row) -> StatedPreference:
         visuals=True if visuals else None,
         pace=pace or None,
     )
+
+
+# --- what a student is entitled to see, and to have destroyed ----------------
+
+def held(user_id: str, *, config=None) -> dict:
+    """Everything this layer holds about one student, as something readable.
+
+    Not the transcript: the words of a conversation belong to the platform and
+    are already shown to the student. This is what the *tutor* made of them —
+    the running summaries, what it settled on, what it was told to remember —
+    which is the part nobody could see until now, and the part somebody will
+    eventually ask to be shown.
+    """
+    summaries, conversations, preferences = [], set(), None
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(_HELD, (user_id,))
+        for kind, conversation_id, fact, created_at, expires_at in cur.fetchall():
+            if conversation_id:
+                conversations.add(conversation_id)
+            if kind == SUMMARY:
+                summaries.append({"conversation_id": conversation_id, "summary": fact,
+                                  "written_at": created_at, "expires_at": expires_at})
+        cur.execute(_STATED, (user_id,))
+        row = cur.fetchone()
+    if row:
+        preferences = _stated_from_row(row).model_dump(exclude_none=True)
+    return {
+        "user_id": user_id,
+        "conversations": len(conversations),
+        "summaries": summaries,
+        "stated_preferences": preferences,
+    }
+
+
+def forget(user_id: str, *, conversation_id: Optional[str] = None, config=None) -> dict:
+    """Destroy what this layer holds. Irreversible, and meant to be.
+
+    Scoped to one conversation, or to the student entirely — in which case the
+    stated preferences go too, because a preference is the one thing here that
+    was never tied to a conversation and would otherwise survive a request to
+    be forgotten.
+
+    What this cannot delete is the transcript, which the platform owns; a
+    student asking to be forgotten has to be forgotten there as well, and the
+    count returned here is not the whole answer to that question.
+    """
+    with connect(config) as conn:
+        with conn.cursor() as cur:
+            if conversation_id:
+                cur.execute(_FORGET_ONE, (user_id, conversation_id))
+                facts, profiles = cur.rowcount, 0
+            else:
+                cur.execute(_FORGET_MEMORY, (user_id,))
+                facts = cur.rowcount
+                cur.execute(_FORGET_PROFILE, (user_id,))
+                profiles = cur.rowcount
+        conn.commit()
+    logger.info("memory destroyed on request", extra={
+        "conversation_id": conversation_id, "facts": facts, "profiles": profiles})
+    return {"facts_deleted": max(0, facts), "profile_deleted": bool(profiles)}

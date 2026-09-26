@@ -69,6 +69,18 @@ _INSERT = (
     "VALUES (%s::uuid, %s, %s, %s, %s::uuid, now() + make_interval(hours => %s))"
 )
 
+# Restoring writes several turns in one transaction, where now() is the same
+# instant for every row — and a load orders by created_at then memory_id, which
+# is a random uuid. Without an explicit stamp per row the recovered
+# conversation would come back shuffled. Each is placed a second before the
+# one after it, so they sit in order and just behind the turn being answered.
+_INSERT_AT = (
+    "INSERT INTO ai.user_memory "
+    "  (user_id, user_type, fact, kind, source_conversation_id, created_at, expires_at) "
+    "VALUES (%s::uuid, %s, %s, %s, %s::uuid, now() - make_interval(secs => %s), "
+    "        now() + make_interval(hours => %s))"
+)
+
 _DELETE_KIND = (
     "DELETE FROM ai.user_memory "
     "WHERE user_id = %s::uuid AND source_conversation_id = %s::uuid AND kind = %s"
@@ -101,6 +113,16 @@ class ConversationStore(ABC):
     @abstractmethod
     def save_state(self, user_id, user_type, session_id, state: SessionState) -> bool:
         ...
+
+    @abstractmethod
+    def restore(self, user_id, user_type, session_id, turns: list[Turn],
+                state: SessionState) -> bool:
+        """Put a conversation back that was recovered from elsewhere.
+
+        Written once, when nothing is remembered and a transcript survives, so
+        that every turn after it behaves like any other rather than recovering
+        again.
+        """
 
     @abstractmethod
     def fold(self, user_id, user_type, session_id, *, summary: str,
@@ -146,6 +168,14 @@ class InMemoryConversationStore(ConversationStore):
             return False
         self._drop_kind(user_id, session_id, STATE)
         self._add(user_id, session_id, STATE, state.model_dump_json())
+        return True
+
+    def restore(self, user_id, user_type, session_id, turns, state) -> bool:
+        if not (self.remembers(user_id, user_type, session_id) and turns):
+            return False
+        for turn in turns:
+            self._add(user_id, session_id, TURN, turn.model_dump_json(exclude={"id"}))
+        self.save_state(user_id, user_type, session_id, state)
         return True
 
     def fold(self, user_id, user_type, session_id, *, summary, folded, discard) -> bool:
@@ -206,6 +236,21 @@ class PostgresConversationStore(ConversationStore):
             (_INSERT, (user_id, user_type, state.model_dump_json(), STATE,
                        session_id, self._ttl_hours)),
         ], label="state"))
+
+    def restore(self, user_id, user_type, session_id, turns, state) -> bool:
+        if not (self.remembers(user_id, user_type, session_id) and turns):
+            return False
+        statements = [
+            (_INSERT_AT, (user_id, user_type, turn.model_dump_json(exclude={"id"}),
+                          TURN, session_id, len(turns) - index, self._ttl_hours))
+            for index, turn in enumerate(turns)
+        ]
+        statements += [
+            (_DELETE_KIND, (user_id, session_id, STATE)),
+            (_INSERT, (user_id, user_type, state.model_dump_json(), STATE,
+                       session_id, self._ttl_hours)),
+        ]
+        return bool(self._run(statements, label="restore"))
 
     def fold(self, user_id, user_type, session_id, *, summary, folded, discard) -> bool:
         if not self.remembers(user_id, user_type, session_id):
