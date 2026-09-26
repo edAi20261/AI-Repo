@@ -95,14 +95,25 @@ or null when you cannot tell. Arabic written in Latin letters and digits is Arab
 language_request: set, with the code, only when the student wants the tutor to reply in a
 particular language; clear when they object to the language the tutor has been using or ask to
 go back to the default; otherwise none. Mentioning a language, or asking about a word in
-another language, is not by itself a request to be answered in it.""",
+another language, is not by itself a request to be answered in it.
+
+preference: a lasting preference the student stated in this message, and nothing you inferred
+from how they write or what they ask. "Always keep it short" is one; a short question is not.
+"I learn better from examples" is one; asking for an example here is not. It is kept for every
+future conversation, so leave every field null unless the student said it in so many words.""",
 )
 
 
 CONVERSATION_SUMMARY_PROMPT = Prompt(
     name="CONVERSATION_SUMMARY_PROMPT",
+    # Nobody reads this but the next turn — and the next turn writes to a
+    # student. The summary is quoted at the head of every prompt that answers
+    # one, so the language it is written in goes on steering replies long after
+    # the turns it condensed have scrolled out. Left unpinned it came back in
+    # English for conversations that ended in Arabic: both summaries in
+    # production are English, over turns whose last three were ar, ar, ar.
     audience=Audience.INTERNAL,
-    language_rule=LanguageRule.NONE,
+    language_rule=LanguageRule.CONTENT,
     template="""You keep a running summary of a tutoring conversation so later turns can
 continue it. Rewrite the summary from the existing one and the turns below, under these
 headings, leaving out any heading with nothing under it:
@@ -112,6 +123,9 @@ headings, leaving out any heading with nothing under it:
 - Open: questions not yet answered, and where the student is still confused
 Keep entries from the existing summary unless the new turns contradict them. Prefer exact
 terms over paraphrase. Never add anything that was not said. Return only the summary.
+
+{language}
+A term the student met in another language stays in the language they met it in.
 
 --- EXISTING SUMMARY ---
 {summary}
@@ -273,6 +287,14 @@ and draw on the context for anything new.
 --- CONVERSATION SO FAR ---
 {history}
 
+--- WHAT THIS STUDENT HAS SHOWN BEFORE ---
+{learner}
+This is graded evidence from their own past answers, not something they told you.
+Use it to choose the depth and the examples: go slower over what they got wrong
+before, and do not re-derive what they have already shown they can do. Never say
+any of it back to them, never refer to their past performance, and never let it
+change what the context says is true.
+
 --- CONTEXT ---
 {context}
 
@@ -300,6 +322,14 @@ This is one turn of a conversation; take account of what was already said.
 
 --- CONVERSATION SO FAR ---
 {history}
+
+--- WHAT THIS STUDENT HAS SHOWN BEFORE ---
+{learner}
+This is graded evidence from their own past answers, not something they told you.
+Use it to choose the depth and the examples: go slower over what they got wrong
+before, and do not re-derive what they have already shown they can do. Never say
+any of it back to them, never refer to their past performance, and never let it
+change what the context says is true.
 
 --- CONTEXT ---
 {context}

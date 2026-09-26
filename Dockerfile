@@ -41,6 +41,13 @@ COPY agent/ agent/
 COPY shared/ shared/
 COPY ingestion/ ingestion/
 COPY system/ system/
+# 216 kB of Python and JSON, against a 2 GB embedding model — the rule that
+# keeps this image small is about what a student waits for on a cold start, and
+# this is not that. It is here because the load balancer is internal: the evals
+# can only reach the service from inside the VPC, and running them from an image
+# CI already builds is what stops the thing being measured and the thing
+# deployed from drifting apart.
+COPY scripts/ scripts/
 COPY config.yaml .
 
 # Non-root runtime user.

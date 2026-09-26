@@ -28,10 +28,16 @@ class FakePostgres:
 
     ``fetchone``/``fetchall`` take a queue — one entry per call, in order, for a
     tool that runs several statements. ``rows`` is the simpler form: the same
-    result whenever it is asked.
+    result whenever it is asked. ``rowcount`` is what every statement reports
+    having touched.
     """
 
-    def __init__(self, *, fetchone=None, fetchall=None, rows=None, explode=False):
+    def __init__(self, *, fetchone=None, fetchall=None, rows=None, explode=False,
+                 rowcount=0):
+        # psycopg reports how many rows a statement touched, and a DELETE that
+        # reports nothing is how a "nothing was deleted" receipt gets written
+        # over a delete that worked.
+        self.rowcount = rowcount
         self.sql: list[str] = []
         self.statements: list[tuple[str, object]] = []
         self.last_args: object = None

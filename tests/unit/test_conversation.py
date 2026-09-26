@@ -24,6 +24,7 @@ from agent.conversation import (
 from agent.conversation.store import PostgresConversationStore
 from agent.graph import nodes as nmod
 from agent.models import Citation, PrereqTopic, ResolvedTopic, RetrievedChunk
+from shared.tokens import count_tokens
 
 USER = str(uuid.uuid4())
 SESSION = str(uuid.uuid4())
@@ -63,14 +64,29 @@ def test_the_standing_state_is_replaced_not_accumulated():
     assert store.load(USER, SESSION).state == SessionState(subject_id="bio")
 
 
-def test_folding_replaces_old_turns_with_a_summary():
+def test_folding_takes_old_turns_out_of_the_window_but_keeps_them():
+    """The fold used to delete the turns it summarised, which left the next
+    summary nothing to be rewritten from but the summary before it."""
     store = InMemoryConversationStore()
     for index in range(4):
         store.append(USER, "student", SESSION, _turn(f"q{index}"))
     old = store.load(USER, SESSION).turns[:2]
-    store.fold(USER, "student", SESSION, summary="Covered: q0, q1", folded=old)
+    store.fold(USER, "student", SESSION, summary="Covered: q0, q1", folded=old, discard=[])
     loaded = store.load(USER, SESSION)
     assert loaded.summary == "Covered: q0, q1"
+    assert [t.message for t in loaded.turns] == ["q2", "q3"]
+    assert [t.message for t in loaded.folded] == ["q0", "q1"]
+    assert [t.message for t in loaded.said_so_far] == ["q0", "q1", "q2", "q3"]
+
+
+def test_only_a_discarded_turn_is_destroyed():
+    store = InMemoryConversationStore()
+    for index in range(4):
+        store.append(USER, "student", SESSION, _turn(f"q{index}"))
+    turns = store.load(USER, SESSION).turns
+    store.fold(USER, "student", SESSION, summary="s", folded=turns[:2], discard=turns[:1])
+    loaded = store.load(USER, SESSION)
+    assert [t.message for t in loaded.folded] == ["q1"]
     assert [t.message for t in loaded.turns] == ["q2", "q3"]
 
 
@@ -85,15 +101,29 @@ def test_the_database_rows_become_one_conversation(fake_postgres):
     fake_postgres(rows=[
         ("1", "conversation_state", SessionState(subject_id="bio").model_dump_json()),
         ("2", "conversation_summary", "Covered: evaporation"),
-        ("3", "conversation_turn", _turn("explain more").model_dump_json()),
+        ("3", "conversation_folded_turn", _turn("what is evaporation?").model_dump_json()),
+        ("4", "conversation_turn", _turn("explain more").model_dump_json()),
     ])
     loaded = PostgresConversationStore(get_config(), {}).load(USER, SESSION)
     assert loaded.state.subject_id == "bio"
     assert loaded.summary == "Covered: evaporation"
-    assert loaded.turns[0].message == "explain more" and loaded.turns[0].id == "3"
+    assert loaded.turns[0].message == "explain more" and loaded.turns[0].id == "4"
+    assert loaded.folded[0].message == "what is evaporation?"
 
 
 # --- the window ---------------------------------------------------------------
+
+def test_the_window_ships_the_values_config_declares():
+    """``settings.get(name, DEFAULT)`` is the same second-value-in-the-source
+    that test_config_contract exists for, one level below the dotted path it
+    can see. A deployment with no overlay must get what config.yaml says."""
+    declared = get_config().get("agent.conversation") or {}
+    shipped = HistoryWindow.from_config(get_config())
+    for name in ("recent_turns", "fold_after", "history_tokens", "reply_tokens",
+                 "rebuild_tokens"):
+        assert declared[name] == getattr(shipped, name) == getattr(
+            HistoryWindow(), name), name
+
 
 def test_the_history_quotes_the_recent_turns_oldest_first():
     conversation = Conversation(turns=[_turn("what is evaporation?", "Evaporation is ..."),
@@ -109,9 +139,33 @@ def test_the_history_carries_the_summary_of_what_was_folded():
 
 
 def test_a_long_answer_cannot_push_the_question_out_of_view():
-    window = HistoryWindow(reply_chars=50)
-    text = window.render(Conversation(turns=[_turn("q", "x" * 5000)]))
-    assert "Student: q" in text and len(text) < 200
+    window = HistoryWindow(reply_tokens=50)
+    text = window.render(Conversation(turns=[_turn("q", "x " * 5000)]))
+    assert "Student: q" in text and count_tokens(text) < 60
+
+
+def test_the_window_is_bounded_in_tokens_not_characters():
+    """Six turns within 6000 characters was four turns on any conversation
+    above the median: a p90 turn is 1305 characters."""
+    conversation = Conversation(turns=[_turn(f"q{i}", "word " * 260) for i in range(12)])
+    quoted = HistoryWindow().render(conversation)
+    assert all(f"q{i}" in quoted for i in range(12))
+
+
+def test_a_folded_turn_is_held_but_not_quoted_back_into_the_window():
+    """Kept for the next rewrite to read, not for the next prompt to carry:
+    a turn quoted verbatim and summarised is paid for twice."""
+    store = InMemoryConversationStore()
+    store.append(USER, "student", SESSION, _turn("long ago"))
+    store.append(USER, "student", SESSION, _turn("just now"))
+    turns = store.load(USER, SESSION).turns
+    store.fold(USER, "student", SESSION, summary="Covered: long ago",
+               folded=turns[:1], discard=[])
+    conversation = store.load(USER, SESSION)
+    assert [t.message for t in conversation.folded] == ["long ago"]
+    quoted = HistoryWindow().render(conversation)
+    assert "Student: long ago" not in quoted
+    assert "Covered: long ago" in quoted and "Student: just now" in quoted
 
 
 def test_folding_waits_until_the_window_is_full():
@@ -135,27 +189,69 @@ class _Summariser:
         return _Msg()
 
 
+def _fold(store, window, llm, language="en"):
+    return fold_if_due(store, window, llm, user_id=USER, user_type="student",
+                       session_id=SESSION, language=language)
+
+
+def _conversation_of(store, count, reply="ok"):
+    for index in range(count):
+        store.append(USER, "student", SESSION, _turn(f"question {index}", reply))
+    return store
+
+
 def test_old_turns_are_folded_into_a_running_summary():
-    store = InMemoryConversationStore()
-    for x in "abcd":
-        store.append(USER, "student", SESSION, _turn(f"question {x}"))
+    store = _conversation_of(InMemoryConversationStore(), 4)
     llm = _Summariser("Covered: a and b")
     window = HistoryWindow(recent_turns=2, fold_after=3)
-    assert fold_if_due(store, window, llm, user_id=USER, user_type="student",
-                       session_id=SESSION)
-    assert "question a" in llm.prompt
+    assert _fold(store, window, llm)
+    assert "question 0" in llm.prompt
     loaded = store.load(USER, SESSION)
     assert loaded.summary == "Covered: a and b" and len(loaded.turns) == 2
 
 
 def test_a_failed_summary_keeps_every_turn():
-    store = InMemoryConversationStore()
-    for x in "abcd":
-        store.append(USER, "student", SESSION, _turn(x))
+    store = _conversation_of(InMemoryConversationStore(), 4)
     window = HistoryWindow(recent_turns=2, fold_after=3)
-    assert not fold_if_due(store, window, _Summariser(error=True), user_id=USER,
-                           user_type="student", session_id=SESSION)
-    assert len(store.load(USER, SESSION).turns) == 4
+    assert not _fold(store, window, _Summariser(error=True))
+    loaded = store.load(USER, SESSION)
+    assert len(loaded.turns) == 4 and not loaded.folded
+
+
+def test_the_summary_is_written_in_the_language_of_the_conversation():
+    """Unpinned, it came back in English for conversations held in Arabic, and
+    was then quoted at the head of every prompt that answered one."""
+    store = _conversation_of(InMemoryConversationStore(), 4)
+    llm = _Summariser("تمت تغطية: التبخر")
+    assert _fold(store, HistoryWindow(recent_turns=2, fold_after=3), llm, language="ar")
+    assert "Arabic (العربية)" in llm.prompt
+
+
+def test_a_second_fold_rewrites_from_the_conversation_not_from_its_own_summary():
+    """A summary of a summary loses detail every time it is taken."""
+    store = _conversation_of(InMemoryConversationStore(), 4)
+    window = HistoryWindow(recent_turns=2, fold_after=3)
+    assert _fold(store, window, _Summariser("first summary"))
+    store.append(USER, "student", SESSION, _turn("question 4"))
+    store.append(USER, "student", SESSION, _turn("question 5"))
+    llm = _Summariser("second summary")
+    assert _fold(store, window, llm)
+    assert "question 0" in llm.prompt          # the oldest turn, read again
+    assert "first summary" not in llm.prompt   # and not its own last answer
+
+
+def test_past_the_rewrite_budget_the_old_summary_is_carried_forward():
+    """Once turns have to be dropped for good, what was said in them survives
+    only in the summary — so the summary has to come with."""
+    store = _conversation_of(InMemoryConversationStore(), 4, reply="word " * 400)
+    window = HistoryWindow(recent_turns=2, fold_after=3, rebuild_tokens=800)
+    assert _fold(store, window, _Summariser("first summary"))
+    store.append(USER, "student", SESSION, _turn("question 4", "word " * 400))
+    store.append(USER, "student", SESSION, _turn("question 5", "word " * 400))
+    llm = _Summariser("second summary")
+    assert _fold(store, window, llm)
+    assert "first summary" in llm.prompt
+    assert len(store.load(USER, SESSION).folded) < 4
 
 
 # --- persist --------------------------------------------------------------------
@@ -321,3 +417,18 @@ def test_a_question_asked_while_a_quiz_is_open_leaves_it_open():
     }, standing=SessionState(subject_id="bio", pending=open_quiz))
     assert loaded.state.pending is not None
     assert loaded.state.pending.items[0].answer == "d) evaporation"
+
+
+def test_a_turn_nobody_kept_says_which_part_of_the_request_was_missing(caplog):
+    """`remembered: false` says it happened, not whose problem it is: a caller
+    that stopped sending a session id, a role nothing is kept for, and a store
+    that is down have three different people fixing them."""
+    with caplog.at_level("WARNING"):
+        _persisted({"session_id": None, "response": "ok", "reply_body": "ok"})
+    assert "carried no session_id" in caplog.text
+
+
+def test_a_role_nothing_is_kept_for_is_not_reported_as_a_fault(caplog):
+    with caplog.at_level("INFO"):
+        _persisted({"pathway": "parent", "response": "ok", "reply_body": "ok"})
+    assert "nothing is kept for a parent" in caplog.text
