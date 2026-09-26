@@ -57,6 +57,7 @@ from ..prompts import (
 from ..retrieval import DEFAULT_MIN_SCORE
 from ..scope import lecture_filter
 from ..subjects import SubjectDirectory
+from ..learner import standing
 from ..tools import rag_search, resolve_topics
 from .pathways import build_namespaces, resolve_style
 
@@ -482,6 +483,20 @@ def _previous_evidence(reading: TurnUnderstanding, conversation: Conversation,
     return list(last.cited_chunk_ids)
 
 
+def _planned_topics(tasks: list[dict]) -> list[str]:
+    """Every topic this turn resolved, deduplicated, order kept.
+
+    Narrows the learner model to what the turn is about. A turn that resolved
+    no topic gets the whole subject instead — which is the honest answer to
+    "what does this student find hard here?" when the question named nothing.
+    """
+    seen: dict[str, None] = {}
+    for task in tasks:
+        for topic_id in task.get("params", {}).get("topic_ids") or []:
+            seen.setdefault(topic_id, None)
+    return list(seen)
+
+
 def build_plan(config, subjects: SubjectDirectory, client=None):
     """Turn the model's reading into runnable tasks: subject, topics, language, specs."""
     policy = LanguagePolicy.from_config(config)
@@ -550,9 +565,15 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
                 "type": t["type"], "params": params, "task_id": uuid.uuid4().hex[:8],
             })
 
+        # Read once, here, rather than per task: the subject is resolved by
+        # this point and the tasks of one turn are all about the same student.
+        learner = standing(state.get("user_id"), subject_id,
+                           topic_ids=_planned_topics(tasks), config=config)
+
         out: dict[str, Any] = {
             "tasks": tasks,
             "previous_chunk_ids": _previous_evidence(reading, conversation, subject_id),
+            "learner": learner.render(),
             "language": decision.code,
             "language_decision": decision.model_dump(),
         }
@@ -562,7 +583,7 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
             "pathway": pathway, "tasks": len(tasks), "subject_id": subject_id,
             "subject_source": subject_source,
             "reused_passages": len(out["previous_chunk_ids"]),
-            **decision.log_fields()})
+            **learner.log_fields(), **decision.log_fields()})
         return out
 
     return plan
@@ -592,7 +613,7 @@ def dispatch(state) -> list:
     ctx = {k: state.get(k) for k in
            ("namespaces", "style", "language", "subject_id", "lecture_ids", "grade",
             "user_id", "session_id", "pathway", "study_scope", "message",
-            "history", "previous_chunk_ids", "conversation")}
+            "history", "learner", "previous_chunk_ids", "conversation")}
     sends = []
     for task in state.get("tasks", []):
         node = _ADAPTER.get(task.get("type"))

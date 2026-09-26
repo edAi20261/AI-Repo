@@ -282,6 +282,14 @@ and draw on the context for anything new.
 --- CONVERSATION SO FAR ---
 {history}
 
+--- WHAT THIS STUDENT HAS SHOWN BEFORE ---
+{learner}
+This is graded evidence from their own past answers, not something they told you.
+Use it to choose the depth and the examples: go slower over what they got wrong
+before, and do not re-derive what they have already shown they can do. Never say
+any of it back to them, never refer to their past performance, and never let it
+change what the context says is true.
+
 --- CONTEXT ---
 {context}
 
@@ -309,6 +317,14 @@ This is one turn of a conversation; take account of what was already said.
 
 --- CONVERSATION SO FAR ---
 {history}
+
+--- WHAT THIS STUDENT HAS SHOWN BEFORE ---
+{learner}
+This is graded evidence from their own past answers, not something they told you.
+Use it to choose the depth and the examples: go slower over what they got wrong
+before, and do not re-derive what they have already shown they can do. Never say
+any of it back to them, never refer to their past performance, and never let it
+change what the context says is true.
 
 --- CONTEXT ---
 {context}
