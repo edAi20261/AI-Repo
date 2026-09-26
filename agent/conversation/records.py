@@ -68,11 +68,18 @@ class SessionState(BaseModel):
 
 
 class Conversation(BaseModel):
-    """Everything remembered for one session: state, the folded past, the recent turns."""
+    """Everything remembered for one session: state, the folded past, the recent turns.
+
+    ``folded`` holds the turns the summary already covers, still as they were
+    said. They are not quoted to a model — that is what the summary is for —
+    but keeping them is what lets the next summary be written from the
+    conversation rather than from the summary before it.
+    """
 
     state: SessionState = Field(default_factory=SessionState)
     summary: str = ""
     turns: list[Turn] = Field(default_factory=list)
+    folded: list[Turn] = Field(default_factory=list)
 
     @property
     def last_study_turn(self) -> Optional[Turn]:
@@ -81,6 +88,11 @@ class Conversation(BaseModel):
             if turn.kind == "study" and turn.cited_chunk_ids:
                 return turn
         return None
+
+    @property
+    def said_so_far(self) -> list[Turn]:
+        """Every turn still held, oldest first — the folded past and the window."""
+        return [*self.folded, *self.turns]
 
     @property
     def is_new(self) -> bool:

@@ -955,8 +955,12 @@ def build_persist(config, store: ConversationStore, window: HistoryWindow, summa
             following = _next_state(state, conversation.state, turn)
             if following != conversation.state:
                 store.save_state(user_id, pathway, session_id, following)
+            # The summary is quoted at the head of every later prompt, so it is
+            # written in the language this conversation is being held in — not
+            # whichever one the model reaches for.
             fold_if_due(store, window, summary_llm, user_id=user_id,
-                        user_type=pathway, session_id=session_id)
+                        user_type=pathway, session_id=session_id,
+                        language=turn.language or state.get("language") or "en")
         # One line per turn, carrying everything needed to explain the answer
         # without re-reading five others: what was asked, in what language and
         # why, what it matched, and what came back. Correlated by request_id.

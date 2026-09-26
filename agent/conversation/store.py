@@ -5,6 +5,13 @@ record: each turn, the running summary of turns folded out of the window, and
 the session's standing state. No new table: the columns already describe a fact
 about a user in a conversation, with an expiry.
 
+A folded turn changes its ``kind`` rather than being deleted, so the row that
+holds what was actually said outlives its trip through the summary. The kind is
+the watermark: what is a ``conversation_turn`` is quoted, what is a
+``conversation_folded_turn`` is already summarised, and nothing has to remember
+which is which. Folded turns are dropped only when there are more of them than
+a rewrite could read.
+
 Nothing here may cost a student their answer. Reads and writes have their own
 short timeouts and a circuit breaker, and a store that cannot be reached reads
 as a conversation that has just begun.
@@ -27,23 +34,33 @@ from .records import Conversation, SessionState, Turn
 logger = logging.getLogger(__name__)
 
 TURN = "conversation_turn"
+FOLDED = "conversation_folded_turn"
 SUMMARY = "conversation_summary"
 STATE = "conversation_state"
-KINDS = (TURN, SUMMARY, STATE)
+KINDS = (TURN, FOLDED, SUMMARY, STATE)
 
 REMEMBERING_TYPES = frozenset({"student", "teacher"})
 
 DEFAULT_TTL_HOURS = 720
+# A backstop on one conversation's rows, not a policy: the fold prunes what it
+# cannot reread, so reaching this means something else is wrong. Newest first,
+# so what this drops is the oldest folded turn — the one the fold would have
+# dropped next anyway. The standing state and the summary are rewritten every
+# time they change, which puts them among the newest rows and out of reach of it.
+MAX_ROWS = 400
 DEFAULT_CONNECT_TIMEOUT = 2
 DEFAULT_STATEMENT_TIMEOUT_MS = 500
 DEFAULT_FAILURE_THRESHOLD = 3
 DEFAULT_BREAKER_SECONDS = 30
 
 _LOAD = (
-    "SELECT memory_id::text, kind, fact FROM ai.user_memory "
-    "WHERE user_id = %s::uuid AND source_conversation_id = %s::uuid "
-    "  AND kind = ANY(%s) AND (expires_at IS NULL OR expires_at > now()) "
-    "ORDER BY created_at, memory_id"
+    "SELECT memory_id::text, kind, fact FROM ("
+    "  SELECT memory_id, kind, fact, created_at FROM ai.user_memory "
+    "  WHERE user_id = %s::uuid AND source_conversation_id = %s::uuid "
+    "    AND kind = ANY(%s) AND (expires_at IS NULL OR expires_at > now()) "
+    "  ORDER BY created_at DESC, memory_id DESC "
+    "  LIMIT %s"
+    ") newest ORDER BY created_at, memory_id"
 )
 
 _INSERT = (
@@ -59,6 +76,12 @@ _DELETE_KIND = (
 
 _DELETE_IDS = (
     "DELETE FROM ai.user_memory "
+    "WHERE user_id = %s::uuid AND source_conversation_id = %s::uuid "
+    "  AND memory_id::text = ANY(%s)"
+)
+
+_RELABEL_IDS = (
+    "UPDATE ai.user_memory SET kind = %s "
     "WHERE user_id = %s::uuid AND source_conversation_id = %s::uuid "
     "  AND memory_id::text = ANY(%s)"
 )
@@ -81,8 +104,12 @@ class ConversationStore(ABC):
 
     @abstractmethod
     def fold(self, user_id, user_type, session_id, *, summary: str,
-             folded: list[Turn]) -> bool:
-        ...
+             folded: list[Turn], discard: list[Turn]) -> bool:
+        """Record the rewritten summary and mark ``folded`` as covered by it.
+
+        ``discard`` is the part of the folded past a later rewrite could no
+        longer afford to read, and is the only thing here that destroys a turn.
+        """
 
     @staticmethod
     def remembers(user_id, user_type, session_id) -> bool:
@@ -121,12 +148,14 @@ class InMemoryConversationStore(ConversationStore):
         self._add(user_id, session_id, STATE, state.model_dump_json())
         return True
 
-    def fold(self, user_id, user_type, session_id, *, summary, folded) -> bool:
+    def fold(self, user_id, user_type, session_id, *, summary, folded, discard) -> bool:
         if not self.remembers(user_id, user_type, session_id):
             return False
-        gone = {turn.id for turn in folded}
+        covered = {turn.id for turn in folded}
+        gone = {turn.id for turn in discard}
         rows = self._rows[(user_id, session_id)]
-        rows[:] = [row for row in rows if row[0] not in gone and row[1] != SUMMARY]
+        rows[:] = [(row[0], FOLDED if row[0] in covered else row[1], row[2])
+                   for row in rows if row[0] not in gone and row[1] != SUMMARY]
         self._add(user_id, session_id, SUMMARY, summary)
         return True
 
@@ -158,7 +187,7 @@ class PostgresConversationStore(ConversationStore):
     def load(self, user_id, session_id) -> Conversation:
         if not (user_id and session_id):
             return Conversation()
-        rows = self._run([(_LOAD, (user_id, session_id, list(KINDS)))],
+        rows = self._run([(_LOAD, (user_id, session_id, list(KINDS), MAX_ROWS))],
                          fetch=True, label="load")
         return _assemble(rows or [])
 
@@ -178,16 +207,20 @@ class PostgresConversationStore(ConversationStore):
                        session_id, self._ttl_hours)),
         ], label="state"))
 
-    def fold(self, user_id, user_type, session_id, *, summary, folded) -> bool:
+    def fold(self, user_id, user_type, session_id, *, summary, folded, discard) -> bool:
         if not self.remembers(user_id, user_type, session_id):
             return False
-        ids = [turn.id for turn in folded if turn.id]
-        return bool(self._run([
-            (_DELETE_IDS, (user_id, session_id, ids)),
+        covered = [turn.id for turn in folded if turn.id]
+        gone = [turn.id for turn in discard if turn.id]
+        statements = [(_RELABEL_IDS, (FOLDED, user_id, session_id, covered))]
+        if gone:
+            statements.append((_DELETE_IDS, (user_id, session_id, gone)))
+        statements += [
             (_DELETE_KIND, (user_id, session_id, SUMMARY)),
             (_INSERT, (user_id, user_type, summary, SUMMARY, session_id,
                        self._ttl_hours)),
-        ], label="fold"))
+        ]
+        return bool(self._run(statements, label="fold"))
 
     def _run(self, statements: list, *, fetch: bool = False, label: str = ""):
         if time.monotonic() < self._closed_until:
@@ -224,9 +257,9 @@ def _assemble(rows) -> Conversation:
     conversation = Conversation()
     for memory_id, kind, fact in rows:
         try:
-            if kind == TURN:
-                conversation.turns.append(
-                    Turn.model_validate_json(fact).model_copy(update={"id": memory_id}))
+            if kind in (TURN, FOLDED):
+                turn = Turn.model_validate_json(fact).model_copy(update={"id": memory_id})
+                (conversation.turns if kind == TURN else conversation.folded).append(turn)
             elif kind == SUMMARY:
                 conversation.summary = fact
             elif kind == STATE:

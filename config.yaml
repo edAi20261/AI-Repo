@@ -325,10 +325,23 @@ agent:
   conversation:
     store: postgres
     ttl_hours: 720
-    recent_turns: 6
-    fold_after: 12
-    history_chars: 6000
-    reply_chars: 1500
+    # Measured over the 93 conversation turns in production (Arabic, English and
+    # French): a turn runs to a median of 705 characters and 1305 at p90 — 203
+    # and 376 tokens. The bounds these replace were 6 turns within 6000
+    # characters, and on any conversation above the median the character bound
+    # bit first: six p90 turns is 7830 characters, so the window handed over
+    # four turns while its name promised six.
+    #   6 turns  @ p90 = 2256 tokens
+    #  12 turns  @ p90 = 4512 tokens   <- picked; the turn count binds, not the budget
+    #  24 turns  @ p90 = 9024 tokens
+    recent_turns: 12
+    fold_after: 24
+    history_tokens: 6000       # backstop on the quoted window, not the policy
+    reply_tokens: 600          # p90 reply is 342 tokens; this clips the longest ~5%
+    # How much raw conversation a fold can still reread. Under this the summary
+    # is rewritten from what was said; over it, from the previous summary, and
+    # detail starts decaying. ~60 turns at the median.
+    rebuild_tokens: 12000
     connect_timeout_seconds: 2
     statement_timeout_ms: 500
     failure_threshold: 3

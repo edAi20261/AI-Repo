@@ -34,7 +34,7 @@ import fitz  # noqa: E402
 from ingestion.layout import parse_page, tier2, tier3  # noqa: E402
 from ingestion.layout.blocks import PageMeta, ParsedPage  # noqa: E402
 from ingestion.layout.chunker import page_to_chunks  # noqa: E402
-from ingestion.utils.tokens import count_tokens  # noqa: E402
+from shared.tokens import count_tokens  # noqa: E402
 from shared.config import get_config  # noqa: E402
 
 SENTENCE_END = re.compile(r"[.!?؟۔।]['\")\]]?\s*$")

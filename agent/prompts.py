@@ -101,8 +101,14 @@ another language, is not by itself a request to be answered in it.""",
 
 CONVERSATION_SUMMARY_PROMPT = Prompt(
     name="CONVERSATION_SUMMARY_PROMPT",
+    # Nobody reads this but the next turn — and the next turn writes to a
+    # student. The summary is quoted at the head of every prompt that answers
+    # one, so the language it is written in goes on steering replies long after
+    # the turns it condensed have scrolled out. Left unpinned it came back in
+    # English for conversations that ended in Arabic: both summaries in
+    # production are English, over turns whose last three were ar, ar, ar.
     audience=Audience.INTERNAL,
-    language_rule=LanguageRule.NONE,
+    language_rule=LanguageRule.CONTENT,
     template="""You keep a running summary of a tutoring conversation so later turns can
 continue it. Rewrite the summary from the existing one and the turns below, under these
 headings, leaving out any heading with nothing under it:
@@ -112,6 +118,9 @@ headings, leaving out any heading with nothing under it:
 - Open: questions not yet answered, and where the student is still confused
 Keep entries from the existing summary unless the new turns contradict them. Prefer exact
 terms over paraphrase. Never add anything that was not said. Return only the summary.
+
+{language}
+A term the student met in another language stays in the language they met it in.
 
 --- EXISTING SUMMARY ---
 {summary}
