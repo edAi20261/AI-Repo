@@ -221,6 +221,37 @@ class LanguageRequest(BaseModel):
         default=None, description="The language code asked for, only with set.")
 
 
+class StatedPreference(BaseModel):
+    """A durable preference the student said out loud, in a shape the profile holds.
+
+    Stated, never inferred. A tutor that decides from three short questions that
+    a student likes short answers, and then keeps every later answer short, has
+    made a lasting decision about someone from a guess — and the student has no
+    way of knowing it was made, let alone of undoing it.
+
+    The fields are the columns of ``ai.adaptive_profile``, so a preference that
+    does not fit one of them is not a preference this can keep. That is the
+    point: a closed set cannot fill a student's record with whatever the model
+    felt like writing that turn.
+    """
+    length: Optional[Literal["short", "medium", "long"]] = Field(
+        default=None,
+        description="Set only when the student asked for answers of a length in general, "
+                    "not for this one answer to be shorter or longer.")
+    examples: Optional[bool] = Field(
+        default=None, description="Set only when the student said they want, or do not "
+                                  "want, worked examples as a rule.")
+    visuals: Optional[bool] = Field(
+        default=None, description="Set only when the student said they want, or do not "
+                                  "want, diagrams and pictures as a rule.")
+    pace: Optional[Literal["slow", "normal", "fast"]] = Field(
+        default=None, description="Set only when the student asked to be taken more slowly "
+                                  "or more quickly in general.")
+
+    def __bool__(self) -> bool:
+        return any(value is not None for value in self.model_dump().values())
+
+
 class TurnUnderstanding(BaseModel):
     """What one turn asks of the tutor, read against the conversation so far."""
     student_words: str = Field(
@@ -242,6 +273,10 @@ class TurnUnderstanding(BaseModel):
     message_language: Optional[str] = Field(
         default=None, description="The language the student's own words are written in.")
     language_request: LanguageRequest = Field(default_factory=LanguageRequest)
+    preference: StatedPreference = Field(
+        default_factory=StatedPreference,
+        description="A lasting preference the student stated in this message, if any. "
+                    "Leave every field null unless they said it.")
 
 
 class ItemDraft(BaseModel):

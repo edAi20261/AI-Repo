@@ -407,7 +407,7 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
     window = HistoryWindow.from_config(config)
 
     graph = StateGraph(MainState)
-    graph.add_node("classify", nodes.build_classify(config, store, window))
+    graph.add_node("classify", nodes.build_classify(config, store, window, subjects))
     graph.add_node("load_context", nodes.build_load_context(config))
     graph.add_node("understand", nodes.build_understand(
         config, maybe_llm(config, "understand"), subjects))

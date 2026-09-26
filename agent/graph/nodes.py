@@ -58,6 +58,7 @@ from ..retrieval import DEFAULT_MIN_SCORE
 from ..scope import lecture_filter
 from ..subjects import SubjectDirectory
 from ..learner import standing
+from ..profile import Carryover, carried_over, record
 from ..tools import rag_search, resolve_topics
 from .pathways import build_namespaces, resolve_style
 
@@ -66,7 +67,8 @@ logger = logging.getLogger(__name__)
 
 # --- classify ---------------------------------------------------------------
 
-def build_classify(config, store: ConversationStore, window: HistoryWindow):
+def build_classify(config, store: ConversationStore, window: HistoryWindow,
+                   subjects: Optional[SubjectDirectory] = None):
     known_pathways = set((config.get("agent.pathways", {}) or {}).keys())
 
     def classify(state) -> dict:
@@ -78,14 +80,19 @@ def build_classify(config, store: ConversationStore, window: HistoryWindow):
                 f"user_type must be one of {', '.join(sorted(known_pathways))}.",
                 details={"user_type": user_type})
         conversation = store.load(state.get("user_id"), state.get("session_id"))
+        # Only when there is nothing better to go on. A conversation with turns
+        # in it has the student in front of it; what they did last week is two
+        # queries for something the last six turns already say better.
+        carried = (carried_over(state.get("user_id"), subjects, config=config)
+                   if conversation.is_new and pathway == "student" else Carryover())
         logger.info("classify", extra={
             "pathway": pathway, "remembered_turns": len(conversation.turns),
-            "summarised": bool(conversation.summary)})
+            "summarised": bool(conversation.summary), **carried.log_fields()})
         return {
             "pathway": pathway,
             "api_language": state.get("language"),
             "conversation": conversation.model_dump(),
-            "history": window.render(conversation),
+            "history": window.render(conversation, carried_over=carried.render()),
         }
 
     return classify
@@ -982,6 +989,14 @@ def build_persist(config, store: ConversationStore, window: HistoryWindow, summa
             fold_if_due(store, window, summary_llm, user_id=user_id,
                         user_type=pathway, session_id=session_id,
                         language=turn.language or state.get("language") or "en")
+        # Outlives the conversation, so it is written whether or not this one is
+        # remembered: a preference stated in a session nobody keeps is still a
+        # preference the student stated.
+        if pathway == "student":
+            stated = TurnUnderstanding.model_validate(
+                state.get("understanding") or {"needs_syllabus": True}).preference
+            if stated:
+                record(user_id, stated, config=config)
         # One line per turn, carrying everything needed to explain the answer
         # without re-reading five others: what was asked, in what language and
         # why, what it matched, and what came back. Correlated by request_id.

@@ -95,7 +95,12 @@ or null when you cannot tell. Arabic written in Latin letters and digits is Arab
 language_request: set, with the code, only when the student wants the tutor to reply in a
 particular language; clear when they object to the language the tutor has been using or ask to
 go back to the default; otherwise none. Mentioning a language, or asking about a word in
-another language, is not by itself a request to be answered in it.""",
+another language, is not by itself a request to be answered in it.
+
+preference: a lasting preference the student stated in this message, and nothing you inferred
+from how they write or what they ask. "Always keep it short" is one; a short question is not.
+"I learn better from examples" is one; asking for an example here is not. It is kept for every
+future conversation, so leave every field null unless the student said it in so many words.""",
 )
 
 
