@@ -209,9 +209,13 @@ def _named(subject_ids: list[str], subjects) -> list[str]:
         return []
     named = []
     for subject_id in subject_ids:
-        title = (subjects.facts(subject_id).title or "").strip()
-        if title:
-            named.append(title)
+        # SubjectFacts calls it `name`. It was `.title` here, which is not an
+        # attribute of anything, and pydantic raises rather than returning None —
+        # so every first turn of a new conversation for a student with any
+        # history behind them returned a 500.
+        name = (subjects.facts(subject_id).name or "").strip()
+        if name:
+            named.append(name)
     return named
 
 

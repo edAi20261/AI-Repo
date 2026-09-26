@@ -150,3 +150,51 @@ def test_a_recovered_thread_is_in_view_of_the_turn_that_recovered_it(monkeypatch
     out = classify({"user_type": "student", "user_id": USER, "session_id": SESSION})
     assert "What is evaporation?" in out["history"]
     assert out["conversation"]["state"]["subject_id"] == SUBJECT
+
+
+def test_a_refusal_is_not_asked_again(fake_postgres, monkeypatch):
+    """Production refuses this service the engagement schema outright. Retrying
+    a permission error on every new conversation buys a guaranteed failure and
+    477ms of the student's time, which is what it cost on the turn that logged it."""
+    import psycopg
+    from agent.conversation import transcript as tmod
+
+    monkeypatch.setattr(tmod, "_FORBIDDEN", False)
+    asked = []
+
+    class _Refused:
+        def cursor(self): return self
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+        def commit(self): pass
+        def execute(self, sql, params=None):
+            asked.append(sql)
+            raise psycopg.errors.InsufficientPrivilege("permission denied for schema engagement")
+
+    monkeypatch.setattr(tmod, "connect", lambda *a, **k: _Refused())
+    assert recover(SESSION, turns=6, config=get_config()) == ([], SessionState())
+    assert len(asked) == 1
+    assert recover(SESSION, turns=6, config=get_config()) == ([], SessionState())
+    assert len(asked) == 1          # not asked a second time
+
+
+def test_a_transient_failure_is_asked_again(fake_postgres, monkeypatch):
+    """A timeout or a dropped connection must keep being retried; only a refusal
+    is permanent."""
+    from agent.conversation import transcript as tmod
+
+    monkeypatch.setattr(tmod, "_FORBIDDEN", False)
+    asked = []
+
+    class _Broken:
+        def cursor(self): return self
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+        def execute(self, sql, params=None):
+            asked.append(sql)
+            raise TimeoutError("the database took too long")
+
+    monkeypatch.setattr(tmod, "connect", lambda *a, **k: _Broken())
+    recover(SESSION, turns=6, config=get_config())
+    recover(SESSION, turns=6, config=get_config())
+    assert len(asked) == 2
