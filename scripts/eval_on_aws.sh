@@ -43,8 +43,21 @@ $(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region 
   --output text)
 EOF
 
-endpoint=$(aws elbv2 describe-load-balancers --region "$REGION" \
-  --names "$SERVICE" --query 'LoadBalancers[0].DNSName' --output text)
+read -r endpoint alb_group <<EOF
+$(aws elbv2 describe-load-balancers --region "$REGION" --names "$SERVICE" \
+  --query 'LoadBalancers[0].[DNSName, SecurityGroups[0]]' --output text)
+EOF
+
+# The service's own security group is the one the load balancer sends *to*, not
+# one it accepts *from* — a task wearing only that cannot reach it, and the
+# request times out rather than being refused, which is an hour to diagnose.
+# Whatever the load balancer already admits on port 80 is what a client needs.
+client_group=$(aws ec2 describe-security-groups --group-ids "$alb_group" --region "$REGION" \
+  --query 'SecurityGroups[0].IpPermissions[?ToPort==`80`].UserIdGroupPairs[0].GroupId | [0]' \
+  --output text)
+if [ -n "$client_group" ] && [ "$client_group" != "None" ]; then
+  groups="${groups},${client_group}"
+fi
 
 echo "eval:     ${name}"
 echo "image:    ${task_def##*/}"
@@ -71,6 +84,7 @@ task_arn=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$task_def" \
   --overrides "$overrides" --query 'tasks[0].taskArn' --output text)
 
 task_id="${task_arn##*/}"
+echo "as:       ${groups}"
 echo "task:     ${task_id}"
 echo
 
