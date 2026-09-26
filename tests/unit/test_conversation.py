@@ -417,3 +417,18 @@ def test_a_question_asked_while_a_quiz_is_open_leaves_it_open():
     }, standing=SessionState(subject_id="bio", pending=open_quiz))
     assert loaded.state.pending is not None
     assert loaded.state.pending.items[0].answer == "d) evaporation"
+
+
+def test_a_turn_nobody_kept_says_which_part_of_the_request_was_missing(caplog):
+    """`remembered: false` says it happened, not whose problem it is: a caller
+    that stopped sending a session id, a role nothing is kept for, and a store
+    that is down have three different people fixing them."""
+    with caplog.at_level("WARNING"):
+        _persisted({"session_id": None, "response": "ok", "reply_body": "ok"})
+    assert "carried no session_id" in caplog.text
+
+
+def test_a_role_nothing_is_kept_for_is_not_reported_as_a_fault(caplog):
+    with caplog.at_level("INFO"):
+        _persisted({"pathway": "parent", "response": "ok", "reply_body": "ok"})
+    assert "nothing is kept for a parent" in caplog.text

@@ -25,6 +25,7 @@ from shared.structured import call_structured
 
 from ..citations import cited_numbers, renumber, strip_markers
 from ..errors import TutorUnavailable
+from ..conversation.store import REMEMBERING_TYPES
 from ..conversation import (
     Conversation,
     ConversationStore,
@@ -970,6 +971,24 @@ def _next_state(state, previous: SessionState, turn: Turn) -> SessionState:
                         pending=_still_open(state, previous, turn))
 
 
+def _say_why_not_remembered(user_id, pathway, session_id) -> None:
+    """Name what was missing when an answered turn was not kept.
+
+    ``remembered: false`` on the turn line says it happened; it does not say
+    whether the caller stopped sending a session id, whether the role is one
+    this layer keeps anything for, or whether the store is down — and those
+    have three different people fixing them. The store logs its own failures,
+    so silence from it plus a line from here means the turn never reached it.
+    """
+    missing = [name for name, value in
+               (("user_id", user_id), ("session_id", session_id)) if not value]
+    if missing:
+        logger.warning("turn not remembered: the request carried no %s",
+                       " and no ".join(missing))
+    elif pathway not in REMEMBERING_TYPES:
+        logger.info("turn not remembered: nothing is kept for a %s", pathway)
+
+
 def build_persist(config, store: ConversationStore, window: HistoryWindow, summary_llm=None):
     """Remember the turn, then fold old turns into the summary when the window is full."""
     def persist(state) -> dict:
@@ -980,6 +999,8 @@ def build_persist(config, store: ConversationStore, window: HistoryWindow, summa
             conversation = Conversation.model_validate(state.get("conversation") or {})
             turn = _turn_record(state)
             remembered = store.append(user_id, pathway, session_id, turn)
+            if not remembered:
+                _say_why_not_remembered(user_id, pathway, session_id)
             following = _next_state(state, conversation.state, turn)
             if following != conversation.state:
                 store.save_state(user_id, pathway, session_id, following)
