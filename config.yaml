@@ -65,7 +65,10 @@ vision:
   # the primary response cannot be parsed.
   provider: openrouter           # openrouter | anthropic | google | dashscope
   model: qwen/qwen3-vl-235b-a22b-instruct
-  fallback_model: anthropic/claude-sonnet-5
+  # Never fired to date: all 544 pages transcribed so far were read by the model
+  # above. Kept as the standby for a page it cannot parse, and OpenAI rather
+  # than Anthropic so both the primary and the standby bill through one account.
+  fallback_model: openai/gpt-4.1
   base_url: https://openrouter.ai/api/v1
   timeout_seconds: 180           # a scanned page costs one call, so this is per page
   max_tokens: 4096
