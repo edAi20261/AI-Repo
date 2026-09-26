@@ -7,6 +7,10 @@
 # subnets, from the same image CI built for the service, and points it at the
 # internal load balancer.
 #
+# The service image rather than the ingest one, which CI also builds: the point
+# is to measure what students are talking to, and the ingest image can be a
+# deploy behind it without anything saying so.
+#
 #   scripts/eval_on_aws.sh conversations             # memory, language, greeting
 #   scripts/eval_on_aws.sh conversations --repeat 3  # and how often each passes
 #   scripts/eval_on_aws.sh retrieval                 # precision@1 and refusals
