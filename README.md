@@ -197,9 +197,29 @@ END
 ```
 
 **1. The conversation is loaded.** Every turn is stored in `ai.user_memory` with the
-passages its answer cited. A turn sees the last six turns verbatim; older turns are
-folded into a running summary (goals, what was covered, preferences, open questions)
-written by a small model. Nothing is re-derived from one message alone.
+passages its answer cited. A turn sees the last twelve turns verbatim, within a token
+budget; older turns are folded into a running summary (goals, what was covered,
+preferences, open questions) written by a small model, in the language the conversation
+is being held in. Nothing is re-derived from one message alone.
+
+Folding does not destroy what it covers. A folded turn changes its `kind`, so while the
+whole conversation still fits `rebuild_tokens` the next summary is rewritten from what
+was said rather than from the summary before it — a summary of a summary loses detail
+every time one is taken, and nothing downstream can tell.
+
+Three things survive the conversation:
+
+- **The transcript**, which belongs to the platform. When what this service remembers has
+  expired and `engagement.ai_chat_messages` has not, the thread is read back from it
+  (`agent/conversation/transcript.py`) rather than meeting the student as a stranger
+  inside a conversation they are looking at.
+- **What the student has shown**, from `ai.mastery` — the topics graded evidence says are
+  weak or secure, scoped to the subject and narrowed to this turn's topics
+  (`agent/learner.py`). It steers depth and choice of example, and is never said back to
+  the student.
+- **Who the student is**, across chats (`agent/profile.py`). Languages and recent subjects
+  are derived on read, so they cannot go stale; preferences are stored in
+  `ai.adaptive_profile` and only when the student stated one in so many words.
 
 **2. One model call reads the turn.** `understand` returns a structured reading of the
 new message in the light of the conversation:
@@ -238,7 +258,15 @@ labels. A model call that fails fails the turn with a `503`, and the client show
 message.
 
 **5. The turn is remembered**, along with the settled subject and any standing language
-request; the summary is refolded once the window fills.
+request; the summary is refolded once the window fills. A turn that produced no reply is
+not remembered, and a turn that could not be remembered says which part of the request
+was missing.
+
+`GET /ai/memory/{user_id}` returns what this service holds about a student — the
+summaries and their stated preferences, never the turns, which belong to the platform and
+are already shown to them. `DELETE /ai/memory/{user_id}` destroys it, optionally for one
+conversation. Who may ask is the platform's decision, as it is for every other endpoint
+here.
 
 ### Pathways
 
@@ -324,7 +352,8 @@ and it can be run from the command line (see [Running](#running)).
 | Store | What | Written by |
 |---|---|---|
 | `ai.chunks`, `ai.figures`, `ai.vector_index`, `ai.topics`, `ai.topic_dependencies`, `ai.lecture_ingestion`, `ai.page_transcriptions` | the indexed syllabus | ingestion |
-| `ai.user_memory` | conversation turns, running summary, session state (subject, language) | agent |
+| `ai.user_memory` | conversation turns (quoted and folded), running summary, session state (subject, language) | agent |
+| `ai.adaptive_profile` | preferences a student stated, carried across conversations | agent |
 | `ai.mastery`, `ai.mastery_events`, `ai.mistake_tags` | per-skill mastery and its history | agent (grading) |
 | `ai.artifacts` | rendered visuals | agent |
 | Qdrant `eduai_chunks_v2` / `eduai_topics` | chunk vectors (dense + sparse) and topic-label vectors | ingestion |
@@ -340,7 +369,10 @@ backend, which the service reads through `/api/ai-integration`.
 ```
 .
 ├── agent/                   the runtime graph
-│   ├── conversation/        turn memory: records, store (ai.user_memory), history window
+│   ├── conversation/        turn memory: records, store (ai.user_memory), history window,
+│   │                        transcript recovery when what we kept has expired
+│   ├── learner.py           what graded evidence says this student can do
+│   ├── profile.py           what carries across conversations, and what a student may erase
 │   ├── graph/
 │   │   ├── graph.py         compiles the graph; one adapter node per subgraph
 │   │   ├── nodes.py         classify · load_context · understand · converse · plan ·
@@ -473,6 +505,8 @@ not public.
 | `POST` | `/ai/chat/stream` | The same turn as server-sent events: one `progress` per stage, then `result` |
 | `POST` | `/ai/grade` | Grade submitted answers and move mastery |
 | `GET` | `/ai/reports/{user_id}` | A progress report with its trend chart |
+| `GET` | `/ai/memory/{user_id}` | What the tutor remembers about a student |
+| `DELETE` | `/ai/memory/{user_id}` | Destroy it, optionally for one conversation |
 | `POST` | `/ai/homework/capture` | Read the questions off a photographed homework page |
 | `POST` | `/ai/ingest` | Queue a lesson from a source URI; returns `202` and a job id |
 | `POST` | `/ai/ingest/lesson` | Queue a lesson by platform id (fired on publish) |
