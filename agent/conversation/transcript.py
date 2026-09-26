@@ -32,6 +32,16 @@ from .records import SessionState, Turn
 
 logger = logging.getLogger(__name__)
 
+# The transcript belongs to the platform, and this service's database role may
+# simply not be granted it — which is the case in production today: "permission
+# denied for schema engagement". That is not a transient failure, so retrying it
+# on every new conversation buys a guaranteed error and the latency of asking.
+# Measured at 477ms on the turn that logged it, paid by the student.
+#
+# Set once the database says we are not allowed, and never cleared: a grant
+# arrives with a deploy, and a deploy is a new process.
+_FORBIDDEN = False
+
 STUDENT = "student"
 TUTOR = "ai"
 
@@ -52,7 +62,7 @@ def recover(session_id: Optional[str], *, turns: int,
     thread holds no completed exchange — all three of which mean the same thing
     to the caller, which is that there is nothing to carry.
     """
-    if not session_id:
+    if not session_id or _FORBIDDEN:
         return [], SessionState()
     try:
         with connect(config) as conn, conn.cursor() as cur:
@@ -62,7 +72,8 @@ def recover(session_id: Optional[str], *, turns: int,
             rows = list(reversed(cur.fetchall()))
             cur.execute(_SUBJECT, (session_id,))
             subject = cur.fetchone()
-    except Exception:
+    except Exception as error:
+        _remember_if_forbidden(error)
         logger.warning("the platform transcript could not be read; the conversation "
                        "starts from nothing", exc_info=True,
                        extra={"session_id": session_id})
@@ -73,6 +84,21 @@ def recover(session_id: Optional[str], *, turns: int,
         logger.info("conversation recovered from the platform transcript",
                     extra={"session_id": session_id, "turns": len(recovered)})
     return recovered, SessionState(subject_id=(subject or [None])[0])
+
+
+def _remember_if_forbidden(error: BaseException) -> None:
+    """Stop asking when the answer is that we may not ask.
+
+    Narrow on purpose: a timeout, a dropped connection or a slow query is
+    transient and must keep being retried. Only a refusal is permanent.
+    """
+    global _FORBIDDEN
+    if type(error).__name__ in ("InsufficientPrivilege", "UndefinedTable"):
+        _FORBIDDEN = True
+        logger.error("this service is not granted the platform transcript, so a "
+                     "conversation older than its own memory cannot be recovered; "
+                     "it needs SELECT on engagement.ai_chat_messages and "
+                     "engagement.ai_chat_sessions")
 
 
 def _exchanges(rows) -> list[Turn]:

@@ -108,3 +108,30 @@ Once it lands, `agent/profile.py` should stop coalescing the two columns to
 false on insert and stop reading false as "never said": `_warn_about_unstorable`
 and the `examples=True if examples else None` branch in `_stated_from_row` both
 exist only because of this, and both should go.
+
+
+---
+
+## 4. Let this service read the transcript (urgent, and not a schema change)
+
+`agent/conversation/transcript.py` recovers a conversation older than our own
+memory by reading the platform's messages. In production it cannot:
+
+```
+InsufficientPrivilege: permission denied for schema engagement
+```
+
+The role this service connects as is not granted the `engagement` schema, so a
+student reopening an old thread starts cold. The code degrades to that and logs
+it, and after the first refusal it stops asking — a permission error is not
+transient, and retrying it cost 477 ms on the turn that logged it.
+
+What it needs, on the role this service uses:
+
+```sql
+GRANT USAGE ON SCHEMA engagement TO <ai_service_role>;
+GRANT SELECT ON engagement.ai_chat_messages, engagement.ai_chat_sessions
+    TO <ai_service_role>;
+```
+
+Read-only, two tables. Nothing here writes to that schema.
