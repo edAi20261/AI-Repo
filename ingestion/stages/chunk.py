@@ -14,7 +14,7 @@ from collections import Counter
 from ..context import PipelineContext
 from ..layout.bridge import chunks_for, parsed_pages
 from ..state import Chunk, Element, IngestionState
-from ..utils.tokens import count_tokens
+from shared.tokens import count_tokens
 
 # Sentence terminators for oversized-element splitting — Latin + Arabic.
 _SENTENCE_ENDS = ".!?؟\n"

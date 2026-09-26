@@ -34,7 +34,7 @@ from ingestion.stages.extract import run as run_extract
 from ingestion.stages.topics import _match_one_to_one, run as run_topics
 from ingestion.stores import DryRunChunkStore
 from ingestion.utils.normalise import normalise_text
-from ingestion.utils.tokens import count_tokens
+from shared.tokens import count_tokens
 
 
 # --- normalisation ---------------------------------------------------------

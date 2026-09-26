@@ -25,6 +25,8 @@ from shared.structured import call_structured
 
 from ..citations import cited_numbers, renumber, strip_markers
 from ..errors import TutorUnavailable
+from ..conversation.store import REMEMBERING_TYPES
+from ..conversation.transcript import recover
 from ..conversation import (
     Conversation,
     ConversationStore,
@@ -57,6 +59,8 @@ from ..prompts import (
 from ..retrieval import DEFAULT_MIN_SCORE
 from ..scope import lecture_filter
 from ..subjects import SubjectDirectory
+from ..learner import standing
+from ..profile import Carryover, carried_over, record
 from ..tools import rag_search, resolve_topics
 from .pathways import build_namespaces, resolve_style
 
@@ -65,7 +69,8 @@ logger = logging.getLogger(__name__)
 
 # --- classify ---------------------------------------------------------------
 
-def build_classify(config, store: ConversationStore, window: HistoryWindow):
+def build_classify(config, store: ConversationStore, window: HistoryWindow,
+                   subjects: Optional[SubjectDirectory] = None):
     known_pathways = set((config.get("agent.pathways", {}) or {}).keys())
 
     def classify(state) -> dict:
@@ -76,15 +81,31 @@ def build_classify(config, store: ConversationStore, window: HistoryWindow):
             raise UnprocessableError(
                 f"user_type must be one of {', '.join(sorted(known_pathways))}.",
                 details={"user_type": user_type})
-        conversation = store.load(state.get("user_id"), state.get("session_id"))
+        user_id, session_id = state.get("user_id"), state.get("session_id")
+        conversation = store.load(user_id, session_id)
+        # A thread the student can still see, that this service can no longer
+        # remember: what we keep expires at ttl_hours, the transcript never
+        # does. Read it back rather than meet them as a stranger inside a
+        # conversation they are looking at.
+        if conversation.is_new and store.remembers(user_id, pathway, session_id):
+            recovered, recovered_state = recover(session_id, turns=window.recent_turns,
+                                                 config=config)
+            if recovered and store.restore(user_id, pathway, session_id,
+                                           recovered, recovered_state):
+                conversation = store.load(user_id, session_id)
+        # Only when there is nothing better to go on. A conversation with turns
+        # in it has the student in front of it; what they did last week is two
+        # queries for something the last six turns already say better.
+        carried = (carried_over(user_id, subjects, config=config)
+                   if conversation.is_new and pathway == "student" else Carryover())
         logger.info("classify", extra={
             "pathway": pathway, "remembered_turns": len(conversation.turns),
-            "summarised": bool(conversation.summary)})
+            "summarised": bool(conversation.summary), **carried.log_fields()})
         return {
             "pathway": pathway,
             "api_language": state.get("language"),
             "conversation": conversation.model_dump(),
-            "history": window.render(conversation),
+            "history": window.render(conversation, carried_over=carried.render()),
         }
 
     return classify
@@ -482,6 +503,20 @@ def _previous_evidence(reading: TurnUnderstanding, conversation: Conversation,
     return list(last.cited_chunk_ids)
 
 
+def _planned_topics(tasks: list[dict]) -> list[str]:
+    """Every topic this turn resolved, deduplicated, order kept.
+
+    Narrows the learner model to what the turn is about. A turn that resolved
+    no topic gets the whole subject instead — which is the honest answer to
+    "what does this student find hard here?" when the question named nothing.
+    """
+    seen: dict[str, None] = {}
+    for task in tasks:
+        for topic_id in task.get("params", {}).get("topic_ids") or []:
+            seen.setdefault(topic_id, None)
+    return list(seen)
+
+
 def build_plan(config, subjects: SubjectDirectory, client=None):
     """Turn the model's reading into runnable tasks: subject, topics, language, specs."""
     policy = LanguagePolicy.from_config(config)
@@ -550,9 +585,15 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
                 "type": t["type"], "params": params, "task_id": uuid.uuid4().hex[:8],
             })
 
+        # Read once, here, rather than per task: the subject is resolved by
+        # this point and the tasks of one turn are all about the same student.
+        learner = standing(state.get("user_id"), subject_id,
+                           topic_ids=_planned_topics(tasks), config=config)
+
         out: dict[str, Any] = {
             "tasks": tasks,
             "previous_chunk_ids": _previous_evidence(reading, conversation, subject_id),
+            "learner": learner.render(),
             "language": decision.code,
             "language_decision": decision.model_dump(),
         }
@@ -562,7 +603,7 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
             "pathway": pathway, "tasks": len(tasks), "subject_id": subject_id,
             "subject_source": subject_source,
             "reused_passages": len(out["previous_chunk_ids"]),
-            **decision.log_fields()})
+            **learner.log_fields(), **decision.log_fields()})
         return out
 
     return plan
@@ -592,7 +633,7 @@ def dispatch(state) -> list:
     ctx = {k: state.get(k) for k in
            ("namespaces", "style", "language", "subject_id", "lecture_ids", "grade",
             "user_id", "session_id", "pathway", "study_scope", "message",
-            "history", "previous_chunk_ids", "conversation")}
+            "history", "learner", "previous_chunk_ids", "conversation")}
     sends = []
     for task in state.get("tasks", []):
         node = _ADAPTER.get(task.get("type"))
@@ -942,6 +983,24 @@ def _next_state(state, previous: SessionState, turn: Turn) -> SessionState:
                         pending=_still_open(state, previous, turn))
 
 
+def _say_why_not_remembered(user_id, pathway, session_id) -> None:
+    """Name what was missing when an answered turn was not kept.
+
+    ``remembered: false`` on the turn line says it happened; it does not say
+    whether the caller stopped sending a session id, whether the role is one
+    this layer keeps anything for, or whether the store is down — and those
+    have three different people fixing them. The store logs its own failures,
+    so silence from it plus a line from here means the turn never reached it.
+    """
+    missing = [name for name, value in
+               (("user_id", user_id), ("session_id", session_id)) if not value]
+    if missing:
+        logger.warning("turn not remembered: the request carried no %s",
+                       " and no ".join(missing))
+    elif pathway not in REMEMBERING_TYPES:
+        logger.info("turn not remembered: nothing is kept for a %s", pathway)
+
+
 def build_persist(config, store: ConversationStore, window: HistoryWindow, summary_llm=None):
     """Remember the turn, then fold old turns into the summary when the window is full."""
     def persist(state) -> dict:
@@ -952,11 +1011,25 @@ def build_persist(config, store: ConversationStore, window: HistoryWindow, summa
             conversation = Conversation.model_validate(state.get("conversation") or {})
             turn = _turn_record(state)
             remembered = store.append(user_id, pathway, session_id, turn)
+            if not remembered:
+                _say_why_not_remembered(user_id, pathway, session_id)
             following = _next_state(state, conversation.state, turn)
             if following != conversation.state:
                 store.save_state(user_id, pathway, session_id, following)
+            # The summary is quoted at the head of every later prompt, so it is
+            # written in the language this conversation is being held in — not
+            # whichever one the model reaches for.
             fold_if_due(store, window, summary_llm, user_id=user_id,
-                        user_type=pathway, session_id=session_id)
+                        user_type=pathway, session_id=session_id,
+                        language=turn.language or state.get("language") or "en")
+        # Outlives the conversation, so it is written whether or not this one is
+        # remembered: a preference stated in a session nobody keeps is still a
+        # preference the student stated.
+        if pathway == "student":
+            stated = TurnUnderstanding.model_validate(
+                state.get("understanding") or {"needs_syllabus": True}).preference
+            if stated:
+                record(user_id, stated, config=config)
         # One line per turn, carrying everything needed to explain the answer
         # without re-reading five others: what was asked, in what language and
         # why, what it matched, and what came back. Correlated by request_id.

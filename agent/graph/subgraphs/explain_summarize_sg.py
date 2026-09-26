@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from ... import render, retrieval
 from ...citations import cited_numbers, has_citation, keep_cited
 from ...errors import TutorUnavailable
+from ...learner import NOTHING_RECORDED
 from ...models import Citation, MathFigureSpec, PrereqTopic, RetrievedChunk, Style
 from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, NO_MATERIAL_PROMPT, SUMMARIZE_PROMPT
 from ...retrieval import DEFAULT_MIN_SCORE, DEFAULT_SCOPE_RATIO
@@ -50,6 +51,7 @@ class ExplainSummarizeState(TypedDict, total=False):
     study_scope: dict | None       # the UI selection this turn is bounded by
     message: str                   # what the student typed, before the planner reworded it
     history: str
+    learner: str                   # graded evidence about this student (agent/learner.py)
     previous_chunk_ids: list[str]
     grade: str | None
     instructions: str               # subject-specific prompt addendum (e.g. math), or ""
@@ -189,6 +191,7 @@ def _build_answer(mode: str, llm, config):
             instructions=instructions,
             formatting=FORMATTING_CONTRACT,
             history=state.get("history") or "",
+            learner=state.get("learner") or NOTHING_RECORDED,
             context=primary_ctx,
             message=state.get("message") or state.get("query", ""),
             query=state.get("query", ""),
@@ -198,6 +201,7 @@ def _build_answer(mode: str, llm, config):
             instructions=instructions,
             formatting=FORMATTING_CONTRACT,
             history=state.get("history") or "",
+            learner=state.get("learner") or NOTHING_RECORDED,
             context=primary_ctx,
             message=state.get("message") or state.get("query", ""),
             query=state.get("query", ""),

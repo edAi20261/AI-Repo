@@ -9,6 +9,7 @@ from .records import (
     Turn,
 )
 from .store import ConversationStore, InMemoryConversationStore, PostgresConversationStore
+from .transcript import recover
 
 __all__ = [
     "Conversation",
@@ -21,4 +22,5 @@ __all__ = [
     "SessionState",
     "Turn",
     "fold_if_due",
+    "recover",
 ]

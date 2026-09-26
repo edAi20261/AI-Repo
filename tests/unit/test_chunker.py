@@ -254,7 +254,7 @@ def test_a_run_with_no_sentence_marks_is_still_cut():
     punctuation at all and the size guard passed it through whole. A vector
     averaged over 3,000 tokens matches nothing in particular."""
     from ingestion.layout.chunker import _split_text
-    from ingestion.utils.tokens import count_tokens
+    from shared.tokens import count_tokens
 
     # Vocalised, as the corpus is: the diacritics are most of the tokens — the
     # same words without them come to 468 rather than 3,068.
@@ -270,7 +270,7 @@ def test_a_long_sentence_is_not_carried_across_a_split_as_overlap():
     forward instead doubles the piece it starts — which turned a 3,000-token run
     into pieces of 1,600."""
     from ingestion.layout.chunker import _split_text
-    from ingestion.utils.tokens import count_tokens
+    from shared.tokens import count_tokens
 
     long_sentences = " ".join(f"{'word ' * 300}." for _ in range(3))
     assert all(count_tokens(p) <= 900 for p in _split_text(long_sentences, 800))

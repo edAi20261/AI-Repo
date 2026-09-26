@@ -21,7 +21,7 @@ from typing import Iterable, Optional, Sequence
 
 from pydantic import BaseModel, Field
 
-from ..utils.tokens import count_tokens
+from shared.tokens import count_tokens
 from .blocks import Block, PageLayout, PageMeta, ParsedPage
 from .reading_order import sort_blocks
 

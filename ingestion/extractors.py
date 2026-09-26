@@ -18,7 +18,7 @@ from .config import Config
 from .llm_provider import get_llm, llm_key_available
 from .prompts import DERIVE_DEPS_PROMPT, TOPIC_EXTRACTION_PROMPT
 from .schemas import DependencyList, TopicList
-from .utils.tokens import count_tokens
+from shared.tokens import count_tokens
 
 # --- shared helpers --------------------------------------------------------
 
