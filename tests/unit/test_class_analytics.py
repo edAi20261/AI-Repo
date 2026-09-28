@@ -123,3 +123,34 @@ def test_a_failed_side_read_keeps_the_heatmap_and_says_it_is_partial(monkeypatch
 def test_an_oversized_roster_is_refused():
     with pytest.raises(ValueError):
         _run(roster=[f"s{i}" for i in range(501)])
+
+
+def test_students_are_spread_into_score_bands():
+    """The Analytics tab draws a score distribution; a class average of 0.5 is two very
+    different classes depending on whether everyone is at 0.5 or half at 0 and half at 1."""
+    out = _run()
+    bands = {b["band"]: b["students"] for b in out["score_distribution"]}
+    assert bands == {"0-20": 0, "20-40": 1, "40-60": 1, "60-80": 1, "80-100": 0}
+    assert sum(bands.values()) == 3
+
+
+def test_engagement_counts_who_answered_recently():
+    """The homepage showed an invented "engagement" figure; this is who actually
+    answered something in the last week, out of the whole class."""
+    out = _run()
+    assert out["engagement"] == {"active": 2, "total": 4, "share": 0.5, "window_days": 7,
+                                 "answers_this_week": 20}
+
+
+def test_students_weak_on_the_same_topic_are_suggested_as_a_group():
+    """A teacher with 30 students cannot re-teach each one; students stuck on the same
+    topic can be taught together, and the group comes with the topic to target."""
+    out = _run()
+    assert out["groups"] == [{"topic_id": "t1", "label": "Fractions", "lecture_id": "l1",
+                              "subject_id": "math", "user_ids": ["s1", "s3"], "size": 2}]
+
+
+def test_a_topic_only_one_student_is_weak_on_is_not_a_group():
+    out = _run()
+    assert all(g["size"] >= 2 for g in out["groups"])
+    assert "t2" not in {g["topic_id"] for g in out["groups"]}

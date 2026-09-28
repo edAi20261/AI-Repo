@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from shared.config import Config
@@ -99,6 +99,7 @@ def class_analytics(
     at_risk = sorted((a for u in roster if u in started
                       if (a := _assess(u, by_student.get(u, {}), history.get(u), now, p))),
                      key=lambda a: (-len(a["reasons"]), -a["weak_share"], a["user_id"]))
+    groups = _groups(topics, roster, by_student, p.min_group)
     logger.info("class analytics", extra={
         "students": len(roster), "started": len(started), "topics": len(topics),
         "at_risk": len(at_risk), "degraded": degraded})
@@ -109,6 +110,9 @@ def class_analytics(
         "topics": _topic_spread(topics, roster, by_student),
         "at_risk": at_risk[:p.at_risk_limit],
         "not_started": [u for u in roster if u not in started],
+        "score_distribution": _score_bands(roster, by_student),
+        "engagement": _engagement(roster, history, activity, now, p.engagement_days),
+        "groups": groups[:p.groups_limit],
         "mistakes": mistakes,
         "most_missed": missed,
         "activity": activity,
@@ -126,6 +130,9 @@ class _Params:
         self.most_missed_limit = config.get("class_analytics.most_missed_limit", 5)
         self.at_risk_limit = config.get("class_analytics.at_risk_limit", 10)
         self.max_students = config.get("class_analytics.max_students", 500)
+        self.engagement_days = config.get("class_analytics.engagement_days", 7)
+        self.min_group = config.get("class_analytics.min_group", 2)
+        self.groups_limit = config.get("class_analytics.groups_limit", 5)
         self.activity_weeks = config.get("learner_summary.activity_weeks", 8)
         self.trend_min_events = config.get("report.trend.min_events", 4)
         self.trend_flat_band = config.get("report.trend.flat_band", 0.05)
@@ -146,6 +153,49 @@ def _topic_spread(topics: list[dict], roster: list[str],
                        "mean_score": round(sum(scores) / len(scores), 4) if scores else None})
     return sorted(spread, key=lambda t: (-t["weak"], t["mean_score"] if t["mean_score"]
                                          is not None else 2.0, t["label"]))
+
+
+_BANDS = ((0.0, "0-20"), (0.2, "20-40"), (0.4, "40-60"), (0.6, "60-80"), (0.8, "80-100"))
+
+
+def _score_bands(roster: list[str], by_student: dict[str, dict[str, dict]]) -> list[dict]:
+    """Students by their mean topic score, in fifths. Students with no evidence are left
+    out: they are ``not_started``, not a score of zero."""
+    counts = {label: 0 for _, label in _BANDS}
+    for u in roster:
+        rows = by_student.get(u)
+        if not rows:
+            continue
+        mean = sum(float(r["score"] or 0.0) for r in rows.values()) / len(rows)
+        label = next(label for floor, label in reversed(_BANDS) if mean >= floor)
+        counts[label] += 1
+    return [{"band": label, "students": counts[label]} for _, label in _BANDS]
+
+
+def _engagement(roster: list[str], history: dict[str, dict], activity: list[dict],
+                now: datetime, window_days: int) -> dict[str, Any]:
+    active = sum(1 for u in roster
+                 if (last := (history.get(u) or {}).get("last_active"))
+                 and (now - last).days < window_days)
+    week_start = (now - timedelta(days=now.weekday())).date().isoformat()
+    this_week = next((w["answers"] for w in activity if w["week_start"] == week_start), 0)
+    return {"active": active, "total": len(roster),
+            "share": round(active / len(roster), 4) if roster else 0.0,
+            "window_days": window_days, "answers_this_week": this_week}
+
+
+def _groups(topics: list[dict], roster: list[str], by_student: dict[str, dict[str, dict]],
+            min_size: int) -> list[dict[str, Any]]:
+    """Students weak on the same topic, largest groups first: who can be taught together."""
+    groups = []
+    for t in topics:
+        weak = [u for u in roster
+                if (by_student.get(u, {}).get(t["topic_id"]) or {}).get("status") == "weak"]
+        if len(weak) >= min_size:
+            groups.append({"topic_id": t["topic_id"], "label": t.get("label", ""),
+                           "lecture_id": t.get("lecture_id"), "subject_id": t.get("subject_id"),
+                           "user_ids": weak, "size": len(weak)})
+    return sorted(groups, key=lambda g: (-g["size"], g["label"]))
 
 
 def _assess(user_id: str, topics: dict[str, dict], history: Optional[dict],
@@ -177,4 +227,5 @@ def _assess(user_id: str, topics: dict[str, dict], history: Optional[dict],
 def _unreadable(total: int) -> dict[str, Any]:
     return {"available": False, "degraded": True,
             "students": {"total": total, "with_evidence": 0}, "topics": [], "at_risk": [],
-            "not_started": [], "mistakes": [], "most_missed": [], "activity": []}
+            "not_started": [], "score_distribution": [], "engagement": {}, "groups": [],
+            "mistakes": [], "most_missed": [], "activity": []}

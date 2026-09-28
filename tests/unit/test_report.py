@@ -313,6 +313,7 @@ def test_a_class_report_is_narrated_from_the_class_analysis_and_stored(monkeypat
     assert "E1: Fractions — 2 of 3 students weak" in writer.prompts[0]
     assert "E2: 1 of 3 students need attention" in writer.prompts[0]
     assert "E3: Sign error" in writer.prompts[0]
+    assert "could be taught together" not in writer.prompts[0]
     assert result["narrative"].startswith("Two students")
     assert result["analysis"]["topics"][0]["topic_id"] == "t1"
     assert (saved["scope"], saved["class_id"]) == ("class_analytics", "c1")

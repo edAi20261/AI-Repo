@@ -244,6 +244,13 @@ def class_evidence(analysis: dict[str, Any], *, topic_limit: int) -> list[dict[s
     if analysis.get("not_started"):
         add("not_started", f"{len(analysis['not_started'])} of {total} students have "
             "no graded work yet")
+    engagement = analysis.get("engagement") or {}
+    if engagement.get("total"):
+        add("engagement", f"{engagement['active']} of {engagement['total']} students answered "
+            f"graded questions in the last {engagement['window_days']} days")
+    for g in analysis.get("groups", [])[:1]:
+        add("group", f"{g['size']} students are weak on {g.get('label') or g['topic_id']} "
+            "and could be taught together", g["topic_id"])
     weeks = analysis.get("activity", [])
     if len(weeks) >= 2:
         add("activity", f"graded answers: {weeks[-1]['answers']} in the latest week, "

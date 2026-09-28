@@ -9,7 +9,7 @@ Order, strongest claim first:
   1. weak topics, each preceded by any weak prerequisite it rests on
   2. developing topics, and topics with too little evidence to judge
   3. untouched topics in the lessons the student is working through now
-  4. strong topics not practised for a long time
+  4. strong topics whose estimated retention has fallen below the target
 Within a tier, the larger the gap and the longer the neglect, the sooner it comes.
 """
 
@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from .mastery import Mastery, RetentionParams, days_until_due, retention
+
 _TIER = {"review_prerequisite": 0, "practise": 0, "strengthen": 1, "start": 2, "refresh": 3}
 
 
@@ -29,8 +31,8 @@ class RecommendParams:
     stale_days: int = 14
     stale_weight: float = 0.15
     prereq_weight: float = 0.2
-    refresh_days: int = 30
     pass_threshold: float = 0.5
+    retention: RetentionParams = field(default_factory=RetentionParams)
 
     @classmethod
     def from_config(cls, config) -> RecommendParams:
@@ -39,8 +41,8 @@ class RecommendParams:
             stale_days=config.get("recommend.stale_days", 14),
             stale_weight=config.get("recommend.stale_weight", 0.15),
             prereq_weight=config.get("recommend.prereq_weight", 0.2),
-            refresh_days=config.get("recommend.refresh_days", 30),
             pass_threshold=config.get("grade.pass_threshold", 0.5),
+            retention=RetentionParams.from_config(config),
         )
 
 
@@ -110,11 +112,11 @@ def recommend(
             candidates.append(_rec(s, "start", 0.0,
                                    [{"code": "in_current_lesson", "lecture_id": s.lecture_id}]))
         elif s.status == "strong":
-            days = _days_since(s, now)
-            if days is not None and days >= params.refresh_days:
-                candidates.append(_rec(s, "refresh", float(days),
+            due = review_due(s, now, params.retention)
+            if due:
+                candidates.append(_rec(s, "refresh", 1.0 - due["retention"],
                                        [{"code": "mastered", "score": round(s.score, 2)},
-                                        {"code": "not_practised_for", "days": days}]))
+                                        due]))
 
     candidates.sort(key=lambda r: (_TIER[r.action], -r.priority, r.topic_id))
     chosen: list[Recommendation] = []
@@ -127,6 +129,27 @@ def recommend(
         if len(chosen) == params.limit:
             break
     return chosen
+
+
+def review_due(s: TopicStanding, now: datetime,
+               params: RetentionParams) -> Optional[dict[str, Any]]:
+    """The ``due_for_review`` reason when this topic's estimated retention is below the
+    target, else None. A topic never assessed has nothing to forget yet."""
+    days = _days_since_exact(s, now)
+    if days is None or not s.attempts:
+        return None
+    m = Mastery(score=s.score, attempts=s.attempts)
+    left = days_until_due(m, days, params)
+    if left > 0:
+        return None
+    return {"code": "due_for_review", "retention": round(retention(m, days, params), 2),
+            "overdue_days": round(-left, 1)}
+
+
+def _days_since_exact(s: TopicStanding, now: datetime) -> Optional[float]:
+    if s.last_seen is None:
+        return None
+    return max(0.0, (now - s.last_seen).total_seconds() / 86400)
 
 
 def _rec(s: TopicStanding, action: str, priority: float, reasons: list[dict[str, Any]],
