@@ -54,6 +54,7 @@ class MainState(TypedDict, total=False):
 
     # -- plan --
     tasks: list[Task]
+    learner: str
 
     # -- subgraph fan-in (reducer-merged) --
     answers: Annotated[list[dict[str, Any]], operator.add]

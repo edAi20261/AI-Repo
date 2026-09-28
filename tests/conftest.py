@@ -78,6 +78,33 @@ class FakePostgres:
         return self._all.popleft() if self._all else self.rows
 
 
+class RealDatabaseTouched(AssertionError):
+    """A unit test reached for a real Postgres connection."""
+
+
+@pytest.fixture(autouse=True)
+def _no_real_database(monkeypatch):
+    """Locally ``DATABASE_URL`` is production, so a test that forgot its double would
+    read, or write, the real thing and still pass. Every test starts with the pool
+    refusing; ``fake_postgres`` replaces it for the tests that want one."""
+    import psycopg
+    import psycopg_pool
+
+    def _refuse(*a, **k):
+        raise RealDatabaseTouched(
+            "a unit test opened a real database connection; use the fake_postgres fixture")
+
+    class _RefusingPool:
+        check_connection = staticmethod(_refuse)
+
+        def __init__(self, *a, **k):
+            _refuse()
+
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", _RefusingPool)
+    monkeypatch.setattr(psycopg, "connect", _refuse)
+    monkeypatch.setattr(postgres, "_pools", {})
+
+
 @pytest.fixture()
 def fake_postgres(monkeypatch):
     """Install a Postgres double; return it so the test can inspect it.

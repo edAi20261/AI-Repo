@@ -15,7 +15,7 @@ from agent.graph.subgraphs.grade_sg import (
     _correct,
     _event_from,
     _merge_rubric,
-    _rollup_mastery,
+    _next_mastery,
     _stub_draft,
     _summary,
     _to_items,
@@ -157,16 +157,13 @@ def test_canonicalize_fills_tag_ids_and_caches(monkeypatch):
 
 def test_rollup_mastery_averages_within_assessment(monkeypatch):
     monkeypatch.setattr(gmod, "get_mastery", lambda uid, ids, config=None: [])
-    updates = {}
-    monkeypatch.setattr(gmod, "update_mastery",
-                        lambda uid, tid, m, config=None: updates.__setitem__(tid, m))
     events = [
         {"topic_id": "t1", "correct": True, "partial_score": 1.0, "difficulty": "easy"},
         {"topic_id": "t1", "correct": False, "partial_score": 0.0, "difficulty": "easy"},
         {"topic_id": "t2", "correct": True, "partial_score": 1.0, "difficulty": "hard"},
     ]
-    n = _rollup_mastery(events, "u1", get_config())
-    assert n == 2 and set(updates) == {"t1", "t2"}
+    updates = _next_mastery(events, "u1", get_config())
+    assert set(updates) == {"t1", "t2"}
     # ONE EMA step per topic per assessment: t1's two answers average to 0.5 first.
     assert updates["t1"].attempts == 1             # one assessment, not two questions
     assert updates["t2"].attempts == 1
@@ -263,8 +260,8 @@ def test_batch_grade_raises_on_error():
 def test_grade_degrades_on_llm_failure(monkeypatch):
     # LLM failure while a key exists -> the answer is NOT graded and NO mastery moves.
     called = {"n": 0}
-    monkeypatch.setattr(gmod, "write_mastery_events",
-                        lambda events, config=None: called.__setitem__("n", called["n"] + 1))
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
 
     class _BadLLM:
         def invoke(self, _msgs):
@@ -286,10 +283,10 @@ def test_grade_degrades_on_llm_failure(monkeypatch):
 
 def test_grade_sg_stub_grades_and_writes_mastery(monkeypatch):
     written = {}
-    monkeypatch.setattr(gmod, "write_mastery_events",
-                        lambda events, config=None: written.update(events=events) or ["e1"])
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda uid, events, aggs, config=None:
+                        written.update(events=events) or ["e1"] * len(events))
     monkeypatch.setattr(gmod, "get_mastery", lambda uid, ids, config=None: [])
-    monkeypatch.setattr(gmod, "update_mastery", lambda *a, **k: None)
     graph = build_grade_sg(config=get_config(), llm=None)   # no LLM -> stub grader
     out = graph.invoke({
         "submissions": [
@@ -310,8 +307,8 @@ def test_grade_sg_stub_grades_and_writes_mastery(monkeypatch):
 def test_grade_sg_declines_without_key_or_context(monkeypatch):
     # No reference answer and no syllabus context (no namespaces) -> declined, never graded on
     # the model's own knowledge, and no mastery moves.
-    monkeypatch.setattr(gmod, "write_mastery_events",
-                        lambda events, config=None: ["e1"])
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda *a, **k: ["e1"])
     graph = build_grade_sg(config=get_config(), llm=None)
     out = graph.invoke({
         "submissions": [{"question": "explain X", "student_answer": "my essay",
@@ -325,7 +322,7 @@ def test_grade_sg_declines_without_key_or_context(monkeypatch):
 
 
 def test_grade_sg_no_user_id_feedback_only(monkeypatch):
-    monkeypatch.setattr(gmod, "write_mastery_events",
+    monkeypatch.setattr(gmod, "record_graded_evidence",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no write")))
     graph = build_grade_sg(config=get_config(), llm=None)
     out = graph.invoke({
@@ -381,6 +378,31 @@ def test_grade_adapter_source_by_pathway():
     teacher = adapter({**base, "pathway": "teacher",
                        "task": {"params": {"query": "a", "grade": {"kind": "homework"}}}})
     assert teacher["grade_result"]["source"] == "homework"
+
+
+def test_a_teacher_grading_in_chat_never_writes_mastery_to_the_teacher(monkeypatch):
+    """The chat grade path forwarded the caller's own user_id, so a teacher grading a
+    pasted answer wrote quiz evidence under the teacher's id. Mastery belongs to
+    students, and the teacher has no way yet to name the student being graded."""
+    from agent.graph.graph import _build_grade_adapter
+    from agent.subjects import SubjectDirectory
+
+    writes = []
+    monkeypatch.setattr(gmod, "get_mastery", lambda uid, ids, config=None: [])
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda uid, events, aggs, config=None: writes.append(uid) or ["e1"])
+    cfg = get_config()
+    adapter = _build_grade_adapter(build_grade_sg(config=cfg, llm=None), cfg,
+                                   SubjectDirectory(None))
+    submission = {"question": "2+2?", "student_answer": "4", "correct_answer": "4",
+                  "topic_id": "t1", "lecture_id": "l1"}
+    base = {"subject_id": None, "language": "en",
+            "task": {"params": {"query": "a", "submissions": [submission]}}}
+
+    adapter({**base, "pathway": "teacher", "user_id": "teacher-1"})
+    adapter({**base, "pathway": "student", "user_id": "student-1"})
+
+    assert writes == ["student-1"]
 
 
 # --- dispatch wiring --------------------------------------------------------
@@ -526,3 +548,88 @@ def test_a_question_named_with_its_text_still_pairs_with_the_right_answer():
 
     submissions = _answered_questions(payload, spec, "irrelevant text")
     assert [s["student_answer"] for s in submissions] == ["condensation", "False"]
+
+
+def test_an_unreadable_prior_never_overwrites_a_students_mastery(monkeypatch):
+    """When reading prior mastery failed, the rollup started from a score of 0 and
+    upserted it over the real row, erasing the student's history, and the response
+    still reported the events as recorded."""
+    def _unreachable(*a, **k):
+        raise RuntimeError("database unreachable")
+
+    writes = []
+    monkeypatch.setattr(gmod, "get_mastery", _unreachable)
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda *a, **k: writes.append(a))
+    graph = build_grade_sg(config=get_config(), llm=None)
+    res = graph.invoke({
+        "submissions": [{"question": "2+2?", "student_answer": "4", "correct_answer": "4",
+                         "topic_id": "t1", "lecture_id": "l1"}],
+        "user_id": "u1", "source": "quiz",
+    })["result"]
+
+    assert writes == []
+    assert res["mastery_recorded"] is False
+    assert res["mastery_events"] == 0 and res["topics_updated"] == 0
+
+
+def test_a_failed_mastery_write_is_not_reported_as_recorded(monkeypatch):
+    """Events and the rollup were written in separate transactions, and a failure was
+    only logged: the response still counted every event, so the backend believed
+    mastery had moved when it had not."""
+    def _fails(*a, **k):
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(gmod, "get_mastery", lambda uid, ids, config=None: [])
+    monkeypatch.setattr(gmod, "record_graded_evidence", _fails)
+    graph = build_grade_sg(config=get_config(), llm=None)
+    res = graph.invoke({
+        "submissions": [{"question": "2+2?", "student_answer": "4", "correct_answer": "4",
+                         "topic_id": "t1", "lecture_id": "l1"}],
+        "user_id": "u1", "source": "quiz",
+    })["result"]
+
+    assert res["mastery_recorded"] is False
+    assert res["mastery_events"] == 0 and res["topics_updated"] == 0
+
+
+def test_an_answer_the_platform_already_scored_is_not_regraded_by_the_model(monkeypatch):
+    """Quiz and homework answers the backend had already scored (a choice question, or a
+    teacher's mark) could only reach mastery by being graded again by the model, which
+    could disagree with the score the student was shown and cost a call per submission."""
+    monkeypatch.setattr(gmod, "get_mastery", lambda uid, ids, config=None: [])
+    written = {}
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda uid, events, aggs, config=None:
+                        written.update(events=events) or ["e"] * len(events))
+
+    class _NoCalls:
+        def invoke(self, _msgs):
+            raise AssertionError("the model was asked to grade a scored answer")
+
+    graph = build_grade_sg(config=get_config(), llm=_NoCalls())
+    res = graph.invoke({
+        "submissions": [
+            {"question": "Pick the prime", "student_answer": "9", "known_score": 0.0,
+             "topic_id": "t1", "lecture_id": "l1", "type": "mcq"},
+            {"question": "Explain osmosis", "student_answer": "water moves...",
+             "known_score": 0.75, "topic_id": "t2", "lecture_id": "l1", "type": "essay"},
+        ],
+        "user_id": "u1", "source": "quiz", "pass_threshold": 0.5,
+    })["result"]
+
+    assert [g["partial_score"] for g in res["graded"]] == [0.0, 0.75]
+    assert [g["correct"] for g in res["graded"]] == [False, True]
+    assert [e["partial_score"] for e in written["events"]] == [0.0, 0.75]
+    assert res["mastery_events"] == 2 and res["degraded"] is False
+
+
+def test_a_known_score_outside_zero_to_one_is_rejected_at_the_door():
+    """A points total sent where a fraction belongs would move mastery past its bounds."""
+    import pydantic
+
+    from system.schemas.grading import Submission
+
+    assert Submission(question="q", student_answer="a", known_score=0.5).known_score == 0.5
+    with pytest.raises(pydantic.ValidationError):
+        Submission(question="q", student_answer="a", known_score=4)

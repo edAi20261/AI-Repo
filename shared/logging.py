@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
+from .request_context import get_request_id
+
 # Standard LogRecord attributes — anything else on a record is treated as an
 # ``extra`` field and included in the JSON output.
 _RESERVED = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime", "taskName"}
@@ -71,11 +73,6 @@ class RequestIdFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not getattr(record, "request_id", None):
-            try:
-                from system.context import get_request_id
-            except ImportError:
-                # Ingestion and the CLIs log without the HTTP layer present.
-                return True
             current = get_request_id()
             if current:
                 record.request_id = current

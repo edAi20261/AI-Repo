@@ -87,6 +87,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
             "query": params.get("query", ""),
             "message": payload.get("message") or params.get("query", ""),
             "history": payload.get("history") or "",
+            "learner": payload.get("learner") or "",
             "previous_chunk_ids": payload.get("previous_chunk_ids") or [],
             "level": params.get("level", "intermediate"),
             "length": params.get("length", "medium"),
@@ -192,6 +193,7 @@ def _build_assessment_adapter(compiled, config: Config, subjects: SubjectDirecto
             "k_per_topic": q.get("k_per_topic", 4),
             "min_score": config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE),
             "adaptive": q.get("adaptive", True),
+            "focus": params.get("focus"),
         })
         return {"assessment": result.get("assessment", {})}   # (2) translate out
 
@@ -273,13 +275,13 @@ def _build_grade_adapter(compiled, config: Config, subjects: SubjectDirectory):
                        or [{"question": answer, "student_answer": answer}])
         # A student chat grade is self-practice (source=practice) even if it references a
         # quiz; a teacher grading in chat is assigned work (source=quiz/homework by kind).
-        source = ("practice" if payload.get("pathway") == "student"
-                  else _kind_source(spec.get("kind"), g))
+        is_student = payload.get("pathway") == "student"
+        source = "practice" if is_student else _kind_source(spec.get("kind"), g)
         result = compiled.invoke({       # (1) translate in
             "submissions": submissions,
             "subject_id": payload.get("subject_id"),
             "lecture_ids": lecture_filter(payload),
-            "user_id": payload.get("user_id"),
+            "user_id": payload.get("user_id") if is_student else None,
             "language": payload.get("language", "en"),
             "instructions": _subject_instructions(facts),
             "kind": spec.get("kind"),

@@ -450,6 +450,45 @@ grade:
   pass_threshold: 0.5          # partial_score >= this counts as 'correct' for mastery
   # Grounding priority: a key/rubric is used FIRST; RAG grounds ONLY a keyless answer (fallback).
 
+tagging:
+  # Topic suggestions for teacher-written questions (agent/tagging.py). The threshold is
+  # the one grading already resolves a submission's topic with, so a suggested topic is
+  # the topic grading would have picked.
+  k: 3
+  threshold: 0.40
+
+recommend:
+  # What to practise next (agent/recommend.py). Starting values, not yet swept: they
+  # order a student's list, they do not decide mastery. Revisit with real evidence.
+  limit: 5
+  stale_days: 14        # untouched this long adds the full neglect weight
+  stale_weight: 0.15    # a 0.40 topic left a month ranks below a 0.20 topic seen yesterday
+  prereq_weight: 0.2    # a weak prerequisite is reviewed before the topic built on it
+  refresh_days: 30      # a strong topic untouched this long is offered for review
+
+learner_summary:
+  # The student analysis (agent/analytics.py): how much of each list a homepage gets.
+  strengths_limit: 5
+  weaknesses_limit: 5
+  not_practised_limit: 5
+  recent_per_topic: 5   # latest answers per topic behind "missed 2 of the last 3"
+  activity_weeks: 8     # weeks of answered-question history in the activity series
+  mistakes_limit: 3
+  mistake_window_days: 60  # mistake patterns are read over this window
+
+class_analytics:
+  # A teacher's view of one class (agent/class_analytics.py). Starting values, not yet
+  # swept: they decide who is flagged for the teacher's attention, not any student's mastery.
+  at_risk_weak_share: 0.4   # weak on this share of judged topics flags the student
+  at_risk_min_judged: 3     # below this many judged topics the share is not trusted
+  inactive_days: 14         # no graded answer for this long flags the student
+  history_per_student: 20   # latest answers per student behind the trend direction
+  window_days: 30           # mistakes and missed questions are counted over this window
+  mistakes_limit: 5
+  most_missed_limit: 5
+  at_risk_limit: 10
+  max_students: 500         # a roster larger than this is refused rather than slowly read
+
 render:
   # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.
   # User-agnostic: student, teacher and parent all use the same renderers.
@@ -492,6 +531,7 @@ report:
   # a report addresses; prereq_depth is the prerequisite hops root-cause walks (deepest
   # weak prereq = the cause, not the symptom).
   weak_topic_limit: 5
+  strength_limit: 3   # strong topics a note may praise
   prereq_depth: 2
   trend:
     window: 50        # newest N mastery_events read for the trend

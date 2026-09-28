@@ -401,7 +401,8 @@ def _validate_assessment_spec(raw: Any) -> AssessmentSpec | None:
         spec = AssessmentSpec(**raw)
     except Exception:
         return None
-    return spec if (spec.count is not None or spec.types or spec.difficulty) else None
+    return spec if (spec.count is not None or spec.types or spec.difficulty
+                    or spec.focus) else None
 
 
 def _validate_grade_spec(raw: Any) -> GradeSpec | None:
@@ -564,6 +565,8 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
                             spec, config.get("assessment.type_mix", {}))
                     if spec.difficulty:
                         params["difficulty"] = spec.difficulty
+                    if spec.focus and pathway == "student":
+                        params["focus"] = spec.focus
             # A chat grade task: carry any DB reference (assessment_id/kind); the answer
             # text is `query`. The adapter normalizes it into a submission.
             if t["type"] == "grade":

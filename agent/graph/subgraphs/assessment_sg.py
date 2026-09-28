@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 # status -> priority for adaptive coverage (lower = more practice needed).
 _WEAKNESS_RANK = {"weak": 0, "unknown": 1, "developing": 2, "strong": 3}
+# status -> share of an assessment's questions, relative to the other topics in it.
+_SLOT_WEIGHT = {"weak": 3.0, "unknown": 2.0, "developing": 2.0, "strong": 1.0}
+# Topics a quiz that names none is built from, when the student has evidence to go on.
+_WEAK_FALLBACK_TOPICS = 3
 
 
 class AssessmentState(TypedDict, total=False):
@@ -58,6 +62,7 @@ class AssessmentState(TypedDict, total=False):
     k_per_topic: int
     min_score: float                 # retrieval floor — off-syllabus -> decline
     adaptive: bool
+    focus: str | None
     # produced
     coverage: list[dict[str, Any]]   # [{topic_id, type}]
     chunks_by_topic: dict[str, list]
@@ -99,20 +104,38 @@ def _spread_difficulty(n: int, difficulty: str) -> list[str]:
     return [_DIFF_ROTATION[i % len(_DIFF_ROTATION)] for i in range(n)]
 
 
-# TODO (2E / enhancement): richer coverage control. Today this is a flat weakest-first
-# round-robin (topic = types[i] -> topics[i % n]). Consider: (a) strong weak-point RATIOS
-# (spend MORE questions on weak topics, not just order them first); (b) per-topic question
-# counts as an explicit input; (c) a type x topic coverage matrix (each type spans the topics).
+def _quotas(n: int, weights: list[float]) -> list[int]:
+    """Questions per topic: one each while they last, then each remaining question to
+    the topic with the most weight per question already given (D'Hondt), so a weak
+    topic gets more of the assessment without a strong one losing its only question."""
+    if n <= len(weights):
+        return [1] * n + [0] * (len(weights) - n)
+    quotas = [1] * len(weights)
+    for _ in range(n - len(weights)):
+        best = max(range(len(weights)), key=lambda i: (weights[i] / (quotas[i] + 1), -i))
+        quotas[best] += 1
+    return quotas
+
+
 def _assign_slots(
-    types: list[str], ordered_topics: list[str], difficulties: list[str]
+    types: list[str], ordered_topics: list[str], difficulties: list[str],
+    weights: list[float] | None = None,
 ) -> list[dict]:
-    """Zip each item-type to a topic (cycling weakest-first) and a difficulty. No
+    """Zip each item-type to a topic and a difficulty. Topics come weakest first and
+    take turns while they have questions left, so types spread across topics. No
     topics -> topic None (generate stamps from the retrieved chunk)."""
-    topics = ordered_topics or [None]
-    return [
-        {"topic_id": topics[i % len(topics)], "type": t, "difficulty": difficulties[i]}
-        for i, t in enumerate(types)
-    ]
+    if not ordered_topics:
+        return [{"topic_id": None, "type": t, "difficulty": difficulties[i]}
+                for i, t in enumerate(types)]
+    left = _quotas(len(types), weights or [1.0] * len(ordered_topics))
+    sequence: list[str] = []
+    while len(sequence) < len(types):
+        for i, topic in enumerate(ordered_topics):
+            if left[i]:
+                sequence.append(topic)
+                left[i] -= 1
+    return [{"topic_id": sequence[i], "type": t, "difficulty": difficulties[i]}
+            for i, t in enumerate(types)]
 
 
 def _build_item(base: dict, raw: dict) -> AssessmentItem | None:
@@ -199,22 +222,41 @@ def _resolve(state: AssessmentState) -> dict:
         hits = get_lecture_topics(lecture_ids)
         logger.info("resolve fell back to the lesson's topics",
                     extra={"lectures": len(lecture_ids), "topics": len(hits)})
+    if (not hits and state.get("focus") == "weak" and state.get("adaptive")
+            and state.get("user_id") and state.get("subject_id")):
+        weakest = _weakest_topics(state["user_id"], state["subject_id"])
+        logger.info("resolve fell back to the student's weakest topics",
+                    extra={"topics": len(weakest)})
+        return {"topic_ids": weakest}
     return {"topic_ids": [h.topic_id for h in hits]}
+
+
+def _weakest_topics(user_id: str, subject_id: str) -> list[str]:
+    try:
+        rows = get_mastery(user_id, subject_id=subject_id)
+    except Exception:
+        logger.warning("get_mastery failed; no weak-topic fallback", exc_info=True)
+        return []
+    shaky = [r for r in rows if r.get("status") != "strong"]
+    shaky.sort(key=lambda r: (_WEAKNESS_RANK.get(r.get("status"), 1), r.get("score") or 0.0))
+    return [r["topic_id"] for r in shaky[:_WEAK_FALLBACK_TOPICS]]
 
 
 def _plan_coverage(state: AssessmentState) -> dict:
     types = _flatten_type_mix(state.get("type_mix") or {})
     # Dedupe topics so the same concept isn't slotted twice.
     topic_ids = list(dict.fromkeys(state.get("topic_ids") or []))
-    ordered = topic_ids
+    ordered, weights = topic_ids, None
     if topic_ids and state.get("adaptive") and state.get("user_id"):
         try:
             rows = get_mastery(state["user_id"], topic_ids)
             ordered = _order_topics_by_weakness(topic_ids, rows)
+            status = {r.get("topic_id"): r.get("status") for r in rows}
+            weights = [_SLOT_WEIGHT.get(status.get(t, "unknown"), 2.0) for t in ordered]
         except Exception:
             logger.warning("get_mastery failed; unweighted coverage", exc_info=True)
     difficulties = _spread_difficulty(len(types), state.get("difficulty", "mixed"))
-    coverage = _assign_slots(types, ordered, difficulties)
+    coverage = _assign_slots(types, ordered, difficulties, weights)
     logger.info("plan_coverage", extra={
         "slots": len(coverage), "topics": len(topic_ids),
         "difficulties": difficulties})

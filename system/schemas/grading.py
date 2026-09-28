@@ -30,6 +30,11 @@ class Submission(Schema):
     difficulty: Optional[Difficulty] = None
     bloom: Optional[str] = None
     points: Optional[float] = Field(default=None, ge=0)
+    known_score: Optional[float] = Field(
+        default=None, ge=0, le=1,
+        description="The platform already scored this answer (a fraction of full marks). "
+                    "It moves mastery as given and is not regraded by the model.",
+    )
 
 
 class GradeRequest(Schema):
@@ -62,6 +67,10 @@ class GradeResponse(Schema):
     summary: dict[str, Any] = Field(default_factory=dict)
     mastery_events: int = 0
     topics_updated: int = 0
+    mastery_recorded: bool = Field(
+        default=True,
+        description="False when grading succeeded but the evidence could not be stored.",
+    )
     source: Optional[str] = None
     degraded: bool = Field(
         default=False, description="True when the model failed and output is a safe fallback."
