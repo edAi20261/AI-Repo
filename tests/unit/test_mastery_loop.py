@@ -36,9 +36,9 @@ def test_mastery_loop_grade_feeds_next_assessment(monkeypatch):
 
     # --- grade side: the student answers tWeak WRONG; mastery gets written ---
     monkeypatch.setattr(gmod, "get_mastery", lambda uid, ids, config=None: read(uid, ids))
-    monkeypatch.setattr(gmod, "update_mastery",
-                        lambda uid, tid, m, config=None: store.__setitem__(tid, m))
-    monkeypatch.setattr(gmod, "write_mastery_events", lambda events, config=None: ["e1"])
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda uid, events, aggs, config=None:
+                        store.update(aggs) or ["e1"] * len(events))
 
     grade = build_grade_sg(config=cfg, llm=None)
     grade.invoke({

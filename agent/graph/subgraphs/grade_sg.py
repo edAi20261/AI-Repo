@@ -31,9 +31,8 @@ from ...tools import (
     get_mastery,
     get_topic_lectures,
     rag_search,
+    record_graded_evidence,
     resolve_topics,
-    update_mastery,
-    write_mastery_events,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,7 +148,7 @@ def _ground_answers(
         # A key/rubric wins: when the item already has a reference answer (model answer OR
         # rubric, via _merge_rubric) it is graded against THAT — RAG is only the fallback for a
         # KEYLESS answer. (Was: open-ended got RAG even with a key.)
-        if item.context or item.correct_answer:
+        if item.context or item.correct_answer or item.known_score is not None:
             continue
         floor = state.get("min_score", DEFAULT_MIN_SCORE)
 
@@ -220,6 +219,16 @@ def _build_graded(item: SubmissionItem, draft, pass_threshold: float) -> GradedI
         difficulty=item.difficulty,
         bloom=item.bloom,
         points=item.points,
+    )
+
+
+def _scored(item: SubmissionItem, pass_threshold: float) -> GradedItem:
+    """An answer the platform already scored: its score is the evidence, as given."""
+    return GradedItem(
+        question=item.question, correct=item.known_score >= pass_threshold,
+        partial_score=item.known_score, correct_answer=item.correct_answer,
+        topic_id=item.topic_id, lecture_id=item.lecture_id, question_id=item.question_id,
+        difficulty=item.difficulty, bloom=item.bloom, points=item.points,
     )
 
 
@@ -296,21 +305,21 @@ def _event_from(g: GradedItem, user_id: str, source: str) -> dict | None:
     }
 
 
-def _rollup_mastery(events: list[dict], user_id: str, config) -> int:
-    """Roll one assessment's events into mastery: a topic's answers are AVERAGED into a
-    single observation and applied as ONE EMA step (attempts counts assessments, not
-    questions, and question order inside the assessment doesn't matter). Returns the
-    number of topics updated."""
+def _next_mastery(events: list[dict], user_id: str, config) -> dict[str, Mastery]:
+    """The mastery each topic moves to after one assessment: a topic's answers are
+    AVERAGED into a single observation and applied as ONE EMA step (attempts counts
+    assessments, not questions, and question order inside the assessment doesn't matter).
+
+    Raises when the prior cannot be read. Starting from zero instead would upsert a
+    fresh score over the student's real history.
+    """
     params = MasteryParams.from_config(config)
     topic_ids = list({e["topic_id"] for e in events})
-    try:
-        priors = {r["topic_id"]: r for r in get_mastery(user_id, topic_ids, config=config)}
-    except Exception:
-        logger.warning("get_mastery failed; starting mastery from zero", exc_info=True)
-        priors = {}
+    priors = {r["topic_id"]: r for r in get_mastery(user_id, topic_ids, config=config)}
     by_topic: dict[str, list[dict]] = {}
     for e in events:
         by_topic.setdefault(e["topic_id"], []).append(e)
+    nxt: dict[str, Mastery] = {}
     for tid, evs in by_topic.items():
         obs = sum(observation(e) for e in evs) / len(evs)
         # Per-event weight uses that event's own outcome (asymmetric map), then averaged.
@@ -320,9 +329,8 @@ def _rollup_mastery(events: list[dict], user_id: str, config) -> int:
         prior = (Mastery(score=p["score"], attempts=p["attempts"],
                          trend=p.get("trend"), confidence=p.get("confidence", 0.0))
                  if p else Mastery())
-        m = update_aggregate(prior, obs, params, difficulty_weight=weight)
-        update_mastery(user_id, tid, m, config=config)
-    return len(by_topic)
+        nxt[tid] = update_aggregate(prior, obs, params, difficulty_weight=weight)
+    return nxt
 
 
 def _summary(graded: list[GradedItem]) -> dict:
@@ -376,7 +384,7 @@ def _build_grade(llm, config):
         threshold = state.get("pass_threshold", 0.5)
         # Only answers WITH a reference key or syllabus context are graded — never on the model's
         # own knowledge. An answer with neither is declined (no score, no mastery, clear message).
-        gradable = [it for it in items if _gradable(it)]
+        gradable = [it for it in items if it.known_score is None and _gradable(it)]
         drafts: list = []
         degraded = False
         if gradable:
@@ -392,7 +400,9 @@ def _build_grade(llm, config):
                     degraded = True
         graded, gi = [], 0
         for it in items:
-            if not _gradable(it):
+            if it.known_score is not None:
+                graded.append(_scored(it, threshold))
+            elif not _gradable(it):
                 graded.append(_declined(it))          # no key + no context
             elif degraded:
                 graded.append(_not_graded(it))
@@ -404,7 +414,8 @@ def _build_grade(llm, config):
             "graded": sum(1 for g in graded if g.graded),
             "declined": sum(1 for g in graded if not g.graded),
             "wrong": sum(1 for g in graded if g.graded and not g.correct),
-            "degraded": degraded, "calls": 0 if llm is None else 1})
+            "scored_upstream": sum(1 for it in items if it.known_score is not None),
+            "degraded": degraded, "calls": 0 if llm is None or not gradable else 1})
         return {"graded": graded, "degraded": degraded}
 
     return _node
@@ -447,27 +458,33 @@ def _build_write_mastery(config):
         graded = state.get("graded", [])
         user_id = state.get("user_id")
         source = state.get("source", "practice")
-        events, topics = [], 0
+        events: list[dict] = []
+        written, topics, recorded = 0, 0, True
         if user_id:
             events = [e for g in graded if (e := _event_from(g, user_id, source))]
             if events:
                 try:
-                    write_mastery_events(events, config=config)
-                    topics = _rollup_mastery(events, user_id, config)
+                    aggregates = _next_mastery(events, user_id, config)
+                    written = len(record_graded_evidence(user_id, events, aggregates,
+                                                         config=config))
+                    topics = len(aggregates)
                 except Exception:
-                    logger.error("mastery write failed", exc_info=True)
+                    recorded = False
+                    logger.error("mastery not recorded", exc_info=True,
+                                 extra={"events": len(events), "source": source})
         else:
             logger.warning("grade with no user_id; feedback only, no mastery write")
         result = {
             "graded": [g.model_dump() for g in graded],
             "summary": _summary(graded),
-            "mastery_events": len(events),
+            "mastery_events": written,
             "topics_updated": topics,
+            "mastery_recorded": recorded,
             "source": source,
             "degraded": state.get("degraded", False),   # LLM failure -> friendly note in compose
         }
         logger.info("write_mastery", extra={
-            "events": len(events), "topics": topics, "user": bool(user_id)})
+            "events": written, "topics": topics, "recorded": recorded, "user": bool(user_id)})
         return {"result": result}
 
     return _node

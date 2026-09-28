@@ -100,18 +100,93 @@ makes the service fetch the stored rubric — it requires `kind` alongside it.
 Answers arrive in the payload; this service never reads a submission from the
 database.
 
-Returns `graded[]`, `summary`, `mastery_events`, `topics_updated`, `source`.
-Grading is the only thing that moves a student's mastery.
+Returns `graded[]`, `summary`, `mastery_events`, `topics_updated`,
+`mastery_recorded`, `source`. Grading is the only thing that moves a student's
+mastery.
+
+**Answers you have already scored.** Send `known_score` (0–1, the fraction of
+full marks) on a submission and the model does not grade it again: the score is
+recorded as given. Use it for choice and true/false questions you auto-score,
+and for any answer a teacher has marked. Send `question_id`, `topic_id` and
+`lecture_id` with it — an answer without a topic and lesson is graded but cannot
+move mastery.
+
+**`mastery_recorded: false`** means the answers were graded but the evidence
+could not be stored. `mastery_events` is then 0. Retry the same request; nothing
+was written.
 
 ---
 
-## 3. Progress report
+## 3. Student analysis and reports
 
-`GET /ai/reports/{user_id}` — optional query: `subject_id`, `lecture_ids`, `language`.
+Everything here is read-only except the report builders, and nothing but the
+report builders calls a model. The service never decides who may see whom: pass
+only students the signed-in user is allowed to see.
 
-Returns `narrative`, `weak_topics[]`, `root_cause`, `trend`, and `visual` (a
-rendered trend chart). `available: false` means there isn't enough graded work
-yet — show that as a message, not an error.
+### Student homepage — `GET /ai/learners/{user_id}/summary`
+
+Optional query: `subject_ids` (repeatable: the subjects the student is enrolled
+in, counted even when untouched; exactly one scopes everything to that subject)
+and `lecture_ids` (the lessons they are working through now).
+
+Returns, with no model call:
+
+- `subjects[]` — per subject, how many topics are `strong`, `developing`, `weak`,
+  `unknown` (too little evidence yet) and `not_practised`. Show "3 of 12
+  mastered", not an average.
+- `strengths[]`, `weaknesses[]`, `not_practised[]` — topics with label, lesson,
+  score and the latest answers.
+- `recommendations[]` — what to practise next, in order. `action` is
+  `review_prerequisite | practise | strengthen | start | refresh`; `reasons` are
+  facts with a `code` (`recent_misses`, `low_mastery`, `partial_mastery`,
+  `little_evidence`, `not_practised_for`, `weak_prerequisite`, `prerequisite_of`,
+  `in_current_lesson`, `mastered`). Word them in the reader's language on your
+  side; the service returns no sentences here.
+- `mistakes[]` — the student's commonest mistake categories.
+- `activity[]` — graded answers per week; `trend` — improving / flat / declining.
+- `available: false` means no topic has enough graded work yet. `degraded: true`
+  means a read failed and what is shown is incomplete.
+
+### Progress note — `GET /ai/reports/{user_id}` and `.../latest`
+
+`GET /ai/reports/{user_id}` builds a note (one model call) and stores it. Query:
+`subject_id`, `lecture_ids`, `language`, and `scope` = `student_progress`
+(to the student) or `parent` (to their parent). Returns `narrative`, `claims[]`
+(each sentence with the evidence it cites), `weak_topics[]`, `strengths[]`,
+`root_cause`, `trend`, `visual`, `report_id`, `persisted`.
+
+`GET /ai/reports/{user_id}/latest?scope=...` returns the newest stored note with
+no model call, plus `stale: true` when graded answers arrived after it was
+written. Serve it, and rebuild in the background when it is stale. `404` means
+no note has been built yet. A degraded note is never stored.
+
+### Teacher — `POST /ai/classes/analytics`
+
+Body: `{ "user_ids": [...roster], "subject_ids": [...], "class_id": "..." }`
+(up to 500 students). Returns, with no model call: `topics[]` (per topic, how
+many students are strong / developing / weak / unknown / not started),
+`at_risk[]` (each student with `reasons`: `many_weak_topics`, `declining`,
+`inactive`), `not_started[]`, `mistakes[]`, `most_missed[]` (question ids to join
+with your question text) and `activity[]`.
+
+`POST /ai/classes/report` with the same body plus a required `class_id` and an
+optional `language` writes and stores a summary for the teacher; it never names a
+student. `GET /ai/classes/{class_id}/report/latest` serves the stored one.
+
+### Question tagging — `POST /ai/topics/suggest`
+
+Body: `{ "subject_id": "...", "lecture_ids": [...], "questions": [{ "text": "...",
+"question_id": "..." }] }` (up to 200). Returns, per question, the nearest
+syllabus topics with their lesson. Show them when a teacher saves a question and
+store the chosen `topic_ids` and `lessonId`: an answer to an untagged question
+cannot move mastery. `resolved: false` means the lookup failed, not that nothing
+matched.
+
+### Practice on weak spots
+
+A student who asks the tutor to "practise my weak spots" without naming a topic
+now gets a quiz built from their weakest topics in the subject. Any practice quiz
+also gives weak topics more of its questions.
 
 ---
 
