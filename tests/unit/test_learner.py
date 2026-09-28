@@ -101,3 +101,46 @@ def test_the_standing_is_carried_to_every_task_of_the_turn():
     sends = nmod.dispatch({"tasks": [{"type": "explain", "params": {}}],
                            "learner": "Answered incorrectly before: Fractions."})
     assert sends[0].arg["learner"] == "Answered incorrectly before: Fractions."
+
+
+def test_the_compiled_graph_hands_the_standing_to_the_explain_prompt(monkeypatch):
+    """plan returned the standing under a key MainState did not declare, so LangGraph
+    dropped it, and the explain adapter never forwarded it either. Every explanation
+    read "nothing recorded" while the node-level tests passed."""
+    from types import SimpleNamespace
+
+    from agent.config import get_config
+    from agent.graph import build_graph
+    from agent.graph import graph as gmod
+    from agent.graph import nodes as nmod
+    from agent import retrieval as rmod
+    from agent.models import PrereqTopic, ResolvedTopic, RetrievedChunk
+
+    prompts: list[str] = []
+
+    class _RecordingLLM:
+        def invoke(self, messages):
+            prompts.append(messages[-1].content)
+            return SimpleNamespace(content="Plants turn light into energy [1].")
+
+    monkeypatch.setattr(gmod, "maybe_llm",
+                        lambda config, task: _RecordingLLM() if task == "explain" else None)
+    monkeypatch.setattr(nmod, "resolve_topics",
+                        lambda q, sid=None, **k: [ResolvedTopic("t1", "Photosynthesis", 0.9)])
+    monkeypatch.setattr(nmod, "standing",
+                        lambda *a, **k: LearnerStanding(weak=["Fractions"]))
+    chunk = RetrievedChunk(
+        chunk_id="c1", score=0.7, text="Plants convert light into energy.",
+        lecture_id="lec1", topic_ids=["t1"], page_from=3, page_to=3,
+        heading_path="Ch1 > Photosynthesis", language="en")
+    monkeypatch.setattr(rmod, "rag_search", lambda *a, **k: [chunk])
+    monkeypatch.setattr(rmod, "get_topic_deps",
+                        lambda ids, **k: [PrereqTopic("t0", "Cells", "required", 1)])
+
+    build_graph(get_config()).invoke({"message": "explain photosynthesis",
+                                      "user_type": "student", "user_id": "u1",
+                                      "subject_id": "sub1"})
+
+    assert prompts, "the explain model was never called"
+    assert "Answered incorrectly before: Fractions." in prompts[0]
+    assert NOTHING_RECORDED not in prompts[0]

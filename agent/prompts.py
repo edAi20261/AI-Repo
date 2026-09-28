@@ -76,7 +76,8 @@ an example or a memory aid) belongs to the answer, not the search. Write the que
 {material_language}. For "grade", the query is the answer to mark, copied as written.
 level is basic or intermediate; length is short or medium.
 For "assessment", copy only what the student stated: a question count only if they gave one,
-question types only if they named them, a difficulty only if they said one. Omit the rest.
+question types only if they named them, a difficulty only if they said one, and focus "weak"
+only if they asked to practise their weak spots or what they struggle with. Omit the rest.
 
 A message that answers questions the tutor has open is a grade task, and only that: mark
 what they wrote rather than explaining it again, unless they also ask something of their own.
@@ -185,26 +186,78 @@ REPORT_STUDENT_PROMPT = Prompt(
     name="REPORT_STUDENT_PROMPT",
     audience=Audience.STUDENT,
     language_rule=LanguageRule.REPLY,
-    template="""Write a short progress note for a student.
+    template="""Write a short progress note for a student, as a list of claims.
 {language}
-Ground it ONLY in the data below — never invent a topic, a number, or a cause.
+Each claim is one sentence and lists the ids of the evidence below that it rests on.
+Use ONLY this evidence: never invent a topic, a number, or a cause, and never cite an
+id that is not listed.
 
-Weak topics (label — score, attempts), weakest first:
-{weak_block}
-
-Deepest weak prerequisite (the likely ROOT CAUSE, if any): {root_cause}
-Recent performance trend: {trend}
+Evidence:
+{evidence_block}
 
 Guidance:
-- Speak directly to the student, encouraging and specific — a few sentences, not a list dump.
-- If there is a root-cause prerequisite, name it and say that shoring it up first unlocks the
-  topics that depend on it; otherwise focus on the weakest topics themselves.
-- Reflect the trend honestly (improving / holding steady / slipping) without overstating it.
+- Speak directly to the student, encouraging and specific: two to five claims.
+- If a weak prerequisite is listed as the likely root cause, name it and say that
+  shoring it up first unlocks the topics built on it.
+- Say what is going well when strengths are listed.
+- Reflect the trend honestly without overstating it.
 - Do NOT quote raw scores as numbers; describe them (strong, shaky, needs work).
-- With no weak topics, tell them they are doing well on what they have practised.
-- With no weak topics and too little recent practice to show a trend, say there is not yet
-  enough practice to judge, and invite them to try some questions.
-Return only the note, no headings.""",
+- With too little practice to judge, say so and invite them to try some questions.
+
+Return JSON matching this schema:
+{schema}""",
+)
+
+
+REPORT_PARENT_PROMPT = Prompt(
+    name="REPORT_PARENT_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""Write a short progress note for a parent about their child, as a list of claims.
+{language}
+Each claim is one sentence and lists the ids of the evidence below that it rests on.
+Use ONLY this evidence: never invent a topic, a number, or a cause, and never cite an
+id that is not listed.
+
+Evidence about the child:
+{evidence_block}
+
+Guidance:
+- Address the parent and refer to "your child": two to five claims.
+- Say what is going well when strengths are listed, then what needs work.
+- If a weak prerequisite is listed as the likely root cause, say that practising it
+  first will help with the topics built on it.
+- Reflect the trend honestly without overstating it.
+- Do NOT quote raw scores as numbers; describe them (strong, shaky, needs work).
+- With too little practice to judge, say so plainly.
+
+Return JSON matching this schema:
+{schema}""",
+)
+
+
+REPORT_CLASS_PROMPT = Prompt(
+    name="REPORT_CLASS_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""Write a short summary of a class for its teacher, as a list of claims.
+{language}
+Each claim is one sentence and lists the ids of the evidence below that it rests on.
+Use ONLY this evidence: never invent a topic, a number, a student, or a cause, and
+never cite an id that is not listed.
+
+Evidence about the class:
+{evidence_block}
+
+Guidance:
+- Write for a busy teacher: two to five claims, the most actionable first.
+- Name the topics most of the class is weak on, and how many students need attention.
+- Mention the commonest mistake when one is listed.
+- Never name or single out a student; speak about counts.
+- Numbers of students may be quoted; do not quote raw scores.
+
+Return JSON matching this schema:
+{schema}""",
 )
 
 

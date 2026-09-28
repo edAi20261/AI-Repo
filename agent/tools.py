@@ -11,6 +11,7 @@ live in ``agent/models.py``.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -965,16 +966,243 @@ def get_mastery_rollup(
     return out
 
 
+def _user_ids(user_ids: str | Sequence[str]) -> list[str]:
+    return [str(user_ids)] if isinstance(user_ids, str) else [str(u) for u in user_ids]
+
+
+def get_scope_topics(
+    user_ids: str | Sequence[str],
+    *,
+    subject_ids: Sequence[str] | None = None,
+    config: Config | None = None,
+) -> list[dict[str, Any]]:
+    """Every topic in ``subject_ids`` and in any subject the student (or any student of
+    a roster) has graded evidence in: ``[{topic_id, label, lecture_id, subject_id}]``.
+    The universe an analysis counts against, so an untouched topic is counted as not
+    practised, not left out."""
+    config = config or Config.load()
+    sql = ("SELECT t.topic_id::text, t.label, t.lecture_id::text, t.subject_id::text "
+           "FROM ai.topics t WHERE t.subject_id = ANY(%s) OR t.subject_id IN ("
+           "SELECT DISTINCT s.subject_id FROM ai.mastery m "
+           "JOIN ai.topics s ON s.topic_id = m.topic_id WHERE m.user_id = ANY(%s)) "
+           "ORDER BY t.subject_id, t.lecture_id, t.label")
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, ([str(s) for s in subject_ids or []], _user_ids(user_ids)))
+        rows = cur.fetchall()
+    return [{"topic_id": r[0], "label": r[1] or "", "lecture_id": r[2], "subject_id": r[3]}
+            for r in rows]
+
+
+def get_recent_outcomes(
+    user_id: str,
+    topic_ids: Sequence[str],
+    *,
+    per_topic: int,
+    config: Config | None = None,
+) -> dict[str, list[float]]:
+    """The newest ``per_topic`` answer scores per topic, newest first."""
+    if not topic_ids:
+        return {}
+    config = config or Config.load()
+    sql = ("SELECT topic_id, partial_score, correct FROM ("
+           "SELECT e.topic_id::text AS topic_id, e.partial_score, e.correct, "
+           "row_number() OVER (PARTITION BY e.topic_id ORDER BY e.created_at DESC) AS n "
+           "FROM ai.mastery_events e "
+           "WHERE e.user_id = %s AND e.topic_id::text = ANY(%s)) ranked "
+           "WHERE n <= %s ORDER BY topic_id, n")
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (str(user_id), [str(t) for t in topic_ids], int(per_topic)))
+        rows = cur.fetchall()
+    out: dict[str, list[float]] = {}
+    for tid, partial, correct in rows:
+        out.setdefault(tid, []).append(
+            float(partial) if partial is not None else (1.0 if correct else 0.0))
+    return out
+
+
+def get_weekly_activity(
+    user_ids: str | Sequence[str],
+    *,
+    weeks: int,
+    subject_ids: Sequence[str] | None = None,
+    config: Config | None = None,
+) -> list[dict[str, Any]]:
+    """Graded answers per calendar week over the last ``weeks`` weeks, oldest first:
+    ``[{week_start, answers, correct, mean_score}]``, for one student or a roster.
+    Weeks with no answers are absent."""
+    config = config or Config.load()
+    join = " JOIN ai.topics t ON t.topic_id = e.topic_id" if subject_ids else ""
+    sql = ("SELECT date_trunc('week', e.created_at) AS wk, count(*), "
+           "count(*) FILTER (WHERE e.correct), "
+           "avg(coalesce(e.partial_score, CASE WHEN e.correct THEN 1.0 ELSE 0.0 END)) "
+           "FROM ai.mastery_events e" + join + " WHERE e.user_id = ANY(%s) "
+           "AND e.created_at >= date_trunc('week', now()) - make_interval(weeks => %s - 1)")
+    args: list[Any] = [_user_ids(user_ids), int(weeks)]
+    if subject_ids:
+        sql += " AND t.subject_id = ANY(%s)"
+        args.append([str(s) for s in subject_ids])
+    sql += " GROUP BY wk ORDER BY wk"
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(args))
+        rows = cur.fetchall()
+    return [{"week_start": wk.date().isoformat(), "answers": int(n), "correct": int(c or 0),
+             "mean_score": round(float(mean or 0.0), 4)} for wk, n, c, mean in rows]
+
+
+def get_roster_mastery(
+    user_ids: Sequence[str],
+    *,
+    subject_ids: Sequence[str] | None = None,
+    config: Config | None = None,
+) -> list[dict[str, Any]]:
+    """Per-(student, topic) mastery for a whole roster in one query, each with its
+    derived ``status``."""
+    if not user_ids:
+        return []
+    config = config or Config.load()
+    params = MasteryParams.from_config(config)
+    join = " JOIN ai.topics t ON t.topic_id = m.topic_id" if subject_ids else ""
+    sql = ("SELECT m.user_id::text, m.topic_id::text, m.score, m.attempts, m.last_seen "
+           "FROM ai.mastery m" + join + " WHERE m.user_id = ANY(%s)")
+    args: list[Any] = [_user_ids(user_ids)]
+    if subject_ids:
+        sql += " AND t.subject_id = ANY(%s)"
+        args.append([str(s) for s in subject_ids])
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(args))
+        rows = cur.fetchall()
+    return [{"user_id": uid, "topic_id": tid, "score": score, "attempts": attempts,
+             "last_seen": last_seen,
+             "status": status(Mastery(score=score or 0.0, attempts=attempts or 0), params)}
+            for uid, tid, score, attempts, last_seen in rows]
+
+
+def get_roster_history(
+    user_ids: Sequence[str],
+    *,
+    per_user: int,
+    config: Config | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Each student's newest ``per_user`` answer scores (returned oldest first, the
+    order a trend reads them in) and when they last answered anything."""
+    if not user_ids:
+        return {}
+    config = config or Config.load()
+    sql = ("SELECT user_id, created_at, partial_score, correct FROM ("
+           "SELECT e.user_id::text AS user_id, e.created_at, e.partial_score, e.correct, "
+           "row_number() OVER (PARTITION BY e.user_id ORDER BY e.created_at DESC) AS n "
+           "FROM ai.mastery_events e WHERE e.user_id = ANY(%s)) ranked "
+           "WHERE n <= %s ORDER BY user_id, created_at DESC")
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (_user_ids(user_ids), int(per_user)))
+        rows = cur.fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    for uid, created_at, partial, correct in rows:
+        entry = out.setdefault(uid, {"last_active": created_at, "scores": []})
+        entry["scores"].insert(
+            0, float(partial) if partial is not None else (1.0 if correct else 0.0))
+    return out
+
+
+def get_top_mistakes(
+    user_ids: Sequence[str],
+    *,
+    since_days: int,
+    limit: int,
+    subject_ids: Sequence[str] | None = None,
+    config: Config | None = None,
+) -> list[dict[str, Any]]:
+    """The mistake categories a roster made most often in the last ``since_days``:
+    ``[{tag_id, label, occurrences, students}]``."""
+    if not user_ids:
+        return []
+    config = config or Config.load()
+    join = " JOIN ai.topics t ON t.topic_id = e.topic_id" if subject_ids else ""
+    sql = ("SELECT tag.tag_id::text, tag.label, count(*), count(DISTINCT x.user_id) FROM ("
+           "SELECT e.user_id, unnest(e.mistake_tag_ids) AS tag_id "
+           "FROM ai.mastery_events e" + join + " WHERE e.user_id = ANY(%s) "
+           "AND e.created_at >= now() - make_interval(days => %s)")
+    args: list[Any] = [_user_ids(user_ids), int(since_days)]
+    if subject_ids:
+        sql += " AND t.subject_id = ANY(%s)"
+        args.append([str(s) for s in subject_ids])
+    sql += (") x JOIN ai.mistake_tags tag ON tag.tag_id::text = x.tag_id::text "
+            "GROUP BY tag.tag_id, tag.label ORDER BY 3 DESC, 2 LIMIT %s")
+    args.append(int(limit))
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(args))
+        rows = cur.fetchall()
+    return [{"tag_id": r[0], "label": r[1] or "", "occurrences": int(r[2]),
+             "students": int(r[3])} for r in rows]
+
+
+def get_most_missed(
+    user_ids: Sequence[str],
+    *,
+    since_days: int,
+    limit: int,
+    subject_ids: Sequence[str] | None = None,
+    config: Config | None = None,
+) -> list[dict[str, Any]]:
+    """The questions a roster answered wrong most often in the last ``since_days``:
+    ``[{item_id, topic_id, answers, wrong, students}]``."""
+    if not user_ids:
+        return []
+    config = config or Config.load()
+    join = " JOIN ai.topics t ON t.topic_id = e.topic_id" if subject_ids else ""
+    sql = ("SELECT e.item_id::text, e.topic_id::text, count(*), "
+           "count(*) FILTER (WHERE NOT e.correct), count(DISTINCT e.user_id) "
+           "FROM ai.mastery_events e" + join + " WHERE e.user_id = ANY(%s) "
+           "AND e.item_id IS NOT NULL AND e.created_at >= now() - make_interval(days => %s)")
+    args: list[Any] = [_user_ids(user_ids), int(since_days)]
+    if subject_ids:
+        sql += " AND t.subject_id = ANY(%s)"
+        args.append([str(s) for s in subject_ids])
+    sql += (" GROUP BY e.item_id, e.topic_id HAVING count(*) FILTER (WHERE NOT e.correct) > 0 "
+            "ORDER BY 4 DESC, 3 DESC LIMIT %s")
+    args.append(int(limit))
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(args))
+        rows = cur.fetchall()
+    return [{"item_id": r[0], "topic_id": r[1], "answers": int(r[2]), "wrong": int(r[3]),
+             "students": int(r[4])} for r in rows]
+
+
+def get_direct_prereqs(
+    topic_ids: Sequence[str],
+    *,
+    config: Config | None = None,
+) -> dict[str, list[tuple[str, str]]]:
+    """``{topic_id: [(prereq_topic_id, label), ...]}``: one hop, for many topics in one
+    query. ``get_topic_deps`` walks further but loses which seed a prerequisite serves."""
+    if not topic_ids:
+        return {}
+    config = config or Config.load()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT d.topic_id::text, d.prereq_topic_id::text, t.label "
+            "FROM ai.topic_dependencies d "
+            "LEFT JOIN ai.topics t ON t.topic_id = d.prereq_topic_id "
+            "WHERE d.topic_id::text = ANY(%s)",
+            ([str(t) for t in topic_ids],))
+        rows = cur.fetchall()
+    out: dict[str, list[tuple[str, str]]] = {}
+    for tid, pid, label in rows:
+        out.setdefault(tid, []).append((pid, label or ""))
+    return out
+
+
 def get_mastery_trend(
     user_id: str,
     *,
     topic_id: str | None = None,
     subject_id: str | None = None,
+    lecture_id: str | None = None,
     config: Config | None = None,
 ) -> dict[str, Any]:
     """Performance over time for ``user_id`` from ``ai.mastery_events`` (ordered by
-    ``created_at``). Optionally narrowed to one ``topic_id`` or a ``subject_id`` (joined
-    via ``ai.topics``). Backs endpoint #9 and report_sg's trend chart.
+    ``created_at``). Optionally narrowed to one ``topic_id``, one ``lecture_id``, or a
+    ``subject_id`` (joined via ``ai.topics``). Backs endpoint #9 and report_sg's trend chart.
 
     Returns ``{events: [{created_at, score, correct, difficulty, source, topic_id}],
     count, direction}`` where ``score`` is ``partial_score`` (else 1.0/0.0 from
@@ -992,6 +1220,9 @@ def get_mastery_trend(
     if topic_id:
         sql += " AND e.topic_id = %s"
         args.append(str(topic_id))
+    if lecture_id:
+        sql += " AND e.lecture_id = %s"
+        args.append(str(lecture_id))
     if subject_id:
         sql += " AND t.subject_id = %s"
         args.append(str(subject_id))
@@ -1010,11 +1241,11 @@ def get_mastery_trend(
             "difficulty": difficulty, "source": source, "topic_id": tid,
         })
     return {"events": events, "count": len(events),
-            "direction": _trend_direction([e["score"] for e in events],
+            "direction": trend_direction([e["score"] for e in events],
                                           min_events, flat_band)}
 
 
-def _trend_direction(scores: list[float], min_events: int, flat_band: float) -> str:
+def trend_direction(scores: list[float], min_events: int, flat_band: float) -> str:
     """improving|flat|declining from earliest-half vs latest-half mean; ``insufficient``
     below ``min_events``. Purely deterministic — no model picks the direction."""
     if len(scores) < min_events:
@@ -1028,6 +1259,37 @@ def _trend_direction(scores: list[float], min_events: int, flat_band: float) -> 
     return "improving" if delta > 0 else "declining"
 
 
+_INSERT_EVENT_SQL = (
+    f"INSERT INTO ai.mastery_events ({', '.join(_EVENT_COLS)}) "
+    f"VALUES ({', '.join(['%s'] * len(_EVENT_COLS))}) RETURNING event_id::text"
+)
+
+_UPSERT_MASTERY_SQL = (
+    "INSERT INTO ai.mastery "
+    "(user_id, topic_id, score, attempts, last_seen, trend, confidence) "
+    "VALUES (%s, %s, %s, %s, now(), %s, %s) "
+    "ON CONFLICT (user_id, topic_id) DO UPDATE SET "
+    "score = EXCLUDED.score, attempts = EXCLUDED.attempts, "
+    "last_seen = EXCLUDED.last_seen, trend = EXCLUDED.trend, "
+    "confidence = EXCLUDED.confidence"
+)
+
+
+def _insert_events(cur, events: Sequence[Mapping[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    for e in events:
+        if not e.get("topic_id") or not e.get("source"):
+            raise ValueError("mastery event requires topic_id and source.")
+        cur.execute(_INSERT_EVENT_SQL, tuple(e.get(c) for c in _EVENT_COLS))
+        ids.append(cur.fetchone()[0])
+    return ids
+
+
+def _upsert_mastery(cur, user_id: str, topic_id: str, mastery: Mastery) -> None:
+    cur.execute(_UPSERT_MASTERY_SQL, (str(user_id), str(topic_id), mastery.score,
+                                      mastery.attempts, mastery.trend, mastery.confidence))
+
+
 def write_mastery_events(
     events: Sequence[Mapping[str, Any]],
     *,
@@ -1038,17 +1300,9 @@ def write_mastery_events(
     set — never an update to an existing row."""
     if not events:
         return []
-    placeholders = "(" + ", ".join(["%s"] * len(_EVENT_COLS)) + ")"
-    sql = (f"INSERT INTO ai.mastery_events ({', '.join(_EVENT_COLS)}) "
-           f"VALUES {placeholders} RETURNING event_id::text")
-    ids: list[str] = []
     with connect(config) as conn:
         with conn.cursor() as cur:
-            for e in events:
-                if not e.get("topic_id") or not e.get("source"):
-                    raise ValueError("mastery event requires topic_id and source.")
-                cur.execute(sql, tuple(e.get(c) for c in _EVENT_COLS))
-                ids.append(cur.fetchone()[0])
+            ids = _insert_events(cur, events)
         conn.commit()
     return ids
 
@@ -1062,17 +1316,87 @@ def update_mastery(
 ) -> None:
     """Upsert the rolled-up aggregate for one (user, topic). Writes absolute values
     from ``mastery`` (the model already incremented attempts); ``last_seen`` = now."""
-    sql = (
-        "INSERT INTO ai.mastery "
-        "(user_id, topic_id, score, attempts, last_seen, trend, confidence) "
-        "VALUES (%s, %s, %s, %s, now(), %s, %s) "
-        "ON CONFLICT (user_id, topic_id) DO UPDATE SET "
-        "score = EXCLUDED.score, attempts = EXCLUDED.attempts, "
-        "last_seen = EXCLUDED.last_seen, trend = EXCLUDED.trend, "
-        "confidence = EXCLUDED.confidence"
-    )
     with connect(config) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (str(user_id), str(topic_id), mastery.score,
-                              mastery.attempts, mastery.trend, mastery.confidence))
+            _upsert_mastery(cur, user_id, topic_id, mastery)
         conn.commit()
+
+
+def record_graded_evidence(
+    user_id: str,
+    events: Sequence[Mapping[str, Any]],
+    aggregates: Mapping[str, Mastery],
+    *,
+    config: Config | None = None,
+) -> list[str]:
+    """Append ``events`` and upsert the aggregates they produced in one transaction.
+
+    A rollup without its evidence cannot be audited, and evidence without its rollup
+    never reaches the student, so either both land or neither does.
+    """
+    with connect(config) as conn:
+        with conn.cursor() as cur:
+            ids = _insert_events(cur, events)
+            for topic_id, mastery in aggregates.items():
+                _upsert_mastery(cur, user_id, topic_id, mastery)
+        conn.commit()
+    return ids
+
+
+# --- reports: ai.reports (agent-owned) ---------------------------------------
+
+def save_report(
+    scope: str,
+    payload: Mapping[str, Any],
+    *,
+    user_id: str | None = None,
+    class_id: str | None = None,
+    config: Config | None = None,
+) -> dict[str, str]:
+    """Store one generated report. Reports are history: a new one never replaces an
+    old row, so what a student was told on a given day can still be read back."""
+    if not user_id and not class_id:
+        raise ValueError("a report belongs to a user or a class.")
+    with connect(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ai.reports (user_id, class_id, scope, payload_json) "
+                "VALUES (%s, %s, %s::ai.report_scope, %s::jsonb) "
+                "RETURNING report_id::text, generated_at",
+                (user_id, class_id, scope, json.dumps(payload, ensure_ascii=False,
+                                                      default=str)))
+            report_id, generated_at = cur.fetchone()
+        conn.commit()
+    return {"report_id": report_id, "generated_at": generated_at.isoformat()}
+
+
+def get_latest_report(
+    scope: str,
+    *,
+    user_id: str | None = None,
+    class_id: str | None = None,
+    config: Config | None = None,
+) -> dict[str, Any] | None:
+    """The newest stored report for ``user_id`` or ``class_id``, or None when there is
+    none. ``newer_evidence`` counts the student's graded answers since it was written;
+    it is None for a class report, whose roster this service does not hold."""
+    if not user_id and not class_id:
+        raise ValueError("a report belongs to a user or a class.")
+    owner, value = ("r.user_id", user_id) if user_id else ("r.class_id", class_id)
+    newer = ("(SELECT count(*) FROM ai.mastery_events e "
+             "WHERE e.user_id = r.user_id AND e.created_at > r.generated_at)"
+             if user_id else "NULL")
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT r.report_id::text, r.generated_at, r.payload_json, {newer} "
+            f"FROM ai.reports r WHERE r.scope = %s::ai.report_scope AND {owner} = %s "
+            "ORDER BY r.generated_at DESC LIMIT 1",
+            (scope, value))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    report_id, generated_at, payload, newer_count = row
+    return {"report_id": report_id, "generated_at": generated_at.isoformat(),
+            "payload": payload, "newer_evidence": newer_count,
+            "stale": None if newer_count is None else newer_count > 0}
+

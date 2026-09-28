@@ -107,6 +107,7 @@ class AssessmentSpec(BaseModel):
     count: Optional[int] = None
     types: Optional[list[str]] = None
     difficulty: Optional[str] = None
+    focus: Optional[str] = None
 
     @field_validator("count")
     @classmethod
@@ -123,6 +124,11 @@ class AssessmentSpec(BaseModel):
     @classmethod
     def _difficulty_allowed(cls, v: Optional[str]) -> Optional[str]:
         return v if v in DIFFICULTIES else None
+
+    @field_validator("focus")
+    @classmethod
+    def _focus_allowed(cls, v: Optional[str]) -> Optional[str]:
+        return v if v == "weak" else None
 
 
 class AssessmentOption(BaseModel):
@@ -343,6 +349,7 @@ class SubmissionItem(BaseModel):
     difficulty: Optional[str] = None
     bloom: Optional[str] = None
     points: Optional[float] = None
+    known_score: Optional[float] = Field(default=None, ge=0, le=1)
 
 
 class GradedItem(BaseModel):
@@ -471,3 +478,14 @@ class ArtifactRef(BaseModel):
     caption: Optional[str] = None
     reused: Optional[bool] = None
     item_id: Optional[str] = None
+
+
+class ReportClaim(BaseModel):
+    """One sentence of a progress note and the evidence ids it rests on."""
+    text: str = Field(min_length=1)
+    evidence: list[str] = Field(min_length=1)
+
+
+class ReportNarrative(BaseModel):
+    """A progress note as claims, so each one can be checked against what was given."""
+    claims: list[ReportClaim] = Field(min_length=1, max_length=6)

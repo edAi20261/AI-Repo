@@ -17,10 +17,14 @@ import anyio
 from anyio import CapacityLimiter
 
 from agent.config import get_config
+from agent.analytics import learner_summary
+from agent.class_analytics import class_analytics
 from agent.graph import build_graph
 from agent.graph.grade import run_grade
-from agent.graph.report import run_report
+from agent.graph.report import run_class_report, run_report
 from agent.graph.subgraphs import build_visual_sg
+from agent.tagging import suggest_topics
+from agent.tools import get_latest_report
 from shared.config import Config
 
 from .errors import ServiceUnavailableError, UpstreamTimeoutError
@@ -81,6 +85,28 @@ class AgentRuntime:
 
     async def report(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._offload(run_report, payload, config=self._config)
+
+    async def class_analytics(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._offload(class_analytics, payload["user_ids"],
+                                   subject_ids=payload.get("subject_ids"), config=self._config)
+
+    async def latest_report(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+        return await self._offload(get_latest_report, payload["scope"],
+                                   user_id=payload.get("user_id"),
+                                   class_id=payload.get("class_id"), config=self._config)
+
+    async def class_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._offload(run_class_report, payload, config=self._config)
+
+    async def learner_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._offload(
+            learner_summary, payload["user_id"], subject_ids=payload.get("subject_ids"),
+            lecture_ids=payload.get("lecture_ids"), config=self._config)
+
+    async def suggest_topics(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._offload(
+            suggest_topics, payload["questions"], payload["subject_id"],
+            lecture_ids=payload.get("lecture_ids"), config=self._config)
 
     async def render(
         self,

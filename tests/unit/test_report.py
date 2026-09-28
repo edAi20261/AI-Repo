@@ -68,23 +68,269 @@ def test_shelled_scope_is_unavailable(monkeypatch):
     assert result["weak_topics"] == []
 
 
+class _Writer:
+    """A plain chat client: its reply is JSON text, validated like any structured call."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.prompts: list[str] = []
+
+    def invoke(self, messages):
+        import json
+
+        last = messages[-1]
+        self.prompts.append(last["content"] if isinstance(last, dict) else last.content)
+        reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+
+        class _Msg:
+            content = json.dumps(reply)
+        return _Msg()
+
+
 def test_a_student_with_no_practice_yet_is_told_so_by_the_model(monkeypatch):
     """The no-data and all-good notes were fixed sentences; the model writes them
     now from the same numbers, so they read like the rest of the report."""
     _patch(monkeypatch, mastery=[], trend={"direction": "insufficient", "count": 0,
                                            "events": []}, deps=[], labels={})
-
-    class _Writer:
-        prompt = None
-
-        def invoke(self, messages):
-            _Writer.prompt = messages[0].content
-
-            class _Msg:
-                content = "There isn't enough practice yet to judge. Try a few questions!"
-            return _Msg()
-
-    sg = build_report_sg(config=get_config(), llm=_Writer())
+    writer = _Writer({"claims": [{"text": "There isn't enough practice yet to judge.",
+                                  "evidence": ["E1"]}]})
+    sg = build_report_sg(config=get_config(), llm=writer)
     result = sg.invoke({"scope": "student_progress", "user_id": "u1", "language": "en"})["result"]
     assert result["narrative"].startswith("There isn't enough practice yet")
-    assert "(none)" in _Writer.prompt
+    assert "E1: no graded practice yet" in writer.prompts[0]
+
+
+def test_every_sentence_of_the_note_cites_the_evidence_it_rests_on(monkeypatch):
+    """The note was free prose the model could fill with anything; a claim that names
+    its evidence can be checked, shown next to the numbers, and rejected when it
+    points at nothing."""
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "tq", "score": 0.3, "attempts": 4, "status": "weak"},
+                    {"topic_id": "tf", "score": 0.9, "attempts": 5, "status": "strong"}],
+           trend={"direction": "improving", "count": 8, "events": []},
+           deps=[], labels={"tq": "Quadratics", "tf": "Fractions"})
+    writer = _Writer({"claims": [
+        {"text": "Fractions are going well.", "evidence": ["E2"]},
+        {"text": "Quadratics need more work.", "evidence": ["E1"]}]})
+    sg = build_report_sg(config=get_config(), llm=writer)
+    result = sg.invoke({"scope": "student_progress", "user_id": "u1", "language": "en"})["result"]
+
+    assert result["narrative"] == "Fractions are going well. Quadratics need more work."
+    assert result["claims"][0]["evidence"] == [
+        {"id": "E2", "kind": "strength", "topic_id": "tf"}]
+    assert result["strengths"][0]["label"] == "Fractions"
+    assert "E1: Quadratics" in writer.prompts[0] and "E2: Fractions" in writer.prompts[0]
+
+
+def test_a_claim_citing_evidence_that_was_not_given_is_sent_back(monkeypatch):
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "tq", "score": 0.3, "attempts": 4, "status": "weak"}],
+           trend={"direction": "flat", "count": 4, "events": []},
+           deps=[], labels={"tq": "Quadratics"})
+    writer = _Writer({"claims": [{"text": "Geometry is weak.", "evidence": ["E9"]}]},
+                     {"claims": [{"text": "Quadratics need work.", "evidence": ["E1"]}]})
+    sg = build_report_sg(config=get_config(), llm=writer)
+    result = sg.invoke({"scope": "student_progress", "user_id": "u1", "language": "en"})["result"]
+
+    assert result["narrative"] == "Quadratics need work."
+    assert len(writer.prompts) == 2 and result["degraded"] is False
+
+
+def test_a_note_that_never_cites_its_evidence_is_dropped_not_shown(monkeypatch):
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "tq", "score": 0.3, "attempts": 4, "status": "weak"}],
+           trend={"direction": "flat", "count": 4, "events": []},
+           deps=[], labels={"tq": "Quadratics"})
+    writer = _Writer({"claims": [{"text": "You are a genius.", "evidence": ["E7"]}]})
+    sg = build_report_sg(config=get_config(), llm=writer)
+    result = sg.invoke({"scope": "student_progress", "user_id": "u1", "language": "en"})["result"]
+
+    assert result["narrative"] == "" and result["claims"] == []
+    assert result["degraded"] is True
+
+
+def test_a_report_with_no_graded_work_says_it_is_unavailable(monkeypatch):
+    """``available`` was hard-coded True, so a dashboard could not tell a student with
+    no graded work from one whose work was all fine, although the contract promises
+    False until there is enough evidence."""
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "t1", "score": 0.4, "attempts": 1, "status": "unknown"}],
+           trend={"direction": "insufficient", "count": 1, "events": [{"score": 0.4}]},
+           deps=[], labels={})
+    sg = build_report_sg(config=get_config(), llm=None)
+    result = sg.invoke({"scope": "student_progress", "user_id": "u1", "language": "en"})["result"]
+    assert result["available"] is False
+
+
+def test_an_unreadable_learner_model_is_not_reported_as_no_practice(monkeypatch):
+    """A failed mastery read was logged and then read as an empty history, so the
+    student was told they had not practised yet and nothing marked the report degraded."""
+    def _unreachable(*a, **k):
+        raise RuntimeError("database unreachable")
+
+    _patch(monkeypatch, mastery=[], trend={"direction": "insufficient", "count": 0,
+                                           "events": []}, deps=[], labels={})
+    monkeypatch.setattr(rmod, "get_mastery", _unreachable)
+    sg = build_report_sg(config=get_config(), llm=None)
+    result = sg.invoke({"scope": "student_progress", "user_id": "u1", "language": "en"})["result"]
+    assert result["degraded"] is True
+    assert result["available"] is False
+
+
+def test_a_failed_label_lookup_still_returns_the_report(monkeypatch):
+    """get_topic_labels was the one unguarded read in fetch_metrics, so a label lookup
+    failure turned the whole report into a 500."""
+    def _unreachable(*a, **k):
+        raise RuntimeError("database unreachable")
+
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "t1", "score": 0.2, "attempts": 4, "status": "weak"}],
+           trend={"direction": "flat", "count": 4, "events": []}, deps=[], labels={})
+    monkeypatch.setattr(rmod, "get_topic_labels", _unreachable)
+    sg = build_report_sg(config=get_config(), llm=None)
+    result = sg.invoke({"scope": "student_progress", "user_id": "u1", "language": "en"})["result"]
+    assert result["weak_topics"][0]["topic_id"] == "t1"
+    assert result["degraded"] is True
+
+
+def test_the_trend_is_scoped_to_the_same_lecture_as_the_weak_topics(monkeypatch):
+    """Weak topics were read for the requested lecture but the trend for the whole
+    subject, so one report described two different scopes."""
+    seen = {}
+    _patch(monkeypatch, mastery=[], trend={"direction": "insufficient", "count": 0,
+                                           "events": []}, deps=[], labels={})
+    monkeypatch.setattr(rmod, "get_mastery_trend",
+                        lambda uid, **k: seen.update(k) or {"direction": "insufficient",
+                                                            "count": 0, "events": []})
+    sg = build_report_sg(config=get_config(), llm=None)
+    sg.invoke({"scope": "student_progress", "user_id": "u1", "subject_id": "s1",
+               "lecture_ids": ["lec7"], "language": "en"})
+    assert seen.get("lecture_id") == "lec7"
+
+
+def test_a_built_report_is_stored_so_a_homepage_need_not_rebuild_it(monkeypatch):
+    """Every report was rebuilt from scratch, one model call per page view, and
+    nothing kept what a student had been told."""
+    from agent.graph import report as report_mod
+
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "t1", "score": 0.2, "attempts": 4, "status": "weak"}],
+           trend={"direction": "flat", "count": 4, "events": [{"score": 0.2},
+                                                              {"score": 0.3}]},
+           deps=[], labels={"t1": "Fractions"})
+    saved = {}
+    monkeypatch.setattr(report_mod, "save_report",
+                        lambda scope, payload, **k: saved.update(scope=scope, payload=payload,
+                                                                 **k)
+                        or {"report_id": "r1", "generated_at": "2026-09-27T08:00:00+00:00"})
+    monkeypatch.setattr(report_mod, "maybe_llm", lambda config, task: None)
+
+    result = report_mod.run_report({"user_id": "u1"}, config=get_config())
+
+    assert saved["scope"] == "student_progress" and saved["user_id"] == "u1"
+    assert "visual_spec" not in saved["payload"]
+    assert saved["payload"]["weak_topics"][0]["label"] == "Fractions"
+    assert result["report_id"] == "r1" and result["persisted"] is True
+
+
+def test_a_degraded_report_is_returned_but_never_stored(monkeypatch):
+    """A degraded note would become the latest report and shadow a good one."""
+    from agent.graph import report as report_mod
+
+    def _unreachable(*a, **k):
+        raise RuntimeError("database unreachable")
+
+    _patch(monkeypatch, mastery=[], trend={"direction": "insufficient", "count": 0,
+                                           "events": []}, deps=[], labels={})
+    monkeypatch.setattr(rmod, "get_mastery", _unreachable)
+    monkeypatch.setattr(report_mod, "save_report",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("stored")))
+    monkeypatch.setattr(report_mod, "maybe_llm", lambda config, task: None)
+
+    result = report_mod.run_report({"user_id": "u1"}, config=get_config())
+    assert result["degraded"] is True and result["persisted"] is False
+
+
+def test_a_failed_save_still_returns_the_report_and_says_so(monkeypatch):
+    from agent.graph import report as report_mod
+
+    def _fails(*a, **k):
+        raise RuntimeError("write failed")
+
+    _patch(monkeypatch, mastery=[], trend={"direction": "insufficient", "count": 0,
+                                           "events": []}, deps=[], labels={})
+    monkeypatch.setattr(report_mod, "save_report", _fails)
+    monkeypatch.setattr(report_mod, "maybe_llm", lambda config, task: None)
+
+    result = report_mod.run_report({"user_id": "u1"}, config=get_config())
+    assert result["persisted"] is False and "report_id" not in result
+
+
+def test_a_parent_report_speaks_to_the_parent_about_their_child(monkeypatch):
+    """The parent scope returned an empty shell, so a parent saw nothing about how
+    their child was doing even though the same evidence served the child's own report."""
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "tq", "score": 0.3, "attempts": 4, "status": "weak"}],
+           trend={"direction": "improving", "count": 6, "events": []},
+           deps=[], labels={"tq": "Quadratics"})
+    writer = _Writer({"claims": [{"text": "Your child is working on Quadratics.",
+                                  "evidence": ["E1"]}]})
+    sg = build_report_sg(config=get_config(), llm=writer)
+    result = sg.invoke({"scope": "parent", "user_id": "u1", "language": "en"})["result"]
+
+    assert result["scope"] == "parent" and result["available"] is True
+    assert result["narrative"] == "Your child is working on Quadratics."
+    assert "parent" in writer.prompts[0].lower()
+
+
+def test_a_class_report_is_narrated_from_the_class_analysis_and_stored(monkeypatch):
+    """The class scope was a shell: a teacher had no written summary of their class."""
+    from agent.graph import report as report_mod
+
+    analysis = {
+        "available": True, "degraded": False,
+        "students": {"total": 3, "with_evidence": 3},
+        "topics": [{"topic_id": "t1", "label": "Fractions", "strong": 1, "developing": 0,
+                    "weak": 2, "unknown": 0, "not_practised": 0, "mean_score": 0.4}],
+        "at_risk": [{"user_id": "s1", "reasons": [{"code": "declining"}]}],
+        "not_started": [], "mistakes": [{"tag_id": "g", "label": "Sign error",
+                                         "occurrences": 5, "students": 2}],
+        "most_missed": [], "activity": []}
+    monkeypatch.setattr(report_mod, "class_analytics", lambda ids, **k: analysis)
+    saved = {}
+    monkeypatch.setattr(report_mod, "save_report",
+                        lambda scope, payload, **k: saved.update(scope=scope, **k)
+                        or {"report_id": "r9", "generated_at": "2026-09-27T08:00:00+00:00"})
+    writer = _Writer({"claims": [
+        {"text": "Two students are struggling with Fractions.", "evidence": ["E1"]},
+        {"text": "Sign errors are common.", "evidence": ["E3"]}]})
+    monkeypatch.setattr(report_mod, "maybe_llm", lambda config, task: writer)
+
+    result = report_mod.run_class_report(
+        {"class_id": "c1", "user_ids": ["s1", "s2", "s3"], "language": "en"},
+        config=get_config())
+
+    assert "E1: Fractions — 2 of 3 students weak" in writer.prompts[0]
+    assert "E2: 1 of 3 students need attention" in writer.prompts[0]
+    assert "E3: Sign error" in writer.prompts[0]
+    assert result["narrative"].startswith("Two students")
+    assert result["analysis"]["topics"][0]["topic_id"] == "t1"
+    assert (saved["scope"], saved["class_id"]) == ("class_analytics", "c1")
+    assert result["report_id"] == "r9" and result["persisted"] is True
+
+
+def test_a_class_report_on_an_unreadable_roster_is_degraded_and_not_stored(monkeypatch):
+    from agent.graph import report as report_mod
+
+    monkeypatch.setattr(report_mod, "class_analytics",
+                        lambda ids, **k: {"available": False, "degraded": True,
+                                          "students": {"total": 2, "with_evidence": 0},
+                                          "topics": [], "at_risk": [], "not_started": [],
+                                          "mistakes": [], "most_missed": [], "activity": []})
+    monkeypatch.setattr(report_mod, "save_report",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("stored")))
+    monkeypatch.setattr(report_mod, "maybe_llm", lambda config, task: None)
+
+    result = report_mod.run_class_report({"class_id": "c1", "user_ids": ["s1", "s2"]},
+                                         config=get_config())
+    assert result["degraded"] is True and result["persisted"] is False

@@ -61,6 +61,45 @@ class StubRuntime:
             "visual_spec": {"kind": "chart", "params": {}},
         }
 
+    async def class_analytics(self, payload):
+        self.calls.append(("class_analytics", payload))
+        return {"available": True, "degraded": False,
+                "students": {"total": 2, "with_evidence": 1},
+                "at_risk": [{"user_id": "s1", "reasons": [{"code": "declining"}]}],
+                "not_started": ["s2"]}
+
+    async def class_report(self, payload):
+        self.calls.append(("class_report", payload))
+        return {"scope": "class_analytics", "available": True,
+                "narrative": "Most of the class is weak on Fractions.",
+                "claims": [], "analysis": {"students": {"total": 2}}, "degraded": False,
+                "report_id": "r5", "persisted": True}
+
+    async def latest_report(self, payload):
+        self.calls.append(("latest_report", payload))
+        if payload.get("user_id") == "nobody" or payload.get("class_id") == "empty":
+            return None
+        return {"report_id": "r1", "generated_at": "2026-09-27T08:00:00+00:00",
+                "payload": {"narrative": "Steady progress."}, "newer_evidence": 2,
+                "stale": True}
+
+    async def learner_summary(self, payload):
+        self.calls.append(("learner_summary", payload))
+        return {"available": True, "degraded": False,
+                "subjects": [{"subject_id": "math", "topics": 4, "strong": 1,
+                              "developing": 0, "weak": 2, "unknown": 0,
+                              "not_practised": 1}],
+                "recommendations": [{"topic_id": "t1", "action": "practise",
+                                     "reasons": [{"code": "low_mastery", "score": 0.3}]}],
+                "trend": {"direction": "flat", "count": 4}}
+
+    async def suggest_topics(self, payload):
+        self.calls.append(("suggest_topics", payload))
+        return {"suggestions": [{"index": 0, "question_id": "q1", "resolved": True,
+                                 "topics": [{"topic_id": "t1", "label": "Fractions",
+                                             "score": 0.8, "lecture_id": "l1"}]}],
+                "degraded": False}
+
     async def render(self, specs, **_):
         self.calls.append(("render", {"specs": specs}))
         return [{"kind": "chart", "s3_uri": "s3://bucket/trend.png"}]
@@ -244,6 +283,100 @@ def test_grade_drops_unset_optional_fields(client):
     client.post("/ai/grade", json=GRADE_BODY, headers=auth())
     _, payload = client.runtime.calls[0]
     assert "correct_answer" not in payload["submissions"][0]
+
+
+def test_the_latest_report_is_served_with_its_freshness(client):
+    response = client.get("/ai/reports/u-1/latest", headers=auth())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["report_id"] == "r1" and body["stale"] is True
+    assert body["report"]["narrative"] == "Steady progress."
+
+
+def test_no_stored_report_is_a_404_not_an_empty_report(client):
+    response = client.get("/ai/reports/nobody/latest", headers=auth())
+    assert response.status_code == 404
+
+
+# --- learners ---------------------------------------------------------------
+
+def test_learner_summary_returns_the_analysis(client):
+    response = client.get("/ai/learners/u-1/summary", headers=auth())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["subjects"][0]["weak"] == 2
+    assert body["recommendations"][0]["reasons"][0]["code"] == "low_mastery"
+
+
+def test_learner_summary_forwards_the_enrolled_subjects_and_current_lessons(client):
+    client.get("/ai/learners/u-1/summary",
+               params={"subject_ids": ["math", "bio"], "lecture_ids": ["l1"]}, headers=auth())
+    assert client.runtime.calls[0] == ("learner_summary", {
+        "user_id": "u-1", "subject_ids": ["math", "bio"], "lecture_ids": ["l1"]})
+
+
+def test_learner_summary_needs_the_service_token(client):
+    assert client.get("/ai/learners/u-1/summary").status_code == 401
+
+
+# --- classes ----------------------------------------------------------------
+
+def test_class_analytics_aggregates_the_roster_it_is_given(client):
+    body = {"user_ids": ["s1", "s2"], "subject_ids": ["math"], "class_id": "c1"}
+    response = client.post("/ai/classes/analytics", json=body, headers=auth())
+    assert response.status_code == 200
+    assert response.json()["at_risk"][0]["reasons"] == [{"code": "declining"}]
+    assert client.runtime.calls[0] == ("class_analytics", body)
+
+
+def test_class_analytics_refuses_an_empty_or_oversized_roster(client):
+    assert client.post("/ai/classes/analytics", json={"user_ids": []},
+                       headers=auth()).status_code == 422
+    assert client.post("/ai/classes/analytics",
+                       json={"user_ids": [f"s{i}" for i in range(501)]},
+                       headers=auth()).status_code == 422
+
+
+def test_a_class_report_is_written_for_the_roster_given(client):
+    body = {"class_id": "c1", "user_ids": ["s1", "s2"], "language": "ar"}
+    response = client.post("/ai/classes/report", json=body, headers=auth())
+    assert response.status_code == 200
+    assert response.json()["report_id"] == "r5"
+    assert client.runtime.calls[0] == ("class_report", body)
+
+
+def test_a_class_report_needs_its_class(client):
+    response = client.post("/ai/classes/report", json={"user_ids": ["s1"]}, headers=auth())
+    assert response.status_code == 422
+
+
+def test_the_latest_class_report_is_served_or_404(client):
+    assert client.get("/ai/classes/c1/report/latest", headers=auth()).status_code == 200
+    assert client.runtime.calls[-1] == ("latest_report", {"class_id": "c1",
+                                                          "scope": "class_analytics"})
+    assert client.get("/ai/classes/empty/report/latest", headers=auth()).status_code == 404
+
+
+def test_a_parent_report_is_asked_for_by_scope(client):
+    client.get("/ai/reports/u-1", params={"scope": "parent"}, headers=auth())
+    assert client.runtime.calls[0][1]["scope"] == "parent"
+
+
+# --- topics -----------------------------------------------------------------
+
+def test_topic_suggestions_come_back_per_question(client):
+    body = {"subject_id": "math", "questions": [{"text": "3/4 + 1/8", "question_id": "q1"}]}
+    response = client.post("/ai/topics/suggest", json=body, headers=auth())
+    assert response.status_code == 200
+    assert response.json()["suggestions"][0]["topics"][0]["topic_id"] == "t1"
+    assert client.runtime.calls[0] == ("suggest_topics", body)
+
+
+def test_topic_suggestions_need_a_subject_and_a_question(client):
+    assert client.post("/ai/topics/suggest", json={"questions": [{"text": "q"}]},
+                       headers=auth()).status_code == 422
+    assert client.post("/ai/topics/suggest", json={"subject_id": "s", "questions": []},
+                       headers=auth()).status_code == 422
 
 
 # --- reports ----------------------------------------------------------------

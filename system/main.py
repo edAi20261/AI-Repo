@@ -22,7 +22,18 @@ from .errors import register_exception_handlers
 from .ingestion_jobs import IngestionJobManager
 from .middleware import RequestContextMiddleware
 from .notifier import build_notifier
-from .routers import chat, grading, health, homework, ingestion, memory, reports
+from .routers import (
+    chat,
+    classes,
+    grading,
+    health,
+    homework,
+    ingestion,
+    learners,
+    memory,
+    reports,
+    topics,
+)
 from .runtime import AgentRuntime
 from .security import (
     assert_stores_configured,
@@ -76,7 +87,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         )
 
     register_exception_handlers(app)
-    for module in (health, chat, grading, homework, reports, ingestion, memory):
+    for module in (health, chat, grading, homework, reports, learners, classes, topics,
+                   ingestion, memory):
         app.include_router(module.router)
     return app
 

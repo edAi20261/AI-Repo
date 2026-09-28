@@ -331,3 +331,74 @@ def test_dispatch_routes_assessment_and_forwards_user_id():
     assert len(sends) == 1
     assert sends[0].node == "assessment_adapter"
     assert sends[0].arg["user_id"] == "u1"
+
+
+def test_a_weak_topic_gets_more_of_the_questions_not_just_the_first(monkeypatch):
+    """Coverage only ordered topics weakest-first and then dealt the questions round
+    robin, so a strong topic got as many questions as a weak one."""
+    monkeypatch.setattr(qmod, "get_mastery", lambda uid, ids: [
+        {"topic_id": "t1", "status": "strong"},
+        {"topic_id": "t2", "status": "weak"}])
+    out = _plan_coverage({"topic_ids": ["t1", "t2"], "type_mix": {"mcq": 4},
+                          "adaptive": True, "user_id": "u1"})
+    topics = [slot["topic_id"] for slot in out["coverage"]]
+    assert topics.count("t2") == 3 and topics.count("t1") == 1
+    assert topics[0] == "t2"
+
+
+def test_every_asked_for_topic_keeps_at_least_one_question(monkeypatch):
+    monkeypatch.setattr(qmod, "get_mastery", lambda uid, ids: [
+        {"topic_id": "a", "status": "weak"}, {"topic_id": "b", "status": "strong"},
+        {"topic_id": "c", "status": "strong"}])
+    out = _plan_coverage({"topic_ids": ["a", "b", "c"], "type_mix": {"mcq": 5},
+                          "adaptive": True, "user_id": "u1"})
+    topics = [slot["topic_id"] for slot in out["coverage"]]
+    assert set(topics) == {"a", "b", "c"} and topics.count("a") == 3
+
+
+def test_a_quiz_that_names_no_topic_practises_the_students_weak_spots(monkeypatch):
+    """"Give me a practice quiz" resolved no topic, so the questions came from whatever
+    the words happened to retrieve instead of what the student needs."""
+    from agent.graph.subgraphs.assessment_sg import _resolve
+
+    monkeypatch.setattr(qmod, "resolve_topics", lambda *a, **k: [])
+    seen = {}
+    monkeypatch.setattr(qmod, "get_mastery", lambda uid, *a, **k: seen.update(k) or [
+        {"topic_id": "s", "status": "strong", "score": 0.9},
+        {"topic_id": "d", "status": "developing", "score": 0.6},
+        {"topic_id": "w", "status": "weak", "score": 0.2},
+        {"topic_id": "u", "status": "unknown", "score": 0.1}])
+    out = _resolve({"query": "practise my weak spots", "subject_id": "math",
+                    "adaptive": True, "user_id": "u1", "focus": "weak"})
+    assert out["topic_ids"] == ["w", "u", "d"]
+    assert seen["subject_id"] == "math"
+
+
+def test_with_no_evidence_a_topicless_quiz_is_left_to_retrieval(monkeypatch):
+    from agent.graph.subgraphs.assessment_sg import _resolve
+
+    monkeypatch.setattr(qmod, "resolve_topics", lambda *a, **k: [])
+    monkeypatch.setattr(qmod, "get_mastery", lambda uid, *a, **k: [])
+    out = _resolve({"query": "quiz me", "subject_id": "math", "adaptive": True,
+                    "user_id": "teacher-1", "focus": "weak"})
+    assert out["topic_ids"] == []
+
+
+def test_an_off_syllabus_quiz_request_is_not_turned_into_weak_spot_practice(monkeypatch):
+    """Nothing resolving is also what an off-syllabus request looks like; only a student
+    who asked for their weak spots gets them, the rest still decline on retrieval."""
+    from agent.graph.subgraphs.assessment_sg import _resolve
+
+    monkeypatch.setattr(qmod, "resolve_topics", lambda *a, **k: [])
+    monkeypatch.setattr(qmod, "get_mastery", lambda uid, *a, **k: [
+        {"topic_id": "w", "status": "weak", "score": 0.2}])
+    out = _resolve({"query": "quiz me on the French Revolution", "subject_id": "math",
+                    "adaptive": True, "user_id": "u1"})
+    assert out["topic_ids"] == []
+
+
+def test_the_planner_can_ask_for_weak_spot_practice():
+    from agent.graph.nodes import _validate_assessment_spec
+
+    assert _validate_assessment_spec({"focus": "weak"}).focus == "weak"
+    assert _validate_assessment_spec({"focus": "everything"}) is None
