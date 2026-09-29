@@ -1,0 +1,46 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python scripts/verify.py)",
+      "Bash(.venv/bin/python scripts/verify.py)",
+      "Bash(python -m pytest *)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(python -m ruff check *)",
+      "Bash(.venv/bin/python -m ruff check *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/sdlc_guard.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "developer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/sdlc_guard.py\"",
+            "timeout": 900
+          }
+        ]
+      }
+    ]
+  }
+}

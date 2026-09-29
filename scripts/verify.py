@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-LINT_PATHS = ["agent", "shared", "system", "ingestion", "scripts", "tests"]
+LINT_PATHS = ["agent", "shared", "system", "ingestion", "scripts", "tests", ".claude/hooks"]
 
 # Forced, not defaulted. shared/config.py loads .env without overriding what is
 # already set, and the .env on an engineer's machine points DATABASE_URL and
