@@ -7,13 +7,13 @@ import logging
 from fastapi import APIRouter
 
 from ..dependencies import Authenticated, RequestId, RuntimeDep
-from ..schemas.common import ERROR_RESPONSES
+from ..schemas.common import PAID_RESPONSES
 from ..schemas.grading import GradeRequest, GradeResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/ai", tags=["grading"], dependencies=[Authenticated], responses=ERROR_RESPONSES
+    prefix="/ai", tags=["grading"], dependencies=[Authenticated], responses=PAID_RESPONSES
 )
 
 
@@ -24,5 +24,5 @@ async def grade(payload: GradeRequest, runtime: RuntimeDep, request_id: RequestI
         extra={"items": len(payload.submissions), "kind": payload.kind,
                "has_assessment": payload.assessment_id is not None},
     )
-    result = await runtime.grade(payload.to_payload())
-    return GradeResponse.from_result(result, request_id)
+    graded = await runtime.grade(payload.to_payload(), billed_user_id=payload.billed_user_id)
+    return GradeResponse.from_result(graded.result, request_id, graded.meter)

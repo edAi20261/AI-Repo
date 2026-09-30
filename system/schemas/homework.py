@@ -11,8 +11,9 @@ from typing import Optional
 from pydantic import Field
 
 from agent.homework import CapturedQuestion, HomeworkCapture
+from shared.metering import Meter
 
-from .common import Language, Schema
+from .common import Language, Schema, Usage
 
 
 class CaptureResponse(Schema):
@@ -26,10 +27,13 @@ class CaptureResponse(Schema):
                      "an empty question list means the page had none."),
     )
 
+    usage: Usage
+
     @classmethod
-    def from_capture(cls, capture: HomeworkCapture, request_id: str) -> CaptureResponse:
+    def from_capture(cls, capture: HomeworkCapture, request_id: str,
+                     meter: Meter) -> CaptureResponse:
         return cls(request_id=request_id, questions=capture.questions,
-                   unreadable=capture.unreadable)
+                   unreadable=capture.unreadable, usage=Usage.from_meter(meter))
 
 
 class CaptureQuery(Schema):

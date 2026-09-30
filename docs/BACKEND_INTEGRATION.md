@@ -59,13 +59,19 @@ of being silently ignored.
   "visuals":       [{ "kind": "chart", "s3_uri": "s3://..." }],
   "assessment":    {},
   "grade_result":  {},
-  "prereq_topics": [{ "label": "Oxygen", "strength": "required", "depth": 1 }]
+  "prereq_topics": [{ "label": "Oxygen", "strength": "required", "depth": 1 }],
+  "usage":         { "cost_usd": 0.0042, "prompt_tokens": 3100, "completion_tokens": 450, "calls": 2 }
 }
 ```
 
 For a normal turn, pass `response` and `visuals` through to the frontend. The
 rest is populated only when the planner produced it — `assessment` when the
 student asked for a quiz, `grade_result` when it graded something.
+
+`usage` is always present: what the model gateway billed for every call the
+turn made, retries included. It is for metering, never for the student — store
+it beside the credit charge so the price table can be checked against the bill.
+The streamed `result` event carries it too.
 
 **Set the timeout to at least 120s.** A turn makes about three model calls. The
 10s you use for the ingestion trigger will cut off every real answer.
@@ -85,6 +91,7 @@ the UI to show activity; the plain endpoint is simpler to start with.
 ```json
 {
   "user_id": "uuid",
+  "billed_user_id": "uuid",
   "submissions": [
     { "question": "...", "student_answer": "...", "correct_answer": "...",
       "topic_id": "uuid", "difficulty": "easy | medium | hard" }
@@ -153,7 +160,8 @@ Returns, with no model call:
 ### Progress note — `GET /ai/reports/{user_id}` and `.../latest`
 
 `GET /ai/reports/{user_id}` builds a note (one model call) and stores it. Query:
-`subject_id`, `lecture_ids`, `language`, and `scope` = `student_progress`
+`billed_user_id` (required: the student, or the parent asking), `subject_id`,
+`lecture_ids`, `language`, and `scope` = `student_progress`
 (to the student) or `parent` (to their parent). Returns `narrative`, `claims[]`
 (each sentence with the evidence it cites), `weak_topics[]`, `strengths[]`,
 `root_cause`, `trend`, `visual`, `report_id`, `persisted`.
@@ -179,8 +187,8 @@ with your question text), `activity[]`, and:
 - `groups[]` — students weak on the same topic (two or more), largest first, with
   the topic and lesson to target.
 
-`POST /ai/classes/report` with the same body plus a required `class_id` and an
-optional `language` writes and stores a summary for the teacher; it never names a
+`POST /ai/classes/report` with the same body plus a required `class_id`, a
+required `billed_user_id` (the teacher) and an optional `language` writes and stores a summary for the teacher; it never names a
 student. `GET /ai/classes/{class_id}/report/latest` serves the stored one.
 
 ### Question tagging — `POST /ai/topics/suggest`
@@ -217,6 +225,70 @@ mostly-good lesson offline. Worth deciding whether you want the extra value.
 
 ---
 
+## 5. Credits
+
+Every call that pays a model is charged to one account before any model runs,
+and refunded if the call fails, times out, or comes back degraded (a grade that
+fell back to string matching, an unreadable homework photo).
+
+| Call | Charged to | Price (`config.yaml`, `credits.prices`) |
+|---|---|---|
+| `POST /ai/chat`, `/ai/chat/stream` | `user_id` | 1 per message |
+| `POST /ai/grade` | `billed_user_id` | 1 per 10 answers |
+| `GET /ai/reports/{user_id}` | `billed_user_id` | 1 |
+| `POST /ai/classes/report` | `billed_user_id` | 2 |
+| `POST /ai/homework/capture` | `billed_user_id` (query) | 1 |
+
+`billed_user_id` is required on those four; send the account of whoever asked.
+Paid responses carry `usage` (what the model gateway billed), the same object as
+chat's.
+
+When the account cannot cover the call, nothing runs and the answer is `402`:
+
+```json
+{ "error": { "code": "insufficient_credits", "message": "...",
+             "details": { "required": 1, "balance": 0, "renews_at": "2026-10-29T10:00:00+00:00" } } }
+```
+
+`/ai/chat/stream` refuses with a real `402` before the stream opens, never as an
+SSE error event.
+
+Each user has a wallet: a monthly allowance from their plan, spent first and
+reset when the period ends, plus extra credits from grants, which never expire.
+A user seen for the first time gets the default plan. Plans live in
+`credits.plans`.
+
+| Endpoint | Does |
+|---|---|
+| `GET /ai/credits/plans` | plans, the default plan, and the price of every action |
+| `GET /ai/credits/{user_id}` | `balance`, `allowance {remaining, total}`, `extra`, `plan`, `renews_at` |
+| `GET /ai/credits/{user_id}/ledger?page=&page_size=` | every change, newest first; `reference_id` is the `request_id` that caused it |
+| `POST /ai/credits/{user_id}/grants` | `{ "amount": 100, "granted_by": "uuid", "note": "..." }` |
+| `PUT /ai/credits/{user_id}/plan` | `{ "plan": "basic", "changed_by": "uuid" }`; the allowance restarts at the new plan |
+
+**Credits are off** (`credits.enabled: false`): nothing is charged and the
+credits endpoints answer `503`. They go on once these two tables exist, which
+belong in your Prisma schema like every other `ai.*` table:
+
+`ai.credit_wallets` — one row per user
+`user_id uuid PK → identity.users`, `plan varchar(50)`, `allowance int CHECK >= 0`,
+`extra int CHECK >= 0`, `period_started_at timestamptz`, `period_ends_at timestamptz`,
+`updated_at timestamptz default now()`.
+
+`ai.credit_ledger` — append-only
+`id uuid PK default gen_random_uuid()`, `user_id uuid → identity.users`,
+`kind varchar(30)` (`allowance_renewal | grant | usage | refund`), `action varchar(50)`,
+`allowance_delta int`, `extra_delta int`, `balance_after int`,
+`reverses_id uuid UNIQUE → ai.credit_ledger` (one refund per charge),
+`reference_id varchar(64)`, `actor_id uuid`, `note varchar(500)`,
+`cost_usd numeric(12,6)`, `created_at timestamptz default now()`,
+index `(user_id, created_at DESC)`.
+
+If this service cannot reach them while credits are on, paid calls answer `503`
+rather than run free.
+
+---
+
 ## Errors
 
 Every failure returns the same envelope:
@@ -230,6 +302,7 @@ Every failure returns the same envelope:
 | `401` | `unauthorized` | missing or wrong `x-service-token` |
 | `403` | `forbidden` | that role may not do that task |
 | `404` | `not_found` | unknown job |
+| `402` | `insufficient_credits` | the paying account cannot cover the call; see Credits |
 | `409` | `conflict` | that lecture is already being ingested |
 | `422` | `validation_error` | bad body; `details.fields` names them |
 | `504` | `timeout` | the turn exceeded the service's own limit |

@@ -6,7 +6,9 @@ from typing import Any, Optional
 
 from pydantic import Field
 
-from .common import Schema, Visual
+from shared.metering import Meter
+
+from .common import Schema, Usage, Visual
 
 
 class ReportResponse(Schema):
@@ -26,11 +28,12 @@ class ReportResponse(Schema):
     report_id: Optional[str] = None
     generated_at: Optional[str] = None
     persisted: bool = Field(default=False, description="Whether this report was stored.")
+    usage: Usage
 
     @classmethod
-    def from_result(cls, result: dict[str, Any], request_id: str) -> ReportResponse:
+    def from_result(cls, result: dict[str, Any], request_id: str, meter: Meter) -> ReportResponse:
         known = {k: v for k, v in result.items() if k in cls.model_fields}
-        return cls(request_id=request_id, **known)
+        return cls(request_id=request_id, usage=Usage.from_meter(meter), **known)
 
 
 class StoredReportResponse(Schema):

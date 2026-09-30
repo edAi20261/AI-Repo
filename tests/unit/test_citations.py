@@ -233,6 +233,7 @@ def test_a_refusal_publishes_nothing(mode):
 def test_the_api_publishes_the_sources_the_reply_cites():
     """A client renders the [n] markers as badges, so the structured list must be
     the renumbered one compose produced — not the subgraphs' local numbering."""
+    from shared.metering import Meter
     from system.schemas.chat import ChatResponse
 
     state = {
@@ -241,16 +242,17 @@ def test_the_api_publishes_the_sources_the_reply_cites():
         "published_citations": [_cite(1, "lecA"), _cite(2, "lecB")],
         "citations": [_cite(1, "lecA"), _cite(1, "lecB")],  # pre-renumbering, collides
     }
-    payload = ChatResponse.from_state(state, "req-1")
+    payload = ChatResponse.from_state(state, "req-1", Meter())
     assert [c.n for c in payload.citations] == [1, 2]
     assert [c.lecture_id for c in payload.citations] == ["lecA", "lecB"]
     assert set(cited_numbers(payload.response)) == {c.n for c in payload.citations}
 
 
 def test_a_turn_with_no_sources_returns_an_empty_list_not_an_error():
+    from shared.metering import Meter
     from system.schemas.chat import ChatResponse
 
-    payload = ChatResponse.from_state({"response": "Hello!", "language": "en"}, "req-2")
+    payload = ChatResponse.from_state({"response": "Hello!", "language": "en"}, "req-2", Meter())
     assert payload.citations == []
 
 

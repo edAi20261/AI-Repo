@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from agent.tools import AuthorizationError
 from shared.errors import (
     ConflictError,
+    InsufficientCreditsError,
     NotFoundError,
     ServiceError,
     ServiceUnavailableError,
@@ -33,6 +34,7 @@ from .context import get_request_id
 
 __all__ = [
     "ConflictError",
+    "InsufficientCreditsError",
     "NotFoundError",
     "ServiceError",
     "ServiceUnavailableError",

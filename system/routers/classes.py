@@ -15,7 +15,7 @@ from ..schemas.classes import (
     ClassReportResponse,
 )
 from ..schemas.reports import StoredReportResponse
-from ..schemas.common import ERROR_RESPONSES
+from ..schemas.common import ERROR_RESPONSES, PAID_RESPONSES
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +44,14 @@ async def analyse_class(
     "/classes/report",
     response_model=ClassReportResponse,
     summary="Write and store a teacher's summary of a class",
+    responses=PAID_RESPONSES,
 )
 async def class_report(
     payload: ClassReportRequest, runtime: RuntimeDep, request_id: RequestId
 ) -> ClassReportResponse:
-    result = await runtime.class_report(payload.to_payload())
-    return ClassReportResponse.from_result(result, request_id)
+    written = await runtime.class_report(payload.to_payload(),
+                                         billed_user_id=payload.billed_user_id)
+    return ClassReportResponse.from_result(written.result, request_id, written.meter)
 
 
 @router.get(
