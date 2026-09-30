@@ -12,7 +12,8 @@ No-op by default: if nothing called :func:`start_meter` for the current context,
 from __future__ import annotations
 
 import contextvars
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 
 _METER: contextvars.ContextVar["Meter | None"] = contextvars.ContextVar(
     "llm_meter", default=None)
@@ -24,12 +25,14 @@ class Meter:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     calls: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def record(self, cost_usd: float, prompt_tokens: int, completion_tokens: int) -> None:
-        self.cost_usd += cost_usd or 0.0
-        self.prompt_tokens += prompt_tokens or 0
-        self.completion_tokens += completion_tokens or 0
-        self.calls += 1
+        with self._lock:
+            self.cost_usd += cost_usd or 0.0
+            self.prompt_tokens += prompt_tokens or 0
+            self.completion_tokens += completion_tokens or 0
+            self.calls += 1
 
     def as_dict(self) -> dict:
         return {

@@ -18,6 +18,7 @@ from shared.config import Config, get_config
 from shared.embeddings import warm_embedder
 from shared.logging import setup_logging
 
+from .billing import Billing
 from .errors import register_exception_handlers
 from .ingestion_jobs import IngestionJobManager
 from .middleware import RequestContextMiddleware
@@ -25,6 +26,7 @@ from .notifier import build_notifier
 from .routers import (
     chat,
     classes,
+    credits,
     grading,
     health,
     homework,
@@ -88,7 +90,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     register_exception_handlers(app)
     for module in (health, chat, grading, homework, reports, learners, classes, topics,
-                   ingestion, memory):
+                   ingestion, memory, credits):
         app.include_router(module.router)
     return app
 
@@ -98,8 +100,10 @@ async def _lifespan(app: FastAPI):
     config: Config = app.state.config
     settings: Settings = app.state.settings
 
+    app.state.billing = Billing.from_config(config)
     app.state.runtime = AgentRuntime.build(
         config,
+        billing=app.state.billing,
         max_concurrency=settings.max_concurrency,
         timeout=settings.request_timeout,
     )

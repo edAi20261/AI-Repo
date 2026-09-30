@@ -6,7 +6,9 @@ from typing import Any, Optional
 
 from pydantic import Field
 
-from .common import Language, Schema
+from shared.metering import Meter
+
+from .common import Language, Schema, Usage
 
 
 class ClassAnalyticsRequest(Schema):
@@ -49,6 +51,10 @@ class ClassAnalyticsResponse(Schema):
 class ClassReportRequest(ClassAnalyticsRequest):
     class_id: str = Field(description="The class the report is stored under.")
     language: Optional[Language] = None
+    billed_user_id: str = Field(description="The account the credits are taken from.")
+
+    def to_payload(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True, exclude={"billed_user_id"})
 
 
 class ClassReportResponse(Schema):
@@ -62,9 +68,11 @@ class ClassReportResponse(Schema):
     report_id: Optional[str] = None
     generated_at: Optional[str] = None
     persisted: bool = False
+    usage: Usage
 
     @classmethod
-    def from_result(cls, result: dict[str, Any], request_id: str) -> ClassReportResponse:
+    def from_result(cls, result: dict[str, Any], request_id: str,
+                    meter: Meter) -> ClassReportResponse:
         known = {k: v for k, v in result.items() if k in cls.model_fields}
-        return cls(request_id=request_id, **known)
+        return cls(request_id=request_id, usage=Usage.from_meter(meter), **known)
 

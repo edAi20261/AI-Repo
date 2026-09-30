@@ -7,8 +7,9 @@ from typing import Any, Optional
 from pydantic import Field
 
 from agent.scope import StudyScope
+from shared.metering import Meter
 
-from .common import GradeReference, Language, Pathway, Schema, Visual
+from .common import GradeReference, Language, Pathway, Schema, Usage, Visual
 
 
 class ChatRequest(Schema):
@@ -109,11 +110,13 @@ class ChatResponse(Schema):
         default_factory=list,
         description="Sources the reply cites, numbered to match its [n] markers.",
     )
+    usage: Usage
 
     @classmethod
-    def from_state(cls, state: dict[str, Any], request_id: str) -> ChatResponse:
+    def from_state(cls, state: dict[str, Any], request_id: str, meter: Meter) -> ChatResponse:
         return cls(
             request_id=request_id,
+            usage=Usage.from_meter(meter),
             response=state.get("response", ""),
             language=state.get("language", "en"),
             pathway=state.get("pathway"),

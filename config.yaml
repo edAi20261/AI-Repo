@@ -571,6 +571,31 @@ logging:
   file_max_bytes: 10000000
 
 # Overlays merged over the base, selected by APP_ENV.
+credits:
+  # Off until the backend's Prisma migrations create ai.credit_wallets and
+  # ai.credit_ledger (docs/BACKEND_INTEGRATION.md, "Credits"). Enabled against a
+  # database without them, every paid request is refused with 503.
+  enabled: false
+  store: postgres              # postgres | memory
+  connect_timeout_seconds: 2
+  statement_timeout_ms: 1000
+  default_plan: free
+  plans:
+    free:  { monthly_credits: 50 }
+    basic: { monthly_credits: 500 }
+    pro:   { monthly_credits: 2000 }
+  # One credit is sized to the dearest ordinary chat turn. Estimated on
+  # 2026-09-29 from token counts and OpenRouter prices (gemini-2.5-flash $0.30/M
+  # in, $2.50/M out), not measured: a chat turn $0.004-0.011, a grading batch of
+  # ten answers about one explain turn. Every usage entry stores what OpenRouter
+  # billed (cost_usd), which is the evidence these must be re-set from.
+  prices:
+    chat_message:     { credits: 1, per: 1 }
+    grade_answers:    { credits: 1, per: 10 }
+    student_report:   { credits: 1, per: 1 }
+    class_report:     { credits: 2, per: 1 }
+    homework_capture: { credits: 1, per: 1 }
+
 environments:
   local:
     logging: { level: DEBUG, format: console }
@@ -578,6 +603,7 @@ environments:
     # Local talks to the real backend when BACKEND_API_BASE_URL is set. For offline
     # work, point fixtures_path at a manifest and flip prefer_fixtures.
     agent: { backend: { fixtures_path: null, prefer_fixtures: false } }
+    credits: { store: memory }
 
 
   production:

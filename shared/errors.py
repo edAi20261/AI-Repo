@@ -46,6 +46,11 @@ class NotFoundError(ServiceError):
     code = "not_found"
 
 
+class InsufficientCreditsError(ServiceError):
+    status_code = 402
+    code = "insufficient_credits"
+
+
 class ConflictError(ServiceError):
     status_code = 409
     code = "conflict"
