@@ -11,6 +11,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
+from .billing import Billing
 from .context import get_request_id
 from .errors import ServiceUnavailableError
 from .ingestion_jobs import IngestionJobManager
@@ -30,6 +31,13 @@ def get_runtime(request: Request) -> AgentRuntime:
     return runtime
 
 
+def get_billing(request: Request) -> Billing:
+    billing = getattr(request.app.state, "billing", None)
+    if billing is None:
+        raise ServiceUnavailableError("Billing is not available.")
+    return billing
+
+
 def get_jobs(request: Request) -> IngestionJobManager:
     jobs = getattr(request.app.state, "jobs", None)
     if jobs is None:
@@ -43,6 +51,7 @@ def request_id() -> str:
 
 Authenticated = Depends(verify_service_token)
 RuntimeDep = Annotated[AgentRuntime, Depends(get_runtime)]
+BillingDep = Annotated[Billing, Depends(get_billing)]
 JobsDep = Annotated[IngestionJobManager, Depends(get_jobs)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 RequestId = Annotated[str, Depends(request_id)]

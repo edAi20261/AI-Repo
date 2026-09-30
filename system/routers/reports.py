@@ -8,7 +8,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Query
 
 from ..dependencies import Authenticated, RequestId, RuntimeDep
-from ..schemas.common import ERROR_RESPONSES, Language, Visual
+from ..schemas.common import ERROR_RESPONSES, PAID_RESPONSES, Language, Visual
 from ..errors import NotFoundError
 from ..schemas.reports import ReportResponse, StoredReportResponse
 
@@ -46,11 +46,14 @@ async def latest_report(
     "/reports/{user_id}",
     response_model=ReportResponse,
     summary="Build a student's progress report",
+    responses=PAID_RESPONSES,
 )
 async def student_report(
     user_id: str,
     runtime: RuntimeDep,
     request_id: RequestId,
+    billed_user_id: str = Query(
+        description="The account the credits are taken from: the student, or the parent."),
     subject_id: Optional[str] = Query(default=None, description="Scopes the report to one subject."),
     lecture_ids: Optional[list[str]] = Query(default=None, description="Scopes it to specific lessons."),
     language: Optional[Language] = Query(default=None),
@@ -58,16 +61,17 @@ async def student_report(
         default="student_progress",
         description="`parent` writes the same evidence as a note to the student's parent."),
 ) -> ReportResponse:
-    result = await runtime.report({
+    built = await runtime.report({
         "user_id": user_id,
         "scope": scope,
         "subject_id": subject_id,
         "lecture_ids": lecture_ids,
         "language": language,
-    })
+    }, billed_user_id=billed_user_id)
 
+    result = built.result
     spec = result.pop("visual_spec", None)
-    response = ReportResponse.from_result(result, request_id)
+    response = ReportResponse.from_result(result, request_id, built.meter)
     if spec:
         response.visual = await _render_trend_chart(
             runtime, spec, user_id=user_id, subject_id=subject_id,

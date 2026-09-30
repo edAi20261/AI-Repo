@@ -11,7 +11,9 @@ from typing import Any, Literal, Optional
 
 from pydantic import Field, model_validator
 
-from .common import Language, Schema
+from shared.metering import Meter
+
+from .common import Language, Schema, Usage
 
 QuestionType = Literal["mcq", "true_false", "short_answer", "essay"]
 Difficulty = Literal["easy", "medium", "hard"]
@@ -39,6 +41,7 @@ class Submission(Schema):
 
 class GradeRequest(Schema):
     user_id: str = Field(description="Whose mastery this grading moves.")
+    billed_user_id: str = Field(description="The account the credits are taken from.")
     submissions: list[Submission] = Field(min_length=1, max_length=200)
     subject_id: Optional[str] = None
     lecture_ids: Optional[list[str]] = None
@@ -56,7 +59,7 @@ class GradeRequest(Schema):
         return self
 
     def to_payload(self) -> dict[str, Any]:
-        payload = self.model_dump(exclude_none=True)
+        payload = self.model_dump(exclude_none=True, exclude={"billed_user_id"})
         payload["submissions"] = [s.model_dump(exclude_none=True) for s in self.submissions]
         return payload
 
@@ -76,6 +79,9 @@ class GradeResponse(Schema):
         default=False, description="True when the model failed and output is a safe fallback."
     )
 
+    usage: Usage
+
     @classmethod
-    def from_result(cls, result: dict[str, Any], request_id: str) -> GradeResponse:
-        return cls(request_id=request_id, **{k: v for k, v in result.items() if k in cls.model_fields})
+    def from_result(cls, result: dict[str, Any], request_id: str, meter: Meter) -> GradeResponse:
+        known = {k: v for k, v in result.items() if k in cls.model_fields}
+        return cls(request_id=request_id, usage=Usage.from_meter(meter), **known)

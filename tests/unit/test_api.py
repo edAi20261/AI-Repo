@@ -13,9 +13,13 @@ import anyio
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.homework import HomeworkCapture
 from shared.config import get_config
+from shared.metering import Meter, record_usage
 from system.errors import ConflictError, NotFoundError, UpstreamTimeoutError
 from system.main import create_app
+from system.billing import Billing
+from system.runtime import Metered
 from system.settings import Settings
 
 TOKEN = "test-service-token"
@@ -24,33 +28,41 @@ TOKEN = "test-service-token"
 class StubRuntime:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.billed: list[str] = []
         self.in_flight = 0
+        self.config = get_config()
+        self.homework = HomeworkCapture()
 
     async def chat(self, payload):
         self.calls.append(("chat", payload))
-        return {
+        meter = Meter()
+        meter.record(0.003, 2000, 300)
+        meter.record(0.0012, 1100, 150)
+        return Metered({
             "response": "Combustion needs fuel, oxygen and heat [1].",
             "language": "en",
             "pathway": "student",
             "tasks": [{"type": "explain"}],
             "visuals": [{"kind": "chart", "s3_uri": "s3://bucket/chart.png"}],
             "prereq_topics": [{"topic_id": "t1", "label": "Oxygen", "strength": "required", "depth": 1}],
-        }
+        }, meter)
 
-    async def grade(self, payload):
+    async def grade(self, payload, *, billed_user_id):
         self.calls.append(("grade", payload))
-        return {
+        self.billed.append(billed_user_id)
+        return Metered({
             "graded": [{"correct": True, "partial_score": 1.0}],
             "summary": {"score": 1.0},
             "mastery_events": 1,
             "topics_updated": 1,
             "source": "practice",
             "degraded": False,
-        }
+        }, Meter())
 
-    async def report(self, payload):
+    async def report(self, payload, *, billed_user_id):
         self.calls.append(("report", payload))
-        return {
+        self.billed.append(billed_user_id)
+        return Metered({
             "scope": "student_progress",
             "available": True,
             "narrative": "Steady progress.",
@@ -59,7 +71,12 @@ class StubRuntime:
             "trend": {"direction": "up", "count": 6},
             "degraded": False,
             "visual_spec": {"kind": "chart", "params": {}},
-        }
+        }, Meter())
+
+    async def capture_homework(self, content, *, language, billed_user_id):
+        self.calls.append(("capture_homework", {"bytes": len(content), "language": language}))
+        self.billed.append(billed_user_id)
+        return Metered(self.homework, Meter())
 
     async def class_analytics(self, payload):
         self.calls.append(("class_analytics", payload))
@@ -68,12 +85,13 @@ class StubRuntime:
                 "at_risk": [{"user_id": "s1", "reasons": [{"code": "declining"}]}],
                 "not_started": ["s2"]}
 
-    async def class_report(self, payload):
+    async def class_report(self, payload, *, billed_user_id):
         self.calls.append(("class_report", payload))
-        return {"scope": "class_analytics", "available": True,
-                "narrative": "Most of the class is weak on Fractions.",
-                "claims": [], "analysis": {"students": {"total": 2}}, "degraded": False,
-                "report_id": "r5", "persisted": True}
+        self.billed.append(billed_user_id)
+        return Metered({"scope": "class_analytics", "available": True,
+                        "narrative": "Most of the class is weak on Fractions.",
+                        "claims": [], "analysis": {"students": {"total": 2}},
+                        "degraded": False, "report_id": "r5", "persisted": True}, Meter())
 
     async def latest_report(self, payload):
         self.calls.append(("latest_report", payload))
@@ -160,6 +178,7 @@ def client(monkeypatch):
     async def _stub_lifespan(scoped_app):
         scoped_app.state.runtime = runtime
         scoped_app.state.jobs = jobs
+        scoped_app.state.billing = Billing(None)
         yield
 
     app.router.lifespan_context = _stub_lifespan
@@ -209,6 +228,15 @@ def test_chat_returns_composed_answer(client):
     assert body["request_id"]
 
 
+def test_chat_reports_what_the_turn_cost(client):
+    """The backend charges credits per message and records beside each charge what
+    the message really cost. Without the cost in the response it can only guess,
+    and a price table that has drifted from the bill is invisible until the invoice."""
+    body = client.post("/ai/chat", json=CHAT_BODY, headers=auth()).json()
+    assert body["usage"] == {"cost_usd": 0.0042, "prompt_tokens": 3100,
+                             "completion_tokens": 450, "calls": 2}
+
+
 def test_chat_passes_only_supplied_fields_to_the_graph(client):
     client.post("/ai/chat", json=CHAT_BODY, headers=auth())
     _, payload = client.runtime.calls[0]
@@ -254,6 +282,7 @@ def test_request_id_is_echoed_when_supplied(client):
 
 GRADE_BODY = {
     "user_id": "u-1",
+    "billed_user_id": "t-1",
     "submissions": [{"question": "What is 2+2?", "student_answer": "4"}],
 }
 
@@ -269,7 +298,7 @@ def test_grade_returns_the_result(client):
 
 
 def test_grade_requires_at_least_one_submission(client):
-    response = client.post("/ai/grade", json={"user_id": "u-1", "submissions": []}, headers=auth())
+    response = client.post("/ai/grade", json={"user_id": "u-1", "billed_user_id": "t-1", "submissions": []}, headers=auth())
     assert response.status_code == 422
 
 
@@ -339,14 +368,17 @@ def test_class_analytics_refuses_an_empty_or_oversized_roster(client):
 
 def test_a_class_report_is_written_for_the_roster_given(client):
     body = {"class_id": "c1", "user_ids": ["s1", "s2"], "language": "ar"}
-    response = client.post("/ai/classes/report", json=body, headers=auth())
+    response = client.post("/ai/classes/report", json={**body, "billed_user_id": "t-1"},
+                           headers=auth())
     assert response.status_code == 200
     assert response.json()["report_id"] == "r5"
     assert client.runtime.calls[0] == ("class_report", body)
+    assert client.runtime.billed == ["t-1"]
 
 
 def test_a_class_report_needs_its_class(client):
-    response = client.post("/ai/classes/report", json={"user_ids": ["s1"]}, headers=auth())
+    response = client.post("/ai/classes/report", json={"user_ids": ["s1"], "billed_user_id": "t-1"},
+                           headers=auth())
     assert response.status_code == 422
 
 
@@ -358,7 +390,8 @@ def test_the_latest_class_report_is_served_or_404(client):
 
 
 def test_a_parent_report_is_asked_for_by_scope(client):
-    client.get("/ai/reports/u-1", params={"scope": "parent"}, headers=auth())
+    client.get("/ai/reports/u-1", params={"scope": "parent", "billed_user_id": "p-1"},
+               headers=auth())
     assert client.runtime.calls[0][1]["scope"] == "parent"
 
 
@@ -382,7 +415,7 @@ def test_topic_suggestions_need_a_subject_and_a_question(client):
 # --- reports ----------------------------------------------------------------
 
 def test_report_renders_its_trend_chart(client):
-    response = client.get("/ai/reports/u-1", headers=auth())
+    response = client.get("/ai/reports/u-1", params={"billed_user_id": "u-1"}, headers=auth())
     assert response.status_code == 200
 
     body = response.json()
@@ -392,7 +425,8 @@ def test_report_renders_its_trend_chart(client):
 
 
 def test_report_forwards_the_subject_scope(client):
-    client.get("/ai/reports/u-1", params={"subject_id": "sub-9"}, headers=auth())
+    client.get("/ai/reports/u-1", params={"subject_id": "sub-9", "billed_user_id": "u-1"},
+               headers=auth())
     _, payload = client.runtime.calls[0]
     assert payload["subject_id"] == "sub-9"
 
@@ -477,12 +511,12 @@ def test_a_turn_past_the_timeout_is_abandoned(monkeypatch):
     from system.runtime import AgentRuntime
 
     runtime = AgentRuntime(
-        get_config(reload=True), _SlowGraph(), None, max_concurrency=2, timeout=0.2
+        get_config(reload=True), _SlowGraph(), None, billing=Billing(None), max_concurrency=2, timeout=0.2
     )
 
     async def run():
         with pytest.raises(UpstreamTimeoutError):
-            await runtime.chat({"message": "hi"})
+            await runtime.chat({"user_id": "u-1", "message": "hi"})
 
     anyio.run(run)
 
@@ -505,17 +539,66 @@ def test_a_streamed_turn_reaches_the_student(monkeypatch):
     from system.runtime import AgentRuntime
 
     runtime = AgentRuntime(
-        get_config(reload=True), _StreamingGraph(), None, max_concurrency=2, timeout=5
+        get_config(reload=True), _StreamingGraph(), None, billing=Billing(None), max_concurrency=2, timeout=5
     )
 
     async def run():
-        return [pair async for pair in runtime.stream_chat({"message": "hi"})]
+        updates = await runtime.stream_chat({"user_id": "u-1", "message": "hi"})
+        return [pair async for pair in updates]
 
     updates = anyio.run(run)
     assert [stage for stage, _ in updates] == ["plan", "compose", "__final__"]
     # The final payload is the accumulation of every node's update, not the last one.
-    assert updates[-1][1] == {
+    assert updates[-1][1].result == {
         "tasks": ["explain"], "response": "Jabir ibn Hayyan was a chemist."}
+
+
+class _BilledGraph:
+    """Records usage from inside the graph, where the model callbacks run."""
+
+    def invoke(self, _payload):
+        record_usage({"cost": 0.002, "prompt_tokens": 900, "completion_tokens": 120})
+        record_usage({"cost": 0.001, "prompt_tokens": 400, "completion_tokens": 60})
+        return {"response": "Evaporation is ..."}
+
+    async def astream(self, _payload, stream_mode=None):
+        record_usage({"cost": 0.003, "prompt_tokens": 1000, "completion_tokens": 200})
+        yield {"compose": {"response": "Evaporation is ..."}}
+
+
+def test_a_turn_carries_the_cost_its_model_calls_reported(monkeypatch):
+    """The graph runs in a worker thread, so a meter started anywhere but around
+    the turn would see nothing and every message would be billed at zero."""
+    monkeypatch.setenv("APP_ENV", "test")
+    from system.runtime import AgentRuntime
+
+    runtime = AgentRuntime(
+        get_config(reload=True), _BilledGraph(), None, billing=Billing(None), max_concurrency=2, timeout=5
+    )
+
+    turn = anyio.run(runtime.chat, {"user_id": "u-1", "message": "hi"})
+    assert turn.result == {"response": "Evaporation is ..."}
+    assert turn.meter.as_dict() == {"cost_usd": 0.003, "prompt_tokens": 1300,
+                                    "completion_tokens": 180, "calls": 2}
+
+
+def test_a_streamed_turn_carries_the_cost_its_model_calls_reported(monkeypatch):
+    """The streamed endpoint runs the graph on a different path from /ai/chat; a
+    meter started for one and not the other bills every streamed message at zero."""
+    monkeypatch.setenv("APP_ENV", "test")
+    from system.runtime import AgentRuntime
+
+    runtime = AgentRuntime(
+        get_config(reload=True), _BilledGraph(), None, billing=Billing(None), max_concurrency=2, timeout=5
+    )
+
+    async def run():
+        updates = await runtime.stream_chat({"user_id": "u-1", "message": "hi"})
+        return [pair async for pair in updates]
+
+    stage, turn = anyio.run(run)[-1]
+    assert stage == "__final__"
+    assert turn.meter.as_dict()["cost_usd"] == 0.003
 
 
 def test_a_streamed_turn_past_the_timeout_is_abandoned(monkeypatch):
@@ -529,12 +612,12 @@ def test_a_streamed_turn_past_the_timeout_is_abandoned(monkeypatch):
             yield {"plan": {}}
 
     runtime = AgentRuntime(
-        get_config(reload=True), _SlowStream(), None, max_concurrency=2, timeout=0.2
+        get_config(reload=True), _SlowStream(), None, billing=Billing(None), max_concurrency=2, timeout=0.2
     )
 
     async def run():
         with pytest.raises(UpstreamTimeoutError):
-            async for _ in runtime.stream_chat({"message": "hi"}):
+            async for _ in await runtime.stream_chat({"user_id": "u-1", "message": "hi"}):
                 pass
 
     anyio.run(run)
@@ -727,18 +810,16 @@ def test_unusable_source_material_is_not_a_server_error():
 def _photo(client, content=b"\x89PNG\r\n", content_type="image/png"):
     return client.post(
         "/ai/homework/capture",
+        params={"billed_user_id": "u-1"},
         files={"image": ("page.png", content, content_type)},
         headers=auth(),
     )
 
 
-def test_a_homework_photo_comes_back_as_questions(client, monkeypatch):
-    from agent.homework import HomeworkCapture
-
-    import system.routers.homework as router
-    monkeypatch.setattr(router, "capture", lambda *a, **k: HomeworkCapture.model_validate(
+def test_a_homework_photo_comes_back_as_questions(client):
+    client.runtime.homework = HomeworkCapture.model_validate(
         {"questions": [{"number": "1", "question": "ما هو السجع؟",
-                        "student_answer": "تشابه"}]}))
+                        "student_answer": "تشابه"}]})
 
     body = _photo(client).json()
     assert body["questions"][0]["question"] == "ما هو السجع؟"
@@ -747,11 +828,8 @@ def test_a_homework_photo_comes_back_as_questions(client, monkeypatch):
     assert body["request_id"]
 
 
-def test_an_unreadable_photo_is_reported_not_treated_as_empty(client, monkeypatch):
-    from agent.homework import HomeworkCapture
-
-    import system.routers.homework as router
-    monkeypatch.setattr(router, "capture", lambda *a, **k: HomeworkCapture(unreadable=True))
+def test_an_unreadable_photo_is_reported_not_treated_as_empty(client):
+    client.runtime.homework = HomeworkCapture(unreadable=True)
 
     body = _photo(client).json()
     assert body["unreadable"] is True

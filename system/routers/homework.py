@@ -3,24 +3,20 @@
 from __future__ import annotations
 
 import logging
-from functools import partial
 
 from fastapi import APIRouter, File, Query, UploadFile
-from starlette.concurrency import run_in_threadpool
 
-from agent.homework import capture
-from shared.config import Config
 from shared.errors import UnprocessableError
 
-from ..dependencies import Authenticated, RequestId
-from ..schemas.common import ERROR_RESPONSES, Language
+from ..dependencies import Authenticated, RequestId, RuntimeDep
+from ..schemas.common import PAID_RESPONSES, Language
 from ..schemas.homework import CaptureResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/ai/homework", tags=["homework"],
-    dependencies=[Authenticated], responses=ERROR_RESPONSES,
+    dependencies=[Authenticated], responses=PAID_RESPONSES,
 )
 
 ACCEPTED = ("image/png", "image/jpeg", "image/webp")
@@ -33,6 +29,8 @@ ACCEPTED = ("image/png", "image/jpeg", "image/webp")
 )
 async def capture_homework(
     request_id: RequestId,
+    runtime: RuntimeDep,
+    billed_user_id: str = Query(description="The account the credits are taken from."),
     image: UploadFile = File(description="A photo of one homework page."),
     language: Language | None = Query(
         default=None,
@@ -43,8 +41,7 @@ async def capture_homework(
             f"Send a photo as one of {', '.join(ACCEPTED)}.",
             details={"received": image.content_type})
 
-    config = Config.load()
-    limit = config.get("api.homework.max_upload_bytes")
+    limit = runtime.config.get("api.homework.max_upload_bytes")
     content = await image.read()
     if len(content) > limit:
         raise UnprocessableError(
@@ -53,9 +50,10 @@ async def capture_homework(
     if not content:
         raise UnprocessableError("The upload was empty.")
 
-    result = await run_in_threadpool(
-        partial(capture, content, config=config, language_hint=language))
+    captured = await runtime.capture_homework(content, language=language,
+                                              billed_user_id=billed_user_id)
+    result = captured.result
     logger.info("homework capture", extra={
         "bytes": len(content), "questions": len(result.questions),
         "unreadable": result.unreadable})
-    return CaptureResponse.from_capture(result, request_id)
+    return CaptureResponse.from_capture(result, request_id, captured.meter)

@@ -7,6 +7,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.language import Lang
+from shared.metering import Meter
 
 Pathway = Literal["student", "teacher", "parent"]
 # One definition of the supported set, so the API, the resolver and the string
@@ -19,6 +20,17 @@ class Schema(BaseModel):
     so a client typo surfaces as a 422 instead of silently doing nothing."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+class Usage(Schema):
+    cost_usd: float = Field(description="What the model gateway billed for every call in the turn.")
+    prompt_tokens: int
+    completion_tokens: int
+    calls: int = Field(description="Model calls the turn made, retries included.")
+
+    @classmethod
+    def from_meter(cls, meter: Meter) -> Usage:
+        return cls.model_validate(meter.as_dict())
 
 
 class GradeReference(Schema):
@@ -59,4 +71,9 @@ ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"model": ErrorEnvelope, "description": "Missing or invalid service token"},
     422: {"model": ErrorEnvelope, "description": "Request failed validation"},
     500: {"model": ErrorEnvelope, "description": "Unexpected error"},
+}
+
+PAID_RESPONSES: dict[int | str, dict[str, Any]] = {
+    **ERROR_RESPONSES,
+    402: {"model": ErrorEnvelope, "description": "The paying account has too few credits"},
 }
