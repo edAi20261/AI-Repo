@@ -105,6 +105,24 @@ def _no_real_database(monkeypatch):
     monkeypatch.setattr(postgres, "_pools", {})
 
 
+@pytest.fixture(autouse=True)
+def _no_real_models(monkeypatch):
+    """CI has no .env, so every model call takes the deterministic stub path; a laptop
+    with a provider key in .env made real calls instead, which turned a 40-second run
+    into eleven minutes and a network hiccup into a failed test. Every test now sees
+    what CI sees; a test that wants a key sets one itself."""
+    from shared import config as config_module
+    from shared import llm
+
+    keys = {env for _, env in llm._OPENAI_COMPAT.values()} | set(llm._NATIVE_KEY.values())
+    for name in (*keys, "APP_ENV"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("QDRANT_URL", ":memory:")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+    monkeypatch.setattr(config_module, "load_dotenv", lambda *a, **k: False)
+    monkeypatch.setattr(config_module, "_INSTANCE", None)
+
+
 @pytest.fixture()
 def fake_postgres(monkeypatch):
     """Install a Postgres double; return it so the test can inspect it.

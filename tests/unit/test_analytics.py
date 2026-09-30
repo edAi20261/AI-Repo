@@ -159,3 +159,19 @@ def test_the_students_own_mistake_patterns_are_part_of_the_analysis(reads):
     assert out["mistakes"] == [{"tag_id": "g1", "label": "Sign error", "occurrences": 4}]
     ids, kwargs = reads["mistakes"]
     assert ids == ["u1"] and kwargs["subject_ids"] == ["math"]
+
+
+def test_topics_likely_to_be_fading_form_a_review_queue(reads, monkeypatch):
+    """A mastered topic dropped off the homepage for good; the queue brings it back
+    when the student has probably started to forget it, most-faded first."""
+    monkeypatch.setattr(analytics, "get_mastery", lambda uid, *a, **k: [
+        _row("frac", 0.85, 3, "strong", days_ago=40),
+        _row("cell", 0.60, 2, "developing", days_ago=9),
+        _row("quad", 0.90, 6, "strong", days_ago=2),
+    ])
+    out = _summary()
+
+    assert [t["topic_id"] for t in out["review_queue"]] == ["frac", "cell"]
+    first = out["review_queue"][0]
+    assert first["retention"] < out["review_queue"][1]["retention"] < 0.8
+    assert first["overdue_days"] > 0

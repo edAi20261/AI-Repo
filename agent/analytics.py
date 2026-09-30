@@ -18,7 +18,8 @@ from typing import Any, Optional
 
 from shared.config import Config
 
-from .recommend import RecommendParams, TopicStanding, recommend
+from .mastery import RetentionParams
+from .recommend import RecommendParams, TopicStanding, recommend, review_due
 from .tools import (
     get_direct_prereqs,
     get_mastery,
@@ -122,6 +123,10 @@ def learner_summary(
                         key=lambda s: (s.score, s.label))[:limits.weaknesses]
     untouched = [s for s in standings
                  if s.status == "not_practised" and s.lecture_id in current]
+    retention_params = RetentionParams.from_config(config)
+    due = [(s, d) for s in judged if s.status in ("strong", "developing")
+           if (d := review_due(s, now, retention_params))]
+    due.sort(key=lambda pair: (pair[1]["retention"], pair[0].label))
 
     logger.info("learner summary", extra={
         "topics": len(standings), "judged": len(judged), "recommendations": len(recs),
@@ -133,6 +138,9 @@ def learner_summary(
         "strengths": [_topic(s) for s in strengths],
         "weaknesses": [_topic(s) for s in weaknesses],
         "not_practised": [_topic(s) for s in untouched[:limits.not_practised]],
+        "review_queue": [{**_topic(s), "retention": d["retention"],
+                          "overdue_days": d["overdue_days"]}
+                         for s, d in due[:limits.review]],
         "recommendations": [r.to_dict() for r in recs],
         "mistakes": mistakes,
         "activity": activity,
@@ -148,6 +156,7 @@ class _Limits:
         self.recent_per_topic = config.get("learner_summary.recent_per_topic", 5)
         self.activity_weeks = config.get("learner_summary.activity_weeks", 8)
         self.mistakes = config.get("learner_summary.mistakes_limit", 3)
+        self.review = config.get("learner_summary.review_limit", 5)
         self.mistake_window_days = config.get("learner_summary.mistake_window_days", 60)
 
 
@@ -182,6 +191,7 @@ def _subject_counts(standings: Sequence[TopicStanding]) -> list[dict[str, Any]]:
 
 def _unreadable() -> dict[str, Any]:
     return {"available": False, "degraded": True, "subjects": [], "strengths": [],
-            "weaknesses": [], "not_practised": [], "recommendations": [], "mistakes": [],
+            "weaknesses": [], "not_practised": [], "review_queue": [],
+            "recommendations": [], "mistakes": [],
             "activity": [],
             "trend": {"direction": "insufficient", "count": 0}}

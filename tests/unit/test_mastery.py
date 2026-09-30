@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agent.config import get_config
 from agent.mastery import Mastery, MasteryParams, observation, status, update
 
@@ -111,3 +113,45 @@ def test_params_from_config_reads_yaml():
     assert 0 < p.alpha <= 1
     assert p.weight_for("hard") >= p.weight_for("easy")
     assert p.min_attempts >= 1
+
+
+# --- retention: how much of a topic is still remembered ---------------------
+
+def _rp():
+    from agent.mastery import RetentionParams
+    return RetentionParams(base_stability_days=7.0, growth=1.5, max_stability_days=180.0,
+                           target=0.8)
+
+
+def test_a_topic_practised_more_and_better_is_remembered_longer():
+    """A flat "untouched for 30 days" rule sent a topic assessed once and a topic
+    assessed ten times back for review on the same day."""
+    from agent.mastery import stability_days
+
+    once = stability_days(Mastery(score=0.8, attempts=1), _rp())
+    often = stability_days(Mastery(score=0.8, attempts=5), _rp())
+    shakier = stability_days(Mastery(score=0.5, attempts=5), _rp())
+    assert often > once and often > shakier
+
+
+def test_retention_starts_whole_and_fades_below_the_target_when_due():
+    from agent.mastery import days_until_due, retention
+
+    m = Mastery(score=0.9, attempts=3)
+    due_in = days_until_due(m, 0, _rp())
+    assert retention(m, 0, _rp()) == 1.0
+    assert retention(m, due_in - 0.5, _rp()) > 0.8 > retention(m, due_in + 0.5, _rp())
+    assert days_until_due(m, due_in + 3, _rp()) == pytest.approx(-3)
+
+
+def test_stability_is_capped():
+    from agent.mastery import stability_days
+
+    assert stability_days(Mastery(score=1.0, attempts=40), _rp()) == 180.0
+
+
+def test_retention_settings_come_from_config():
+    from agent.mastery import RetentionParams
+
+    p = RetentionParams.from_config(get_config())
+    assert 0 < p.target < 1 and p.base_stability_days > 0 and p.growth > 1

@@ -464,7 +464,6 @@ recommend:
   stale_days: 14        # untouched this long adds the full neglect weight
   stale_weight: 0.15    # a 0.40 topic left a month ranks below a 0.20 topic seen yesterday
   prereq_weight: 0.2    # a weak prerequisite is reviewed before the topic built on it
-  refresh_days: 30      # a strong topic untouched this long is offered for review
 
 learner_summary:
   # The student analysis (agent/analytics.py): how much of each list a homepage gets.
@@ -474,6 +473,7 @@ learner_summary:
   recent_per_topic: 5   # latest answers per topic behind "missed 2 of the last 3"
   activity_weeks: 8     # weeks of answered-question history in the activity series
   mistakes_limit: 3
+  review_limit: 5
   mistake_window_days: 60  # mistake patterns are read over this window
 
 class_analytics:
@@ -488,6 +488,9 @@ class_analytics:
   most_missed_limit: 5
   at_risk_limit: 10
   max_students: 500         # a roster larger than this is refused rather than slowly read
+  engagement_days: 7        # "active" means a graded answer within this many days
+  min_group: 2              # students weak on one topic before they are suggested as a group
+  groups_limit: 5
 
 render:
   # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.
@@ -525,6 +528,14 @@ mastery:
   min_attempts: 2
   strong_threshold: 0.75
   weak_threshold: 0.45
+  retention:
+    # How long a topic stays remembered (agent/mastery.py). Starting values, not yet
+    # swept: with these, a topic at 0.85 over 3 assessments is due for review 3 days
+    # after the last one, and over 6 assessments 10 days after.
+    base_stability_days: 7.0
+    growth: 1.5
+    max_stability_days: 180.0
+    target: 0.8
 
 report:
   # Student-progress reporting (report_sg). weak_topic_limit caps how many weak topics
@@ -582,5 +593,8 @@ environments:
 
   production:
     api: { docs_enabled: false }
-    logging: { level: WARNING }
+    # INFO: at WARNING a turn's lifecycle (mastery written, reports stored, degraded
+    # reads' counts) never reached CloudWatch, so a working grade and one that moved
+    # nothing looked the same from outside.
+    logging: { level: INFO }
     llm: { max_retries: 5 }

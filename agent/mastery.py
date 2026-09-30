@@ -16,6 +16,7 @@ All numbers come from ``config.yaml mastery.*`` — nothing behavioural is hardc
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -134,6 +135,44 @@ def status(m: Mastery, params: MasteryParams) -> str:
     if m.score <= params.weak_threshold:
         return "weak"
     return "developing"                         # between the thresholds
+
+
+@dataclass(frozen=True)
+class RetentionParams:
+    """How long a topic stays remembered. ``R = exp(-days / S)``: stability ``S`` starts at
+    ``base_stability_days`` for one assessment, grows by ``growth`` with each further one,
+    scales with the score, and is capped. A topic is due for review once ``R`` falls
+    below ``target``."""
+    base_stability_days: float = 7.0
+    growth: float = 1.5
+    max_stability_days: float = 180.0
+    target: float = 0.8
+
+    @classmethod
+    def from_config(cls, config) -> "RetentionParams":
+        return cls(
+            base_stability_days=config.get("mastery.retention.base_stability_days", 7.0),
+            growth=config.get("mastery.retention.growth", 1.5),
+            max_stability_days=config.get("mastery.retention.max_stability_days", 180.0),
+            target=config.get("mastery.retention.target", 0.8),
+        )
+
+
+def stability_days(m: Mastery, params: RetentionParams) -> float:
+    """Days for recall of this topic to fall to ``1/e``."""
+    s = (params.base_stability_days * params.growth ** max(0, m.attempts - 1)
+         * max(0.1, _clamp(m.score)))
+    return min(params.max_stability_days, s)
+
+
+def retention(m: Mastery, days_since: float, params: RetentionParams) -> float:
+    """Estimated share of the topic still remembered ``days_since`` the last evidence."""
+    return math.exp(-max(0.0, days_since) / stability_days(m, params))
+
+
+def days_until_due(m: Mastery, days_since: float, params: RetentionParams) -> float:
+    """Days until retention falls below the target; negative when already overdue."""
+    return stability_days(m, params) * math.log(1 / params.target) - days_since
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:

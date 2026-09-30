@@ -143,6 +143,9 @@ Returns, with no model call:
   `in_current_lesson`, `mastered`). Word them in the reader's language on your
   side; the service returns no sentences here.
 - `mistakes[]` — the student's commonest mistake categories.
+- `review_queue[]` — topics the student has probably started to forget, most
+  faded first, with an estimated `retention` (0–1) and `overdue_days`. How long a
+  topic stays remembered grows with how often and how well it was assessed.
 - `activity[]` — graded answers per week; `trend` — improving / flat / declining.
 - `available: false` means no topic has enough graded work yet. `degraded: true`
   means a read failed and what is shown is incomplete.
@@ -167,7 +170,14 @@ Body: `{ "user_ids": [...roster], "subject_ids": [...], "class_id": "..." }`
 many students are strong / developing / weak / unknown / not started),
 `at_risk[]` (each student with `reasons`: `many_weak_topics`, `declining`,
 `inactive`), `not_started[]`, `mistakes[]`, `most_missed[]` (question ids to join
-with your question text) and `activity[]`.
+with your question text), `activity[]`, and:
+
+- `score_distribution[]` — students per fifth of mean topic score (`0-20` … `80-100`);
+  students with no graded work are counted in `not_started`, not as zero.
+- `engagement` — `active` of `total` students with a graded answer in the last
+  `window_days`, and `answers_this_week`.
+- `groups[]` — students weak on the same topic (two or more), largest first, with
+  the topic and lesson to target.
 
 `POST /ai/classes/report` with the same body plus a required `class_id` and an
 optional `language` writes and stores a summary for the teacher; it never names a

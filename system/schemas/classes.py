@@ -36,6 +36,14 @@ class ClassAnalyticsResponse(Schema):
         description="Students needing attention, each with `reasons` as facts with a `code`.")
     not_started: list[str] = Field(
         default_factory=list, description="Students with no graded work yet.")
+    score_distribution: list[dict[str, Any]] = Field(
+        default_factory=list, description="Students by mean topic score, in fifths.")
+    engagement: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Students with a graded answer in the last `window_days`, out of the class.")
+    groups: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Students weak on the same topic, largest first, for targeted teaching.")
     mistakes: list[dict[str, Any]] = Field(default_factory=list)
     most_missed: list[dict[str, Any]] = Field(default_factory=list)
     activity: list[dict[str, Any]] = Field(default_factory=list)
