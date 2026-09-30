@@ -187,3 +187,38 @@ CREATE INDEX IF NOT EXISTS mastery_events_user_topic_idx
     ON ai.mastery_events (user_id, topic_id);
 CREATE INDEX IF NOT EXISTS mastery_events_created_idx
     ON ai.mastery_events (created_at);
+
+CREATE TABLE IF NOT EXISTS ai.teacher_personas (
+    persona_id     uuid         NOT NULL DEFAULT gen_random_uuid(),
+    teacher_id     uuid         NOT NULL,
+    version        integer      NOT NULL,
+    status         varchar(20)  NOT NULL DEFAULT 'draft'
+                   CHECK (status IN ('draft', 'active', 'inactive')),
+    teacher_name   varchar(200) NOT NULL,
+    card           jsonb        NOT NULL,
+    exemplar_count integer      NOT NULL DEFAULT 0,
+    sources        jsonb        NOT NULL DEFAULT '{}',
+    consented_at   timestamptz  NOT NULL,
+    created_at     timestamptz  NOT NULL DEFAULT now(),
+    updated_at     timestamptz  NOT NULL DEFAULT now(),
+    activated_at   timestamptz,
+    CONSTRAINT teacher_personas_pkey PRIMARY KEY (persona_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS teacher_personas_version_key
+    ON ai.teacher_personas (teacher_id, version);
+CREATE UNIQUE INDEX IF NOT EXISTS teacher_personas_one_active
+    ON ai.teacher_personas (teacher_id) WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS ai.teacher_persona_exemplars (
+    exemplar_id uuid         NOT NULL DEFAULT gen_random_uuid(),
+    persona_id  uuid         NOT NULL REFERENCES ai.teacher_personas (persona_id) ON DELETE CASCADE,
+    ordinal     integer      NOT NULL,
+    text        text         NOT NULL,
+    prompt      text         NOT NULL DEFAULT '',
+    move        varchar(200) NOT NULL DEFAULT '',
+    source_id   varchar(120) NOT NULL,
+    embedding   real[]       NOT NULL,
+    CONSTRAINT teacher_persona_exemplars_pkey PRIMARY KEY (exemplar_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS teacher_persona_exemplars_ordinal_key
+    ON ai.teacher_persona_exemplars (persona_id, ordinal);

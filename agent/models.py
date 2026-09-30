@@ -74,12 +74,91 @@ class SubjectFacts(BaseModel):
     name: Optional[str] = None
 
 
+def _one_line(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _lines(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [line for line in (_one_line(v) for v in value) if line]
+
+
+class PersonaCard(BaseModel):
+    """How one teacher teaches, as the tutor is told it.
+
+    Drafted by a model from the teacher's own material, then read and edited by
+    the teacher before it is used. Every field is rendered into a prompt, so each
+    is held to one line: a value that could break across lines could also forge
+    a section of the prompt it is pasted into. The limits are checked here rather
+    than declared in the schema, because a strict provider schema refuses them.
+    """
+
+    summary: str = Field(description=(
+        "Two or three sentences on how this teacher comes across to a student."))
+    tone: str = Field(description=(
+        "A few words for their voice, e.g. 'warm, dry humour, direct'."))
+    explaining: list[str] = Field(description=(
+        "How they build an explanation, one habit per entry, at most 6."))
+    checking: list[str] = Field(description=(
+        "How they check that a student has understood, at most 4."))
+    mistakes: list[str] = Field(description=(
+        "How they respond when a student is wrong, at most 4."))
+    encouragement: list[str] = Field(description=(
+        "How they encourage or praise, at most 4."))
+    phrases: list[str] = Field(description=(
+        "Short phrases they really use, copied exactly from their material, at most 8."))
+    avoid: list[str] = Field(description=(
+        "Things they never do when teaching, at most 5."))
+
+    @field_validator("summary", "tone", mode="before")
+    @classmethod
+    def _single_line(cls, v: Any) -> str:
+        return _one_line(v)
+
+    @field_validator("explaining", "checking", "mistakes", "encouragement", "phrases",
+                     "avoid", mode="before")
+    @classmethod
+    def _single_lines(cls, v: Any) -> list[str]:
+        return _lines(v)
+
+    @model_validator(mode="after")
+    def _within_limits(self) -> PersonaCard:
+        if not self.summary or not self.tone:
+            raise ValueError("summary and tone are both required")
+        if len(self.summary) > 600 or len(self.tone) > 80:
+            raise ValueError("summary is at most 600 characters and tone at most 80")
+        for name, most, longest in _CARD_LISTS:
+            entries = getattr(self, name)
+            if len(entries) > most:
+                raise ValueError(f"{name} holds at most {most} entries")
+            if any(len(entry) > longest for entry in entries):
+                raise ValueError(f"each entry in {name} is at most {longest} characters")
+        return self
+
+
+_CARD_LISTS = (("explaining", 6, 240), ("checking", 4, 240), ("mistakes", 4, 240),
+               ("encouragement", 4, 240), ("phrases", 8, 100), ("avoid", 5, 240))
+
+
+class PersonaVoice(BaseModel):
+    """The persona a turn speaks in: which teacher, which approved version."""
+
+    persona_id: str
+    teacher_id: str
+    version: int
+    teacher_name: str
+    card: PersonaCard
+
+
 class Style(BaseModel):
-    """The tone a turn is written in (from ``resolve_style``).
+    """How a turn is written (from ``resolve_style``): the tone, and the teacher
+    whose way of teaching it follows when the student's class has one.
 
     There was a ``voice`` beside it, set to "neutral" on every path and read by
     nothing but its own test."""
     tone: str = "neutral"
+    persona: Optional[PersonaVoice] = None
 
 
 class Citation(BaseModel):

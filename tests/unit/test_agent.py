@@ -15,7 +15,11 @@ from agent.graph.nodes import (
 )
 from agent.graph.pathways import build_namespaces, resolve_style
 from agent.models import Citation, PrereqTopic, ResolvedTopic, RetrievedChunk
+from agent.persona.voice import PersonaDirectory, Voices
 from agent.tools import AuthorizationError, assert_user_type
+
+NO_PERSONAS = PersonaDirectory(None, ttl_seconds=0)
+NO_VOICES = Voices(NO_PERSONAS, per_turn=3, embedder=lambda: None)
 
 # --- utils ------------------------------------------------------------------
 
@@ -33,7 +37,7 @@ def test_resolve_style_teacher_vs_student():
 # --- load_context -----------------------------------------------------------
 
 def test_load_context_builds_namespaces_and_style():
-    load_context = build_load_context(get_config())
+    load_context = build_load_context(get_config(), NO_PERSONAS)
     out = load_context({"pathway": "student", "user_id": "u1",
                         "user_type": "student", "subject_id": "sub1"})
     assert out["namespaces"] == ["syllabus"]
@@ -41,7 +45,7 @@ def test_load_context_builds_namespaces_and_style():
 
 
 def test_load_context_teacher_style():
-    load_context = build_load_context(get_config())
+    load_context = build_load_context(get_config(), NO_PERSONAS)
     out = load_context({"pathway": "teacher", "user_id": "t1", "user_type": "teacher"})
     assert out["style"].tone == "professional"
 
@@ -679,13 +683,13 @@ def test_a_quiz_shows_its_questions_without_their_answers():
 
 def test_a_visual_that_failed_alone_fails_the_turn():
     from agent.errors import TutorUnavailable
-    compose = nmod.build_compose(get_config(), None)
+    compose = nmod.build_compose(get_config(), None, NO_VOICES)
     with pytest.raises(TutorUnavailable):
         compose({"answers": [], "visual_error": True, "language": "en"})
 
 
 def test_a_visual_that_failed_beside_an_answer_leaves_the_answer():
-    compose = nmod.build_compose(get_config(), None)
+    compose = nmod.build_compose(get_config(), None, NO_VOICES)
     out = compose({"answers": [{"type": "explain", "text": "Plants make food [1].",
                                 "task_id": "a", "grounded": True}],
                    "citations": [Citation(n=1, task_id="a", lecture_id="l", page_from=1)],
@@ -694,7 +698,7 @@ def test_a_visual_that_failed_beside_an_answer_leaves_the_answer():
 
 
 def test_compose_suppresses_prereqs_on_decline():
-    compose = nmod.build_compose(get_config(), None)
+    compose = nmod.build_compose(get_config(), None, NO_VOICES)
     out = compose({
         "answers": [{"type": "explain", "text": "The context does not cover this.",
                      "grounded": False}],

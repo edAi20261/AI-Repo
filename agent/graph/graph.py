@@ -26,6 +26,7 @@ from ..config import Config, get_config
 from ..conversation import Conversation, ConversationStore, HistoryWindow
 from ..errors import TutorUnavailable
 from ..models import Style, SubjectFacts
+from ..persona.voice import PersonaDirectory, Voices
 from ..scope import lecture_filter
 from ..state import MainState
 from ..subjects import SubjectDirectory
@@ -65,7 +66,7 @@ def _require_llm_in_prod(config: Config) -> None:
 # subgraph never sees MainState, so it stays self-contained. (LangGraph: a subgraph with a
 # different state schema is invoked inside a node function that transforms state in and out.)
 def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
-                                     subjects: SubjectDirectory):
+                                     subjects: SubjectDirectory, voices: Voices):
     # Read the config knobs once, at build time (not per turn).
     k = config.get("agent.k", 8)
     depth = config.get("agent.prereq_depth", 2)
@@ -96,6 +97,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
             "study_scope": payload.get("study_scope"),
             "namespaces": payload.get("namespaces") or ["syllabus"],
             "style": payload.get("style") or Style(),
+            "voice": voices.render(payload.get("style"), params.get("query", "")),
             "language": payload.get("language", "en"),
             "instructions": _subject_instructions(facts, with_figure=with_figure),
             "subject_id": payload.get("subject_id"),
@@ -382,9 +384,12 @@ def _build_render_visuals(compiled, config: Config, subjects: SubjectDirectory):
     return render_visuals
 
 
-def build_graph(config: Optional[Config] = None, *, checkpointer=None):
+def build_graph(config: Optional[Config] = None, *, checkpointer=None,
+                personas: Optional[PersonaDirectory] = None):
     """Compile the parent StateGraph. Pass a ``checkpointer`` (e.g. MemorySaver)
-    for session memory; omit for a stateless one-shot invoke."""
+    for session memory; omit for a stateless one-shot invoke. ``personas`` is
+    shared with whoever changes them, so a change is seen without waiting out
+    the cache."""
     from langgraph.graph import END, START, StateGraph
 
     config = config or get_config()
@@ -407,22 +412,27 @@ def build_graph(config: Optional[Config] = None, *, checkpointer=None):
     subjects = SubjectDirectory(backend_client)
     store = ConversationStore.from_config(config)
     window = HistoryWindow.from_config(config)
+    personas = personas or PersonaDirectory.from_config(config)
+    voices = Voices.from_config(config, personas)
 
     graph = StateGraph(MainState)
     graph.add_node("classify", nodes.build_classify(config, store, window, subjects))
-    graph.add_node("load_context", nodes.build_load_context(config))
+    graph.add_node("load_context", nodes.build_load_context(config, personas))
     graph.add_node("understand", nodes.build_understand(
         config, maybe_llm(config, "understand"), subjects))
-    graph.add_node("converse", nodes.build_converse(config, maybe_llm(config, "converse")))
+    graph.add_node("converse", nodes.build_converse(config, maybe_llm(config, "converse"),
+                                                    voices))
     graph.add_node("plan", nodes.build_plan(config, subjects, backend_client))
-    graph.add_node("explain_adapter", _build_explain_summarize_adapter(explain_sg, "explain", config, subjects))
-    graph.add_node("summarize_adapter", _build_explain_summarize_adapter(summarize_sg, "summarize", config, subjects))
+    graph.add_node("explain_adapter", _build_explain_summarize_adapter(
+        explain_sg, "explain", config, subjects, voices))
+    graph.add_node("summarize_adapter", _build_explain_summarize_adapter(
+        summarize_sg, "summarize", config, subjects, voices))
     graph.add_node("assessment_adapter", _build_assessment_adapter(assessment_sg, config, subjects))
     graph.add_node("grade_adapter", _build_grade_adapter(grade_sg, config, subjects))
     graph.add_node("report_adapter", _build_report_adapter(report_sg, config))
     graph.add_node("visual_adapter", _build_visual_adapter(config))
     graph.add_node("render_visuals", _build_render_visuals(visual_sg, config, subjects))
-    graph.add_node("compose", nodes.build_compose(config, maybe_llm(config, "compose")))
+    graph.add_node("compose", nodes.build_compose(config, maybe_llm(config, "compose"), voices))
     graph.add_node("verify_language", nodes.build_verify_language(
         config, maybe_llm(config, "compose")))
     graph.add_node("persist", nodes.build_persist(

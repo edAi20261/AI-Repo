@@ -27,13 +27,18 @@ from agent.graph.grade import run_grade
 from agent.graph.report import run_class_report, run_report
 from agent.graph.subgraphs import build_visual_sg
 from agent.homework import HomeworkCapture, capture
+from agent.models import PersonaCard
+from agent.persona.build import BuildRequest, build_persona
+from agent.persona.models import Exemplar, Persona
+from agent.persona.store import PersonaStore
+from agent.persona.voice import PersonaDirectory
 from agent.tagging import suggest_topics
 from agent.tools import get_latest_report
 from shared.config import Config
 from shared.metering import Meter, start_meter
 
 from .billing import Bill, Billing
-from .errors import ServiceUnavailableError, UpstreamTimeoutError
+from .errors import NotFoundError, ServiceUnavailableError, UpstreamTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +63,12 @@ def _unreadable(result: HomeworkCapture) -> bool:
     return result.unreadable
 
 
+@dataclass(frozen=True)
+class PersonaView:
+    persona: Persona
+    exemplars: list[Exemplar]
+
+
 class AgentRuntime:
     """Owns the compiled graphs and mediates every call into the agent."""
 
@@ -70,11 +81,13 @@ class AgentRuntime:
         billing: Billing,
         max_concurrency: int,
         timeout: float,
+        personas: Optional[PersonaDirectory] = None,
     ) -> None:
         self._config = config
         self._graph = graph
         self._visual_graph = visual_graph
         self._billing = billing
+        self._personas = personas
         self._limiter = CapacityLimiter(max_concurrency)
         self._timeout = timeout
 
@@ -88,7 +101,8 @@ class AgentRuntime:
         timeout: float = 120.0,
     ) -> AgentRuntime:
         config = config or get_config()
-        graph = build_graph(config)
+        personas = PersonaDirectory.from_config(config)
+        graph = build_graph(config, personas=personas)
         visual_graph = build_visual_sg(config=config)
         logger.info(
             "runtime graphs compiled",
@@ -96,7 +110,7 @@ class AgentRuntime:
         )
         return cls(
             config, graph, visual_graph, billing=billing,
-            max_concurrency=max_concurrency, timeout=timeout,
+            max_concurrency=max_concurrency, timeout=timeout, personas=personas,
         )
 
     @property
@@ -154,6 +168,58 @@ class AgentRuntime:
         return await self._offload(
             suggest_topics, payload["questions"], payload["subject_id"],
             lecture_ids=payload.get("lecture_ids"), config=self._config)
+
+    async def build_persona(self, request: BuildRequest, *,
+                            billed_user_id: str) -> Metered:
+        store = self._persona_store()
+        built = await self._billed(billed_user_id, Action.PERSONA_BUILD,
+                                   partial(build_persona, request, store=store,
+                                           config=self._config),
+                                   timeout=self._config.get("persona.build_timeout_seconds"))
+        self._personas.forget(request.teacher_id)
+        return built
+
+    async def personas(self, teacher_id: str) -> list[Persona]:
+        return await self._offload(self._persona_store().versions, teacher_id)
+
+    async def persona(self, teacher_id: str, version: int) -> PersonaView:
+        store = self._persona_store()
+
+        def read() -> PersonaView:
+            persona = store.get(teacher_id, version)
+            if persona is None:
+                raise NotFoundError("This teacher has no persona with that version.",
+                                    details={"teacher_id": teacher_id, "version": version})
+            return PersonaView(persona, store.exemplars(persona.persona_id))
+
+        return await self._offload(read)
+
+    async def edit_persona_card(self, teacher_id: str, version: int,
+                                card: PersonaCard) -> Persona:
+        return await self._changing(teacher_id, self._persona_store().update_card,
+                                    teacher_id, version, card)
+
+    async def activate_persona(self, teacher_id: str, version: int) -> Persona:
+        return await self._changing(teacher_id, self._persona_store().activate,
+                                    teacher_id, version)
+
+    async def deactivate_persona(self, teacher_id: str) -> Optional[Persona]:
+        return await self._changing(teacher_id, self._persona_store().deactivate, teacher_id)
+
+    async def delete_persona(self, teacher_id: str) -> int:
+        return await self._changing(teacher_id, self._persona_store().delete, teacher_id)
+
+    def _persona_store(self) -> PersonaStore:
+        store = self._personas.store if self._personas else None
+        if store is None:
+            raise ServiceUnavailableError("Teacher personas are not enabled on this service.")
+        return store
+
+    async def _changing(self, teacher_id: str, change: Callable[..., T], *args) -> T:
+        try:
+            return await self._offload(change, *args)
+        finally:
+            self._personas.forget(teacher_id)
 
     async def render(
         self,
@@ -215,29 +281,31 @@ class AgentRuntime:
         yield "__final__", Metered(state, meter)
 
     async def _billed(self, user_id: str, action: Action, work: Callable[[], T], *,
-                      units: int = 1, failed: Callable[[T], bool] = _never) -> Metered:
+                      units: int = 1, failed: Callable[[T], bool] = _never,
+                      timeout: Optional[float] = None) -> Metered:
         async with self._billing.spend(user_id, action, units=units) as bill:
             meter = start_meter()
-            result = await self._offload(work)
+            result = await self._offload(work, timeout=timeout)
             if failed(result):
                 bill.void()
             else:
                 bill.settle(meter)
             return Metered(result, meter)
 
-    async def _offload(self, fn, *args, **kwargs) -> Any:
+    async def _offload(self, fn, *args, timeout: Optional[float] = None, **kwargs) -> Any:
         def call() -> Any:
             return fn(*args, **kwargs)
 
+        limit = timeout or self._timeout
         try:
-            with anyio.fail_after(self._timeout):
+            with anyio.fail_after(limit):
                 return await anyio.to_thread.run_sync(
                     call, abandon_on_cancel=True, limiter=self._limiter
                 )
         except TimeoutError as exc:
             # A thread cannot be killed: the work runs to completion and holds its slot.
             # The caller is released rather than left hanging.
-            logger.warning("turn exceeded %ss", self._timeout)
+            logger.warning("turn exceeded %ss", limit)
             raise UpstreamTimeoutError("The request took too long to complete.") from exc
         except MemoryError as exc:
             raise ServiceUnavailableError("The service is out of capacity.") from exc

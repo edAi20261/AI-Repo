@@ -43,6 +43,8 @@ caller is allowed to do, so a wrong role grants the wrong capabilities.
 | `session_id` | no | Conversation id. **Now carries the standing answer language**: stable for a conversation, new for a new one |
 | `grade` | no | academic year, e.g. `g8` |
 | `language` | no | Fallback only — the message decides. Never send the UI language |
+| `teacher_id` | no | The teacher of the class the student takes this subject in (`Class.teacherId` for the student's `ClassStudent` row). When that teacher has an approved persona, the tutor explains the way they do. See §6 |
+| `persona_version` | no | A teacher previewing an unapproved version. Send it only with `user_type: teacher` and `user_id` equal to `teacher_id`, or the turn is refused with `422` |
 
 Unknown fields are rejected with `422` — deliberate, so a typo surfaces instead
 of being silently ignored.
@@ -60,6 +62,7 @@ of being silently ignored.
   "assessment":    {},
   "grade_result":  {},
   "prereq_topics": [{ "label": "Oxygen", "strength": "required", "depth": 1 }],
+  "persona_version": 2,
   "usage":         { "cost_usd": 0.0042, "prompt_tokens": 3100, "completion_tokens": 450, "calls": 2 }
 }
 ```
@@ -67,6 +70,8 @@ of being silently ignored.
 For a normal turn, pass `response` and `visuals` through to the frontend. The
 rest is populated only when the planner produced it — `assessment` when the
 student asked for a quiz, `grade_result` when it graded something.
+`persona_version` is set when the reply was written in the teacher's persona;
+label that bubble as the AI tutor in the teacher's style, never as the teacher.
 
 `usage` is always present: what the model gateway billed for every call the
 turn made, retries included. It is for metering, never for the student — store
@@ -286,6 +291,97 @@ index `(user_id, created_at DESC)`.
 
 If this service cannot reach them while credits are on, paid calls answer `503`
 rather than run free.
+
+---
+
+## 6. Teacher personas
+
+A teacher uploads written material in their own words: chat exports, written
+transcripts of lessons, explanations they wrote. They can also answer a short
+questionnaire. The service drafts a persona from it: a **card** describing how they
+teach, and **examples** that are passages of their own words. The teacher reviews
+it, corrects the card, and approves it. From then on, a student in their class who
+chats with `teacher_id` set gets explanations in that teacher's manner. The
+facts still come from the lesson, and the reply language is still the student's.
+
+Nothing is live until the teacher approves it. A new build is always a draft.
+
+**Before any of this works:** create `ai.teacher_personas` and
+`ai.teacher_persona_exemplars` (`docs/persona-schema-requests.md`), then set
+`persona.enabled: true`. Until then the endpoints answer `503` and chat ignores
+`teacher_id`.
+
+### What the platform owns
+
+- **Consent.** Record the teacher's agreement before calling build, and send when
+  it was given as `consented_at`.
+- **Who may act for whom.** Every call takes `teacher_id` from you. Check that the
+  caller is that teacher, or an admin of their school.
+- **Uploads.** Store files where lesson PDFs go and send a presigned `https` or
+  `s3://` URI. Paths on this server are refused.
+- **Which teacher a chat belongs to.** Resolve the student's class for the
+  subject, then send its teacher as `teacher_id` on every chat turn.
+
+### Build — `POST /ai/personas/build` (paid: `persona_build`)
+
+```json
+{
+  "teacher_id": "uuid",
+  "teacher_name": "Ms Mona",
+  "billed_user_id": "uuid",
+  "consented_at": "2026-09-30T10:00:00Z",
+  "language": "en",
+  "sources": [
+    { "source_id": "wa-1", "kind": "chat", "uri": "https://.../export.txt",
+      "teacher_speaker": "Ms Mona" },
+    { "source_id": "note-1", "kind": "explanation", "text": "When I teach ratios I..." }
+  ],
+  "questionnaire": [
+    { "question": "How do you open a new topic?", "answer": "With a story from ..." }
+  ]
+}
+```
+
+| `kind` | What it is | Formats read |
+|---|---|---|
+| `chat` / `transcript` | A conversation. Set `teacher_speaker` to the name the teacher appears under. A file with more than one speaker and no `teacher_speaker` is skipped, not guessed | WhatsApp export, `Name: text` lines, JSON `[{speaker, text}]` or `{messages: [...]}` (Telegram), WebVTT/SRT |
+| `explanation` | Text the teacher wrote | plain text, Markdown |
+
+Each source has either `text` or `uri`, not both. The limits are 50 sources and 30
+questionnaire answers. Students' names, emails, phone numbers and links are
+replaced before anything is stored.
+
+The response has the new draft `persona` (`version`, `status: "draft"`,
+`card`, `sources` provenance), the chosen `exemplars[]` (`text`, `prompt` = what
+the student had just said, `move` = what it shows), and `skipped[]` (each source
+that could not be used, with its reason). Show `skipped` to the teacher.
+If there is too little of the teacher's own words and no questionnaire, the
+response is `422` with the reasons.
+
+Only written material is accepted: audio and video are not supported.
+A build makes two model calls. Allow 300s, which is the most this service will
+spend on one (`persona.build_timeout_seconds`).
+
+### Review and approve
+
+| Call | Does |
+|---|---|
+| `GET /ai/personas/{teacher_id}` | every version, newest first, plus `active_version` |
+| `GET /ai/personas/{teacher_id}/versions/{v}` | one version, with its examples |
+| `PUT /ai/personas/{teacher_id}/versions/{v}/card` | replace the card with the teacher's edits. Body is the card itself. `409` on the active version: deactivate it first, or edit a draft |
+| `POST /ai/personas/{teacher_id}/versions/{v}/activate` | approve it. The previously active version becomes `inactive` |
+| `POST /ai/personas/{teacher_id}/deactivate` | students go back to the default tutor |
+| `DELETE /ai/personas/{teacher_id}` | destroy every version and example. Call it when a teacher withdraws consent or leaves |
+
+The card has these fields: `summary`, `tone`, `explaining[]`, `checking[]`,
+`mistakes[]`, `encouragement[]`, `phrases[]` and `avoid[]`. Every value is one
+line. Limits: summary 600 chars, tone 80, at most 6/4/4/4/8/5 entries, 240 chars
+each (phrases 100).
+
+**Preview before approving.** Call `/ai/chat` as the teacher (`user_type:
+teacher`, `user_id` = `teacher_id`) with `teacher_id` and `persona_version` set.
+A change reaches the instance that made it at once, and every other instance
+within five minutes (`persona.cache_ttl_seconds`).
 
 ---
 

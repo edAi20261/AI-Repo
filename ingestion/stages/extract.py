@@ -39,7 +39,7 @@ from ..layout import (
 from ..layout.chunker import content_blocks
 from ..layout.page_cache import PageCache
 from ..prompts.page_layout import PAGE_LAYOUT_PROMPT
-from ..utils.source import materialise
+from shared.source import materialise
 
 logger = logging.getLogger(__name__)
 
