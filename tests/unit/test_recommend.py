@@ -5,11 +5,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from agent.mastery import RetentionParams
 from agent.recommend import RecommendParams, TopicStanding, recommend
 
 NOW = datetime(2026, 9, 27, tzinfo=timezone.utc)
 PARAMS = RecommendParams(limit=5, stale_days=14, stale_weight=0.15, prereq_weight=0.2,
-                         refresh_days=30)
+                         retention=RetentionParams(base_stability_days=7.0, growth=1.5,
+                                                   max_stability_days=180.0, target=0.8))
 
 
 def _t(tid, status, score=0.5, attempts=3, days_ago=1, recent=(), lecture="l1", label=None):
@@ -93,3 +95,16 @@ def test_the_list_is_capped_and_never_names_a_topic_twice():
                      params=PARAMS)
     assert len(recs) == 5
     assert len({r.topic_id for r in recs}) == 5
+
+
+def test_a_strong_topic_is_offered_for_review_when_it_is_likely_fading():
+    """A flat 30-day rule reviewed a topic mastered once and a topic mastered ten times
+    on the same day; how long a topic stays remembered depends on how it was learned."""
+    once = _t("once", "strong", score=0.9, attempts=2, days_ago=12)
+    often = _t("often", "strong", score=0.9, attempts=8, days_ago=12)
+    recs = recommend([once, often], weak_prereqs={}, current_lectures=set(), now=NOW,
+                     params=PARAMS)
+
+    assert [(r.action, r.topic_id) for r in recs] == [("refresh", "once")]
+    due = next(r for r in recs[0].reasons if r["code"] == "due_for_review")
+    assert due["retention"] < 0.8 and due["overdue_days"] > 0

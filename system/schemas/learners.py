@@ -22,6 +22,10 @@ class LearnerSummaryResponse(Schema):
     weaknesses: list[dict[str, Any]] = Field(default_factory=list)
     not_practised: list[dict[str, Any]] = Field(
         default_factory=list, description="Untouched topics in the lessons the student is in.")
+    review_queue: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Topics likely to be fading, most-faded first, with estimated "
+                    "`retention` and `overdue_days`.")
     recommendations: list[dict[str, Any]] = Field(
         default_factory=list,
         description="What to practise next, in order. `reasons` are facts with a `code`; "
