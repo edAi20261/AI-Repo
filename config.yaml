@@ -55,6 +55,7 @@ llm:
     # from the Gemini that writes the answers, which is the point.
     judge:           { provider: openrouter, model: openai/gpt-4.1, temperature: 0.0, max_tokens: 1200 }
     slides:          { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 3000 }
+    persona:         { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.2, max_tokens: 3000 }
     visual_mindmap:  { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
     visual_flashcards: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
     visual_math:     { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
@@ -492,6 +493,21 @@ class_analytics:
   min_group: 2              # students weak on one topic before they are suggested as a group
   groups_limit: 5
 
+persona:
+  enabled: false
+  store: postgres
+  cache_ttl_seconds: 300
+  examples_per_turn: 3
+  max_exemplars: 40
+  min_passages: 5
+  min_passage_chars: 120
+  max_passage_chars: 1200
+  max_prompt_chars: 300
+  max_source_chars: 200000
+  card_sample_chars: 24000
+  selection_sample_chars: 40000
+  build_timeout_seconds: 300
+
 render:
   # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.
   # User-agnostic: student, teacher and parent all use the same renderers.
@@ -606,6 +622,7 @@ credits:
     student_report:   { credits: 1, per: 1 }
     class_report:     { credits: 2, per: 1 }
     homework_capture: { credits: 1, per: 1 }
+    persona_build:    { credits: 5, per: 1 }
 
 environments:
   local:
@@ -615,6 +632,7 @@ environments:
     # work, point fixtures_path at a manifest and flip prefer_fixtures.
     agent: { backend: { fixtures_path: null, prefer_fixtures: false } }
     credits: { store: memory }
+    persona: { store: memory }
 
 
   production:

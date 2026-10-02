@@ -1,9 +1,14 @@
-"""Resolve a lesson's source URI to a readable local path.
+"""Resolve a source URI to a readable local path.
 
 The platform hands the pipeline a presigned ``https`` URL; fixtures, the CLI and
 re-runs from object storage use ``file://``, a bare path or ``s3://``. Remote
 sources are streamed to a temporary file that exists only for the run, so the
-rest of the pipeline always works with a local PDF.
+rest of the pipeline always works with a local file.
+
+Shared because a lesson PDF and the material a teacher uploads about how they
+teach arrive the same way. An endpoint that takes a URI from a caller uses
+``materialise_remote``: a bare path there would let a request read any file the
+service can.
 """
 
 from __future__ import annotations
@@ -75,6 +80,15 @@ def materialise(source_uri: str, config: Config) -> Iterator[str]:
         yield destination
     finally:
         Path(destination).unlink(missing_ok=True)
+
+
+@contextmanager
+def materialise_remote(source_uri: str, config: Config) -> Iterator[str]:
+    """``materialise`` for a URI a caller supplied: remote schemes only."""
+    if urlparse(source_uri).scheme.lower() not in _FETCHERS:
+        raise SourceError("a source must be an https or s3 URI")
+    with materialise(source_uri, config) as path:
+        yield path
 
 
 def local_path(source_uri: str) -> str:
@@ -157,4 +171,10 @@ def _guard_size(size: int, limits: FetchLimits, source_uri: str) -> None:
 
 def _suffix(source_uri: str) -> str:
     suffix = Path(urlparse(source_uri).path).suffix.lower()
-    return suffix if suffix in (".pdf", ".png", ".jpg", ".jpeg") else ".pdf"
+    return suffix if suffix in _KNOWN_SUFFIXES else ".pdf"
+
+
+_KNOWN_SUFFIXES = frozenset({
+    ".pdf", ".png", ".jpg", ".jpeg",
+    ".txt", ".md", ".json", ".vtt", ".srt",
+})
