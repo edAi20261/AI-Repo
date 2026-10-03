@@ -63,7 +63,16 @@ llm:
 vision:
   # Scanned/maths transcription and figure captions. fallback_model is used when
   # the primary response cannot be parsed.
-  provider: openrouter           # openrouter | anthropic | google | dashscope
+  # Ingestion is the expensive half of this service — two model calls per page
+  # plus one per figure — so it has to be able to bill somewhere other than the
+  # half that answers students. The transport is the same everywhere (an
+  # OpenAI-shaped /chat/completions with a bearer token), so a gateway is a base
+  # URL and a key, not a code path.
+  provider: openrouter           # openrouter | google | openai
+  # The variable holding the key. Null means: the one this provider usually
+  # uses (OPENROUTER_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY). Name it when a
+  # deployment keeps its key somewhere of its own.
+  api_key_env: null
   model: qwen/qwen3-vl-235b-a22b-instruct
   # Never fired to date: all 544 pages transcribed so far were read by the model
   # above. Kept as the standby for a page it cannot parse, and OpenAI rather
