@@ -30,6 +30,32 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_TIMEOUT = 180
 DEFAULT_MAX_TOKENS = 4096
 
+# Which environment variable holds the key, per gateway. The transport is the
+# same everywhere — an OpenAI-shaped /chat/completions with a bearer token —
+# so the gateway is a base URL and a key name, not a code path. Google's
+# OpenAI-compatible endpoint is the reason this is configurable at all:
+# ingestion is the expensive half, and it has to be able to bill somewhere
+# other than the half that answers students.
+DEFAULT_KEY_ENV = "OPENROUTER_API_KEY"
+PROVIDER_KEY_ENV = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+
+def _api_key(config: Config) -> Optional[str]:
+    """The key for whichever gateway vision is pointed at.
+
+    ``vision.api_key_env`` wins, so a deployment can name its own variable
+    without this having to know about it.
+    """
+    named = config.get("vision.api_key_env")
+    if named:
+        return config.secret(named)
+    provider = (config.get("vision.provider") or "openrouter").lower()
+    return config.secret(PROVIDER_KEY_ENV.get(provider, DEFAULT_KEY_ENV))
+
 
 class VisionUnavailable(RuntimeError):
     """Every model tried failed to produce a usable answer."""
@@ -85,7 +111,7 @@ def _post(
     try:
         response = httpx.post(
             f"{config.get('vision.base_url', DEFAULT_BASE_URL)}/chat/completions",
-            headers={"Authorization": f"Bearer {config.secret('OPENROUTER_API_KEY')}"},
+            headers={"Authorization": f"Bearer {_api_key(config)}"},
             json={
                 "model": model,
                 "max_tokens": config.get("vision.max_tokens", DEFAULT_MAX_TOKENS),
