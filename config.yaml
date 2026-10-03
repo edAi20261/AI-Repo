@@ -68,11 +68,23 @@ vision:
   # half that answers students. The transport is the same everywhere (an
   # OpenAI-shaped /chat/completions with a bearer token), so a gateway is a base
   # URL and a key, not a code path.
-  provider: openrouter           # openrouter | google | openai
+  # openrouter | google | openai | vertex
+  #
+  # google and vertex serve the same models and bill from different places:
+  # google draws on AI Studio prepay credit, vertex on the Cloud billing
+  # account, which is where a project's trial credit actually lives. vertex is
+  # also the only one that will not take a static key — it mints an OAuth token
+  # from a service account, which expires in an hour, so shared/gcp.py caches it.
+  provider: openrouter
   # The variable holding the key. Null means: the one this provider usually
   # uses (OPENROUTER_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY). Name it when a
-  # deployment keeps its key somewhere of its own.
+  # deployment keeps its key somewhere of its own. Ignored by vertex.
   api_key_env: null
+  # vertex only: the variable holding the path to the service-account JSON.
+  credentials_env: GOOGLE_APPLICATION_CREDENTIALS
+  # vertex only: which project and region the models are called in.
+  project: null
+  location: us-central1
   model: qwen/qwen3-vl-235b-a22b-instruct
   # Never fired to date: all 544 pages transcribed so far were read by the model
   # above. Kept as the standby for a page it cannot parse, and OpenAI rather

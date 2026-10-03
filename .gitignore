@@ -13,6 +13,11 @@ venv/
 # Environment
 .env
 .env.local
+# Service-account credentials. A private key in a repository is a private key
+# on every machine that ever clones it, and it cannot be unpublished.
+.env.gcp.json
+*-service-account*.json
+gcp-*.json
 
 # Syllabus material and generated artifacts
 data/
