@@ -43,18 +43,79 @@ PROVIDER_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
 }
 
+# google  -> the Gemini API, billed from AI Studio prepay credit
+# vertex  -> the same models, billed to the Cloud billing account instead,
+#            which is where a project's trial credit actually lives. It is the
+#            only gateway here that will not take a static key.
+VERTEX = "vertex"
+
 
 def _api_key(config: Config) -> Optional[str]:
-    """The key for whichever gateway vision is pointed at.
+    """The bearer token for whichever gateway vision is pointed at.
 
-    ``vision.api_key_env`` wins, so a deployment can name its own variable
-    without this having to know about it.
+    Vertex is the one gateway that will not take a static key: it wants an
+    OAuth token minted from a service account, and those expire in an hour —
+    well inside the time it takes to read one book. ``shared.gcp`` mints and
+    caches it, so a three-hundred-page book pays for one token, not three
+    hundred.
+
+    ``vision.api_key_env`` wins over everything, so a deployment can name its
+    own variable without this having to know about it.
     """
+    provider = (config.get("vision.provider") or "openrouter").lower()
+    if provider == "vertex":
+        from .gcp import access_token  # lazy: only this provider needs google-auth
+
+        path = config.secret(config.get("vision.credentials_env")
+                             or "GOOGLE_APPLICATION_CREDENTIALS")
+        if not path:
+            raise VisionUnavailable(
+                "vision.provider is vertex but no service account path is set; "
+                "point GOOGLE_APPLICATION_CREDENTIALS at the JSON key.")
+        return access_token(path)
     named = config.get("vision.api_key_env")
     if named:
         return config.secret(named)
-    provider = (config.get("vision.provider") or "openrouter").lower()
     return config.secret(PROVIDER_KEY_ENV.get(provider, DEFAULT_KEY_ENV))
+
+
+def _base_url(config: Config) -> str:
+    """Where to post. Vertex's address carries the project and region in it, so
+    it is built rather than configured — one fewer thing to get wrong by hand."""
+    configured = config.get("vision.base_url")
+    if (config.get("vision.provider") or "").lower() != VERTEX:
+        return configured or DEFAULT_BASE_URL
+    if configured:
+        return configured
+    from .gcp import vertex_base_url
+
+    project = config.get("vision.project") or _project_from_credentials(config)
+    if not project:
+        raise VisionUnavailable(
+            "vision.provider is vertex but no project is known; set vision.project "
+            "or point the credentials at a service-account JSON that names one.")
+    return vertex_base_url(project, config.get("vision.location") or "us-central1")
+
+
+def _project_from_credentials(config: Config) -> Optional[str]:
+    """The project the service account belongs to, read from its own JSON.
+
+    Saves naming the project twice: it is already in the file, and two copies
+    of one fact is how they come to disagree.
+    """
+    import json
+
+    path = config.secret(config.get("vision.credentials_env")
+                         or "GOOGLE_APPLICATION_CREDENTIALS")
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle).get("project_id")
+    except Exception:
+        logger.warning("could not read the project id from the service account",
+                       exc_info=True)
+        return None
 
 
 class VisionUnavailable(RuntimeError):
@@ -110,7 +171,7 @@ def _post(
     encoded = base64.b64encode(image_png).decode()
     try:
         response = httpx.post(
-            f"{config.get('vision.base_url', DEFAULT_BASE_URL)}/chat/completions",
+            f"{_base_url(config)}/chat/completions",
             headers={"Authorization": f"Bearer {_api_key(config)}"},
             json={
                 "model": model,
