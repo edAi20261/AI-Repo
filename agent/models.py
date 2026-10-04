@@ -177,7 +177,28 @@ class Citation(BaseModel):
     chunk_id: Optional[str] = None
 
 
-class AssessmentSpec(BaseModel):
+_NULL_WORDS = frozenset({"null", "none", "nil", "undefined"})
+
+
+class _ReadsNullWords(BaseModel):
+    """A field the model wrote as the word "null" is a field it left out.
+
+    Gemini writes ``"grade": "null"`` and ``"types": "null"`` often enough that a
+    quiz request failed validation twice and reached the student as a 503. Removing
+    the key lets the field's default apply, so an optional one becomes None and a
+    required one still fails.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_words_are_absent(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        return {key: value for key, value in data.items()
+                if not (isinstance(value, str) and value.strip().lower() in _NULL_WORDS)}
+
+
+class AssessmentSpec(_ReadsNullWords):
     """A requested assessment shape parsed by the planner (design Q2). All fields are
     optional — only what the user explicitly asked for. Invalid values are coerced to
     None (ignored) so a bad LLM extraction falls back to config defaults. The upper
@@ -248,7 +269,7 @@ class GradeAnswer(BaseModel):
     answer: str = Field(description="The student's answer to that question, copied as written.")
 
 
-class GradeSpec(BaseModel):
+class GradeSpec(_ReadsNullWords):
     """Grade params the planner parses from a chat 'grade me this' turn. A DB reference
     (fetch the rubric via ``fetch_rubric``) vs inline free-text (rubric/answers in the
     message) — both optional; absent ``assessment_id`` means grade the inline text."""
@@ -264,7 +285,7 @@ class GradeSpec(BaseModel):
         return v if v in get_args(GradeKind) else None
 
 
-class VisualSpec(BaseModel):
+class VisualSpec(_ReadsNullWords):
     """A request for one visual. ``kind`` decides the source: ``figure`` fetches a syllabus
     figure and never generates; ``image`` tries a syllabus figure first, else generates;
     every other kind always generates via its render tool (a figure never substitutes for a
@@ -285,7 +306,7 @@ class VisualSpec(BaseModel):
         return v if v in VISUAL_KINDS else "image"
 
 
-class PlannedTask(BaseModel):
+class PlannedTask(_ReadsNullWords):
     """One task the planner emits."""
     type: TaskType
     query: Optional[str] = None
@@ -296,7 +317,7 @@ class PlannedTask(BaseModel):
     visual: Optional[VisualSpec] = None           # only on a visual task
 
 
-class LanguageRequest(BaseModel):
+class LanguageRequest(_ReadsNullWords):
     """What the student asked about the language they are answered in."""
     action: Literal["none", "set", "clear"] = Field(
         default="none",
@@ -306,7 +327,7 @@ class LanguageRequest(BaseModel):
         default=None, description="The language code asked for, only with set.")
 
 
-class StatedPreference(BaseModel):
+class StatedPreference(_ReadsNullWords):
     """A durable preference the student said out loud, in a shape the profile holds.
 
     Stated, never inferred. A tutor that decides from three short questions that
@@ -337,7 +358,7 @@ class StatedPreference(BaseModel):
         return any(value is not None for value in self.model_dump().values())
 
 
-class TurnUnderstanding(BaseModel):
+class TurnUnderstanding(_ReadsNullWords):
     """What one turn asks of the tutor, read against the conversation so far."""
     student_words: str = Field(
         default="",
