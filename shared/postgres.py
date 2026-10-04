@@ -76,7 +76,12 @@ def _pool_for(url: str, connect_timeout: int, statement_timeout_ms: int,
                 check=(ConnectionPool.check_connection
                        if config.get("database.pool_check_connections") else None),
                 kwargs={"connect_timeout": connect_timeout,
-                        "options": f"-c statement_timeout={statement_timeout_ms}"},
+                        "options": f"-c statement_timeout={statement_timeout_ms}",
+                        "keepalives": 1,
+                        "keepalives_idle": config.get("database.keepalives_idle_seconds"),
+                        "keepalives_interval": config.get("database.keepalives_interval_seconds"),
+                        "keepalives_count": config.get("database.keepalives_count"),
+                        "tcp_user_timeout": config.get("database.tcp_user_timeout_ms")},
                 open=True,
             )
             _pools[key] = pool
