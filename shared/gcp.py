@@ -40,17 +40,51 @@ class CredentialsUnavailable(RuntimeError):
     """No service account could be loaded, so no Google call can be signed."""
 
 
-def _load(path: str) -> Any:
+def _load(source: str) -> Any:
+    """Credentials from a path on disk, or from the JSON itself.
+
+    Both, because the two places this runs hand it over differently. A laptop
+    has a file. ECS injects a secret as an environment variable, so there is no
+    file to point at — and writing one to disk at startup just to read it back
+    puts a private key on a filesystem for no reason.
+    """
     try:
         from google.oauth2 import service_account  # lazy: only Vertex needs it
     except ImportError as error:  # pragma: no cover - import guard
         raise CredentialsUnavailable(
             "google-auth is not installed; it is needed to reach Vertex.") from error
+
+    text = source.strip()
+    if text.startswith("{"):
+        import json
+
+        try:
+            return service_account.Credentials.from_service_account_info(
+                json.loads(text), scopes=[SCOPE])
+        except Exception as error:
+            raise CredentialsUnavailable(
+                "the service account JSON could not be read") from error
     try:
-        return service_account.Credentials.from_service_account_file(path, scopes=[SCOPE])
+        return service_account.Credentials.from_service_account_file(text, scopes=[SCOPE])
     except Exception as error:
         raise CredentialsUnavailable(
-            f"the service account at {path} could not be read") from error
+            f"the service account at {text} could not be read") from error
+
+
+def project_of(source: str) -> Optional[str]:
+    """The project a service account belongs to, from a path or from the JSON."""
+    import json
+
+    text = source.strip()
+    try:
+        if text.startswith("{"):
+            return json.loads(text).get("project_id")
+        with open(text, encoding="utf-8") as handle:
+            return json.load(handle).get("project_id")
+    except Exception:
+        logger.warning("could not read the project id from the service account",
+                       exc_info=True)
+        return None
 
 
 def access_token(credentials_path: str) -> str:

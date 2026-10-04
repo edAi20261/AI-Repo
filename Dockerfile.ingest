@@ -70,6 +70,12 @@ USER appuser
 RUN python -c "from shared.config import get_config; \
     from shared.embeddings import get_embedder; get_embedder(get_config())"
 
+# Belt and braces, and the service image already does this: with the weights
+# present the library still reaches out to check whether they are current, and
+# a task that cannot reach HuggingFace would wait on that before it could
+# embed anything. Offline means the baked copy is the only copy it looks for.
+ENV HF_HUB_OFFLINE=1
+
 # python, not `python -m ingestion`: a task override replaces the command, and
 # the same image has to be able to run the comparison script as well as the
 # ingester. The default command is still an ingest.

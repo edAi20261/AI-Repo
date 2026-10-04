@@ -100,22 +100,14 @@ def _base_url(config: Config) -> str:
 def _project_from_credentials(config: Config) -> Optional[str]:
     """The project the service account belongs to, read from its own JSON.
 
-    Saves naming the project twice: it is already in the file, and two copies
-    of one fact is how they come to disagree.
+    Saves naming the project twice: it is already in the credential, and two
+    copies of one fact is how they come to disagree.
     """
-    import json
+    from .gcp import project_of
 
-    path = config.secret(config.get("vision.credentials_env")
-                         or "GOOGLE_APPLICATION_CREDENTIALS")
-    if not path:
-        return None
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return json.load(handle).get("project_id")
-    except Exception:
-        logger.warning("could not read the project id from the service account",
-                       exc_info=True)
-        return None
+    source = config.secret(config.get("vision.credentials_env")
+                           or "GOOGLE_APPLICATION_CREDENTIALS")
+    return project_of(source) if source else None
 
 
 class VisionUnavailable(RuntimeError):
