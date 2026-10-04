@@ -9,8 +9,8 @@ import httpx
 import pytest
 
 from agent.credits import CreditCatalog, Credits, InMemoryCreditStore
-from agent.voice.service import cap, hear, speak
-from agent.voice.spoken import speakable
+from agent.voice.service import cap, hear, script, speak
+from agent.voice.spoken import has_notation, readable
 from shared import speech
 from shared.config import get_config
 from shared.errors import UnprocessableError
@@ -61,39 +61,66 @@ def _provider(monkeypatch, reply: Reply) -> Provider:
 
 # --- what a voice is given to say ---------------------------------------------
 
-def test_a_reply_is_read_as_words_not_as_markup():
-    """Read as written, a reply is "dollar x caret two dollar" and "open bracket
-    one close bracket"."""
-    reply = ("### The roots\n\n**Roots** of $ax^2 + bx + c = 0$ are "
-             "$$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$ [1, 2].\n\n"
-             "- See [the lesson](https://x.y/z).")
-    spoken = speakable(reply, "en")
-    assert spoken == ("The roots\nRoots of ax squared plus bx plus c equals 0 are x equals "
-                      "minus b plus or minus the square root of b squared minus 4ac over 2a.\n"
-                      "See the lesson.")
+class Writer:
+    """A model that rewrites notation; records the prompt it was given."""
+
+    def __init__(self, reply: str = "", fail: bool = False) -> None:
+        self.reply, self.fail, self.prompts = reply, fail, []
+
+    def invoke(self, messages):
+        self.prompts.append(messages[-1].content)
+        if self.fail:
+            raise RuntimeError("gateway down")
+        return type("R", (), {"content": self.reply})()
 
 
-def test_arabic_maths_is_read_in_arabic():
-    assert speakable("مساحة الدائرة تساوي $\\pi r^2$ [1].", "ar") == \
-        "مساحة الدائرة تساوي باي r تربيع."
+def test_structure_is_removed_and_notation_is_left_for_the_model():
+    """Markdown, citation markers, links and the sources block are syntax, the
+    same in every language. Notation is language, so it is not touched here."""
+    reply = ("### The roots\n\n**Roots** of $ax^2 + bx + c = 0$ come from the "
+             "discriminant [1, 2].\n\n- See [the lesson](https://x.y/z).\n\n📚\n[1] Lesson 4\n\nTry it.")
+    assert readable(reply) == ("The roots\nRoots of $ax^2 + bx + c = 0$ come from the "
+                               "discriminant.\nSee the lesson.\nTry it.")
 
 
-def test_the_sources_block_is_for_the_eye_not_the_ear():
-    reply = "Plants make food.\n\n📚\n[1] Lesson 4, p.12\n[2] Lesson 5\n\nTry it yourself."
-    assert speakable(reply, "en") == "Plants make food.\nTry it yourself."
+def test_a_table_is_read_row_by_row_and_pictographs_are_silent():
+    reply = "| x | y |\n|---|---|\n| 1 | 2 |\nVoilà 📊 [📊](s3://bucket/c.png)"
+    assert readable(reply) == "x, y\n1, 2\nVoilà"
 
 
-def test_a_table_is_read_row_by_row_and_symbols_are_silent():
-    reply = "| x | y |\n|---|---|\n| 1 | 2 |\nOn a $x \\leq 5$ 📊 [📊](s3://bucket/c.png)"
-    assert speakable(reply, "fr") == "x, y\n1, 2\nOn a x est inférieur ou égal à 5"
+def test_notation_is_found_by_what_it_is_not_by_a_word_list():
+    assert has_notation("مساحة الدائرة $\\pi r^2$")
+    assert has_notation("المساحة = الطول × العرض")
+    assert has_notation("b) -12")
+    assert not has_notation("Plants make food from sunlight, a well-known rule.")
+    assert not has_notation("النباتات تصنع غذاءها من ضوء الشمس.")
 
 
-def test_maths_written_without_latex_is_still_spoken():
-    """Found by the feature test: quiz options and formulas the tutor writes in
-    plain text came back as "B, twelve" for "b) -12" and "x" for "×"."""
-    assert speakable("b) -12, a range 5-10, a well-known rule", "en") == \
-        "b) minus 12, a range 5-10, a well-known rule"
-    assert speakable("المساحة = الطول × العرض", "ar") == "المساحة يساوي الطول في العرض"
+def test_a_reply_without_notation_costs_no_model_call(config):
+    writer = Writer("should not be used")
+    assert script("Plants make food.", "en", config=config, llm=writer) == "Plants make food."
+    assert writer.prompts == []
+
+
+def test_notation_is_worded_by_the_model_in_the_replys_language(config):
+    writer = Writer("مساحة الدائرة تساوي باي في نق تربيع.")
+    spoken = script("مساحة الدائرة تساوي $\\pi r^2$.", "ar", config=config, llm=writer)
+    assert spoken == "مساحة الدائرة تساوي باي في نق تربيع."
+    assert "Arabic" in writer.prompts[0] and "$\\pi r^2$" in writer.prompts[0]
+
+
+def test_a_failed_rewrite_reads_the_text_as_it_is(config, caplog):
+    text = "If $x = 2$, then $x^2 = 4$."
+    assert script(text, "en", config=config, llm=Writer(fail=True)) == text
+    assert "speech script failed" in caplog.text
+
+
+def test_a_rewrite_that_grew_into_something_else_is_not_spoken(config, caplog):
+    """The rewrite may only word the notation. One that comes back as an essay
+    has changed what the student hears from what they were shown."""
+    text = "If $x = 2$, then $x^2 = 4$."
+    assert script(text, "en", config=config, llm=Writer("x " * 200)) == text
+    assert "speech script rejected" in caplog.text
 
 
 def test_a_long_reply_is_cut_at_a_sentence():
@@ -154,13 +181,15 @@ def test_a_reply_is_spoken_in_its_own_language(config, monkeypatch):
     """A multilingual voice left to guess reads an Arabic reply with English
     vowels; the reply's language is passed so it never has to guess."""
     provider = _provider(monkeypatch, Reply(content=b"ID3mp3"))
-    spoken = speak("الناتج $x < 5$ و **صحيح** [1]", "ar", config=config)
+    writer = Writer("الناتج x أصغر من خمسة و صحيح")
+    spoken = speak("الناتج $x < 5$ و **صحيح** [1]", "ar", config=config, llm=writer)
     sent = provider.calls[0]
     assert spoken.audio == b"ID3mp3" and spoken.content_type == "audio/mpeg"
     assert sent["url"] == f"https://api.elevenlabs.io/v1/text-to-speech/{spoken.voice}"
     assert sent["headers"]["xi-api-key"] == "el-key"
-    assert sent["json"] == {"text": "الناتج x أصغر من 5 و صحيح", "model_id": "eleven_flash_v2_5",
-                            "language_code": "ar"}
+    assert sent["json"] == {"text": "الناتج x أصغر من خمسة و صحيح",
+                            "model_id": "eleven_flash_v2_5", "language_code": "ar"}
+    assert "**" not in writer.prompts[0] and "[1]" not in writer.prompts[0]
 
 
 def test_a_reply_with_nothing_to_say_is_refused(config, monkeypatch):

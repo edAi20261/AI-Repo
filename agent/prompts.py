@@ -627,6 +627,23 @@ Return JSON only, no prose. Fields:
 
 # Used only when the finished answer came back in a language the student did not
 # write in. A rewrite, never a re-answer: the content was already grounded.
+SPEECH_SCRIPT_PROMPT = Prompt(
+    name="SPEECH_SCRIPT_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.CONTENT,
+    template="""The text below is a tutor's reply that is about to be read aloud by a voice.
+{language}
+Rewrite every piece of notation in it as the words a teacher would say aloud:
+LaTeX, formulas, equations, mathematical symbols, signs on numbers, exponents,
+fractions, roots, units and Greek letters. Change NOTHING else: keep every
+sentence, word, number and fact, in the same order. Do not add, explain, summarise,
+greet or comment. Return only the rewritten text.
+
+--- REPLY ---
+{text}""",
+)
+
+
 LANGUAGE_REPAIR_PROMPT = Prompt(
     name="LANGUAGE_REPAIR_PROMPT",
     audience=Audience.STUDENT,

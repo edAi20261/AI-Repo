@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
+
+from langchain_core.messages import HumanMessage
 
 from shared import speech
 from shared.config import Config
 from shared.errors import UnprocessableError
+from shared.llm import maybe_llm
 
-from .spoken import speakable
+from ..prompts import SPEECH_SCRIPT_PROMPT
+from .spoken import has_notation, readable
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +70,12 @@ def hear(audio: bytes, content_type: str, *, config: Config,
     return heard
 
 
-def speak(text: str, language: str, *, config: Config) -> Spoken:
+def speak(text: str, language: str, *, config: Config, llm: Any = None) -> Spoken:
     """A tutor reply read aloud, in the voice configured for its language."""
-    spoken = cap(speakable(text, language), config.get("voice.speak.max_chars"))
-    if not spoken:
+    clean = cap(readable(text), config.get("voice.speak.max_chars"))
+    if not clean:
         raise UnprocessableError("There is nothing in this reply to read aloud.")
+    spoken = script(clean, language, config=config, llm=llm)
     voice = config.get(f"voice.speak.voices.{language}") or config.get("voice.speak.voices.en")
     audio = speech.synthesize(spoken, voice, language, config=config)
     logger.info("reply spoken", extra={
@@ -78,6 +83,32 @@ def speak(text: str, language: str, *, config: Config) -> Spoken:
         "bytes": len(audio)})
     return Spoken(audio=audio, content_type=config.get("voice.speak.content_type"),
                   voice=voice, characters=len(spoken))
+
+
+def script(text: str, language: str, *, config: Config, llm: Any = None) -> str:
+    """``text`` with its notation written as words, by the model, in ``language``.
+
+    Without notation there is nothing to say differently, and no call is made.
+    A rewrite that fails, or comes back far longer than what it was given, is
+    not spoken: the text is read as it is, and the reason is logged.
+    """
+    if not has_notation(text):
+        return text
+    llm = llm if llm is not None else maybe_llm(config, "speech")
+    if llm is None:
+        logger.warning("no model for the speech script; notation will be read as written")
+        return text
+    prompt = SPEECH_SCRIPT_PROMPT.render(language=language, text=text)
+    try:
+        written = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()
+    except Exception:
+        logger.warning("speech script failed; notation will be read as written", exc_info=True)
+        return text
+    if not written or len(written) > config.get("voice.speak.script_max_growth") * len(text):
+        logger.warning("speech script rejected; notation will be read as written", extra={
+            "characters_in": len(text), "characters_out": len(written)})
+        return text
+    return written
 
 
 def audio_type(content: bytes, declared: Optional[str]) -> Optional[str]:
