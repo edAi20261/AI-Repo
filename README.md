@@ -298,6 +298,17 @@ what it says is true. Grading and quiz generation stay neutral. The contract is 
 `docs/persona-schema-requests.md`. `scripts/eval_persona.py` measures whether the
 replies sound like the teacher, and whether they add claims the plain tutor does not make.
 
+### Voice
+
+A student can ask by voice and hear the reply (`agent/voice/`, `shared/speech.py`).
+`POST /ai/voice/transcribe` turns a push-to-talk recording into text with
+ElevenLabs Scribe, which detects Arabic and English, including both mixed in one
+sentence. The text then goes through `/ai/chat` like anything typed.
+`POST /ai/voice/speak` reads a reply aloud with Azure. Arabic uses an Egyptian
+voice. Markdown, citations and the sources block are removed first, and LaTeX
+is read as words in the reply's language. The contract is in
+`docs/BACKEND_INTEGRATION.md` §7.
+
 ### Grading and mastery
 
 Grading is AI-final. An answer is graded against the answer key or rubric when there is

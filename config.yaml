@@ -35,8 +35,11 @@ llm:
   # the content-generating tasks. max_tokens are sane CEILINGS (a cap, not the driver of latency)
   # sized to each task so nothing truncates.
   overrides:
-    extract_topics:  { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
-    derive_deps:     { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
+    # Ingestion's two chat calls, one per book each. They follow vision onto
+    # Vertex so the whole ingestion path bills to one account; everything below
+    # answers students and stays on OpenRouter.
+    extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0 }
+    derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0 }
     understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
     converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }
     conversation_summary: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 1200 }
@@ -64,13 +67,42 @@ llm:
 vision:
   # Scanned/maths transcription and figure captions. fallback_model is used when
   # the primary response cannot be parsed.
-  provider: openrouter           # openrouter | anthropic | google | dashscope
-  model: qwen/qwen3-vl-235b-a22b-instruct
-  # Never fired to date: all 544 pages transcribed so far were read by the model
-  # above. Kept as the standby for a page it cannot parse, and OpenAI rather
-  # than Anthropic so both the primary and the standby bill through one account.
-  fallback_model: openai/gpt-4.1
-  base_url: https://openrouter.ai/api/v1
+  # Ingestion is the expensive half of this service — two model calls per page
+  # plus one per figure — so it has to be able to bill somewhere other than the
+  # half that answers students. The transport is the same everywhere (an
+  # OpenAI-shaped /chat/completions with a bearer token), so a gateway is a base
+  # URL and a key, not a code path.
+  # openrouter | google | openai | vertex
+  #
+  # google and vertex serve the same models and bill from different places:
+  # google draws on AI Studio prepay credit, vertex on the Cloud billing
+  # account, which is where a project's trial credit actually lives. vertex is
+  # also the only one that will not take a static key — it mints an OAuth token
+  # from a service account, which expires in an hour, so shared/gcp.py caches it.
+  provider: vertex
+  # The variable holding the key. Null means: the one this provider usually
+  # uses (OPENROUTER_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY). Name it when a
+  # deployment keeps its key somewhere of its own. Ignored by vertex.
+  api_key_env: null
+  # vertex only: the variable holding the path to the service-account JSON.
+  credentials_env: GOOGLE_APPLICATION_CREDENTIALS
+  # vertex only: which project and region the models are called in.
+  project: null
+  location: us-central1
+  # Measured on eight pages of a scanned Arabic question bank, against
+  # qwen/qwen3-vl-235b-a22b-instruct which this replaces:
+  #   qwen via openrouter   $0.0127/page   ~60s a call
+  #   gemini via vertex     $0.0065/page   ~6.9s a call
+  # Half the cost, an order of magnitude faster, and it bills to the Cloud
+  # account where this project's credit actually is.
+  model: google/gemini-2.5-flash
+  # The standby for a page the primary cannot parse. A Gemini model, so a
+  # fallback cannot quietly move the bill back to OpenRouter — which is what
+  # openai/gpt-4.1 here would have done on the first unparseable page.
+  fallback_model: google/gemini-2.5-pro
+  # Null means: built from the project and region below. Vertex's address
+  # carries both, so it is derived rather than typed out twice.
+  base_url: null
   timeout_seconds: 180           # a scanned page costs one call, so this is per page
   max_tokens: 4096
 
@@ -205,7 +237,20 @@ ingestion:
   ocr:
     min_chars_per_page: 40       # fewer characters than this: treat page as scanned
     render_dpi: 300
-    engine: vision               # the only one implemented; any other value turns
+    engine: vision
+    # How many pages are read by a model at once. A page is seconds of
+    # arithmetic and a minute of waiting on HTTP, and Fargate bills for the
+    # container existing rather than working — so reading one at a time held a
+    # machine for ten hours to do twenty minutes of work.
+    #
+    # Measured against Vertex on eight pages of a scanned Arabic question bank:
+    #   1 worker   6.9s/page
+    #   8 workers  1.6s/page, 8/8 answered, no rate limiting   <- picked
+    # 4.2x, not the 8x the number suggests: concurrent requests are each a
+    # little slower. Rendering stays on one thread either way — a PyMuPDF
+    # Document is not thread-safe, and two threads rendering from one is a
+    # crash rather than a slow path. 1 turns this off.
+    page_workers: 8               # the only one implemented; any other value turns
                                  # page vision off and leaves the text layer alone
     garbage:                     # legibility gate: glyph-noise digital pages -> vision
       symbol_ratio: 0.45         # non-alphanumeric share above this: symbol-junk (any length)
@@ -508,6 +553,29 @@ persona:
   selection_sample_chars: 40000
   build_timeout_seconds: 300
 
+voice:
+  transcribe:
+    url: https://api.elevenlabs.io/v1/speech-to-text
+    model: scribe_v2
+    api_key_env: ELEVENLABS_API_KEY
+    provider_logging: true
+    usd_per_minute: 0.0037
+    timeout_seconds: 60
+    max_upload_bytes: 10000000
+  speak:
+    api_key_env: AZURE_SPEECH_KEY
+    region_env: AZURE_SPEECH_REGION
+    output_format: audio-24khz-48kbitrate-mono-mp3
+    content_type: audio/mpeg
+    usd_per_million_chars: 15
+    max_chars: 3000
+    timeout_seconds: 30
+    voices:
+      ar: ar-EG-SalmaNeural
+      en: en-US-AvaMultilingualNeural
+      fr: fr-FR-DeniseNeural
+      de: de-DE-KatjaNeural
+
 render:
   # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.
   # User-agnostic: student, teacher and parent all use the same renderers.
@@ -623,6 +691,8 @@ credits:
     class_report:     { credits: 2, per: 1 }
     homework_capture: { credits: 1, per: 1 }
     persona_build:    { credits: 5, per: 1 }
+    voice_transcribe: { credits: 1, per: 1 }
+    voice_speak:      { credits: 1, per: 1 }
 
 environments:
   local:
