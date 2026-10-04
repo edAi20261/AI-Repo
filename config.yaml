@@ -198,6 +198,19 @@ ingestion:
     detect_direction: true
     reading_direction: ltr        # used only when detect_direction is false
     cache: true                   # store what a model read, keyed on model + prompt digest
+    # How many pages are read by a model at once. A page is seconds of
+    # arithmetic and a minute of waiting on HTTP, and Fargate bills for the
+    # container existing rather than working — so reading one at a time held a
+    # machine for ten hours to do twenty minutes of work.
+    #
+    # Measured against Vertex on eight pages of a scanned Arabic question bank:
+    #   1 worker   6.9s/page
+    #   8 workers  1.6s/page, 8/8 answered, no rate limiting   <- picked
+    # 4.2x, not the 8x the number suggests: concurrent requests are each a
+    # little slower. Rendering stays on one thread either way — a PyMuPDF
+    # Document is not thread-safe, and two threads rendering from one is a
+    # crash rather than a slow path. 1 turns this off.
+    page_workers: 8
     # The tier between a text layer that cannot be trusted with a page and a
     # chat model asked to transcribe it. A document layout model reads the page
     # from pixels, so scattered boxes cost it nothing, and it reports the

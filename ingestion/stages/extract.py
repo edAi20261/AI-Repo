@@ -37,6 +37,7 @@ from ..layout import (
     tier3,
 )
 from ..layout.chunker import content_blocks
+from ..concurrency import DEFAULT_WORKERS, in_order, windows
 from ..layout.page_cache import PageCache
 from ..prompts.page_layout import PAGE_LAYOUT_PROMPT
 from shared.source import materialise
@@ -101,6 +102,19 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
         "figures": 0, "stub_vision": 0, "unreadable": 0, "caption_failed": 0,
     }
     garbage_cfg = ocr.get("garbage", {})
+    is_math = state.get("subject_is_math", False)
+
+    # Read every page that needs a model before walking them, several at a
+    # time. A page is seconds of arithmetic and a minute of waiting on HTTP,
+    # and Fargate bills for the container existing rather than working — so
+    # one page at a time meant a book held a machine for ten hours to do
+    # twenty minutes of work.
+    transcribed: dict[int, tuple[bytes, Any]] = {}
+    if vision_enabled:
+        transcribed = _prefetch_transcriptions(
+            doc, state, ctx, min_chars=min_chars, render_dpi=render_dpi,
+            is_math=is_math, garbage_cfg=garbage_cfg, default_lang=default_lang,
+            workers=ocr.get("page_workers", DEFAULT_WORKERS))
 
     for page_no, page in pdf.iter_pages(doc):
         char_count = pdf.page_char_count(page)
@@ -121,6 +135,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
                 page_elems, page_figs = _vision_transcribe(
                     state, ctx, page, page_no, default_lang, "scanned",
                     render_dpi, norm, supported, counts,
+                    prefetched=transcribed.get(page_no),
                 )
             figures.extend(page_figs)
             elements.extend(page_elems)
@@ -135,8 +150,6 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             )
             continue
 
-        is_math = state.get("subject_is_math", False)
-
         # --- born-digital garbage page: glyph-noise text (subset Identity-H, no
         # ToUnicode) is unrecoverable, but the embedded images are intact. Transcribe
         # the TEXT via vision; take FIGURES from get_images (full-fidelity embedded
@@ -148,6 +161,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
                 page_elems, _ = _vision_transcribe(
                     state, ctx, page, page_no, default_lang, "garbage",
                     render_dpi, norm, supported, counts, with_figures=False,
+                    prefetched=transcribed.get(page_no),
                 )
             else:
                 counts["unreadable"] += 1
@@ -183,10 +197,13 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             counts["math"] += 1
             page_elems = []
             if vision_enabled:
-                math_png = pdf.render_page_png(page, dpi=render_dpi)
-                result = ctx.vision.transcribe_page(
-                    math_png, language_hint=page_lang, math=True
-                )
+                ready = transcribed.get(page_no)
+                if ready is not None:
+                    math_png, result = ready
+                else:
+                    math_png = pdf.render_page_png(page, dpi=render_dpi)
+                    result = ctx.vision.transcribe_page(
+                        math_png, language_hint=page_lang, math=True)
                 if ctx.vision.is_stub:
                     counts["stub_vision"] += 1
                 if result.unreadable:
@@ -463,6 +480,49 @@ def _read_page_with_layout_model(
     return parsed
 
 
+def _prefetch_transcriptions(
+    doc: Any, state: IngestionState, ctx: PipelineContext, *,
+    min_chars: int, render_dpi: int, is_math: bool, garbage_cfg: dict,
+    default_lang: str, workers: int,
+) -> dict[int, tuple[bytes, Any]]:
+    """Every page that needs a model, read ahead of the loop that consumes it.
+
+    Returns ``{page_no: (png, transcription)}``. Rendering happens here, on one
+    thread, because a PyMuPDF ``Document`` is not thread-safe; only the HTTP
+    call is handed out. A window at a time, because a rendered page is
+    megabytes and a whole book of them does not fit in the task.
+    """
+    wanted: list[tuple[int, Any, str]] = []
+    for page_no, page in pdf.iter_pages(doc):
+        char_count = pdf.page_char_count(page)
+        if char_count < min_chars:
+            wanted.append((page_no, page, "scanned"))
+        elif is_math:
+            wanted.append((page_no, page, "math"))
+        elif garbage_cfg and is_garbage(pdf.page_text(page), garbage_cfg):
+            wanted.append((page_no, page, "garbage"))
+    if not wanted:
+        return {}
+
+    out: dict[int, tuple[bytes, Any]] = {}
+    for window in windows(wanted, workers):
+        rendered = [(no, pdf.render_page_png(page, dpi=render_dpi), route)
+                    for no, page, route in window]
+
+        def read(item):
+            no, png, route = item
+            return no, png, ctx.vision.transcribe_page(
+                png, language_hint=default_lang, math=(route == "math"))
+
+        for no, png, result in in_order(rendered, read, workers=workers,
+                                        label="transcribe"):
+            out[no] = (png, result)
+    logger.info("pages transcribed ahead of the loop",
+                extra={"lecture_id": state["lecture_id"], "pages": len(out),
+                       "workers": workers})
+    return out
+
+
 def _read_page_with_vision(
     page: Any,
     page_no: int,
@@ -508,14 +568,20 @@ def _clear_previous_figures(ctx: PipelineContext, lecture_id: str) -> None:
 
 def _vision_transcribe(
     state, ctx, page, page_no, lang, route,
-    render_dpi, norm, supported, counts, with_figures=True,
+    render_dpi, norm, supported, counts, with_figures=True, prefetched=None,
 ) -> tuple[list[Element], list[Figure]]:
     """Render a page and transcribe its text via vision. Figures come from the
     returned boxes only when ``with_figures`` (scanned pages); a garbage page passes
     False and takes figures from get_images instead. Caller guards on vision_enabled;
     an unreadable page flags needs_review and is not indexed."""
-    png = pdf.render_page_png(page, dpi=render_dpi)
-    result = ctx.vision.transcribe_page(png, language_hint=lang)
+    # The prefetch has usually read this page already, several pages at a time
+    # while this loop was still on an earlier one. Falling back to reading it
+    # here keeps one path for a page the prefetch skipped.
+    if prefetched is not None:
+        png, result = prefetched
+    else:
+        png = pdf.render_page_png(page, dpi=render_dpi)
+        result = ctx.vision.transcribe_page(png, language_hint=lang)
     if ctx.vision.is_stub:
         counts["stub_vision"] += 1
     if result.unreadable:
