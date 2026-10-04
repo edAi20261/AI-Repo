@@ -278,10 +278,15 @@ def test_a_vision_failure_says_which_model_and_why(caplog):
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(httpx, "post", refuse)
+    # What is under test is the transport's reporting, not which gateway is
+    # shipped: vertex would need a service account before the post it is here
+    # to break, and the test would fail on the credential instead of the point.
+    config = Config.load()
+    config.override("vision.provider", "openrouter")
     try:
         with caplog.at_level(logging.WARNING):
             assert read_image(b"png", "read this", PageTranscription,
-                              config=Config.load(), label="transcribe_page") is None
+                              config=config, label="transcribe_page") is None
     finally:
         monkeypatch.undo()
 

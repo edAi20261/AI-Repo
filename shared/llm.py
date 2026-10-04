@@ -28,11 +28,42 @@ _NATIVE_KEY = {
 }
 
 
+VERTEX = "vertex"
+
+
+def _vertex_gateway(config: Config) -> tuple[str, str]:
+    """Vertex's OpenAI-compatible base URL and a fresh bearer token.
+
+    Not in ``_OPENAI_COMPAT`` because neither half is a constant: the address
+    carries the project and region, and the credential is an OAuth token that
+    expires in an hour rather than a key that does not.
+    """
+    import json
+
+    from .gcp import access_token, vertex_base_url
+
+    path = config.secret(config.get("vision.credentials_env")
+                         or "GOOGLE_APPLICATION_CREDENTIALS")
+    if not path:
+        raise ValueError(
+            "a task is configured for vertex but no service account is set; "
+            "point GOOGLE_APPLICATION_CREDENTIALS at the JSON key.")
+    project = config.get("vision.project")
+    if not project:
+        with open(path, encoding="utf-8") as handle:
+            project = json.load(handle).get("project_id")
+    location = config.get("vision.location") or "us-central1"
+    return vertex_base_url(project, location), access_token(path)
+
+
 def llm_key_available(config: Config, spec: dict) -> bool:
-    """True when ``spec`` names a provider/model whose API key is present."""
+    """True when ``spec`` names a provider/model whose credential is present."""
     provider = (spec.get("provider") or "").lower()
     if not provider or not spec.get("model"):
         return False
+    if provider == VERTEX:
+        return bool(config.secret(config.get("vision.credentials_env")
+                                  or "GOOGLE_APPLICATION_CREDENTIALS"))
     if provider in _OPENAI_COMPAT:
         return bool(config.secret(_OPENAI_COMPAT[provider][1]))
     return bool(config.secret(_NATIVE_KEY.get(provider, "")))
@@ -53,6 +84,15 @@ def get_llm(config: Config, task: str | None = None):
         timeout=spec.get("timeout_seconds"),
         max_retries=spec.get("max_retries", 2),
     )
+
+    if provider == VERTEX:
+        from langchain_openai import ChatOpenAI  # lazy
+
+        from .metering import MeteringCallback
+
+        base_url, token = _vertex_gateway(config)
+        return ChatOpenAI(model=model, base_url=base_url, api_key=token,
+                          callbacks=[MeteringCallback()], **common)
 
     if provider in _OPENAI_COMPAT:
         from langchain_openai import ChatOpenAI  # lazy
