@@ -563,18 +563,20 @@ voice:
     timeout_seconds: 60
     max_upload_bytes: 10000000
   speak:
-    api_key_env: AZURE_SPEECH_KEY
-    region_env: AZURE_SPEECH_REGION
-    output_format: audio-24khz-48kbitrate-mono-mp3
+    url: https://api.elevenlabs.io/v1/text-to-speech
+    model: eleven_flash_v2_5
+    api_key_env: ELEVENLABS_API_KEY
+    provider_logging: true
+    output_format: mp3_44100_128
     content_type: audio/mpeg
-    usd_per_million_chars: 15
+    usd_per_million_chars: 50
     max_chars: 3000
     timeout_seconds: 30
     voices:
-      ar: ar-EG-SalmaNeural
-      en: en-US-AvaMultilingualNeural
-      fr: fr-FR-DeniseNeural
-      de: de-DE-KatjaNeural
+      ar: EXAVITQu4vr4xnSDxMaL
+      en: EXAVITQu4vr4xnSDxMaL
+      fr: EXAVITQu4vr4xnSDxMaL
+      de: EXAVITQu4vr4xnSDxMaL
 
 render:
   # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.

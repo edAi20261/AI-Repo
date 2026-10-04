@@ -63,7 +63,7 @@ def speak(text: str, language: str, *, config: Config) -> Spoken:
     if not spoken:
         raise UnprocessableError("There is nothing in this reply to read aloud.")
     voice = config.get(f"voice.speak.voices.{language}") or config.get("voice.speak.voices.en")
-    audio = speech.synthesize(spoken, voice, config=config)
+    audio = speech.synthesize(spoken, voice, language, config=config)
     logger.info("reply spoken", extra={
         "language": language, "voice": voice, "characters": len(spoken),
         "bytes": len(audio)})

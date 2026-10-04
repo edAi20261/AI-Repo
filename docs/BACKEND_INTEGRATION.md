@@ -397,9 +397,9 @@ one answers anything itself:
 2. **Reply → speech.** A speaker button on a tutor reply sends that reply's text
    to `POST /ai/voice/speak` and plays the audio that comes back.
 
-**Keys this service needs:** `ELEVENLABS_API_KEY`, `AZURE_SPEECH_KEY`,
-`AZURE_SPEECH_REGION`. Without them both endpoints answer `503` with
-`details.missing` naming the variable.
+**Key this service needs:** `ELEVENLABS_API_KEY`. One key covers both
+directions. Without it, both endpoints answer `503` with `details.missing`
+naming the variable.
 
 ### `POST /ai/voice/transcribe` (paid: `voice_transcribe`)
 
@@ -434,8 +434,8 @@ The response body is the audio (`audio/mpeg`), not JSON. Stream it straight to
 the browser. Send the reply as it is, Markdown and LaTeX included. This service
 turns it into what a teacher would say: `$x^2$` becomes "x squared", Arabic
 maths is read in Arabic, and citations, links, emoji and the sources block are
-not read. Arabic is read by an Egyptian voice (`ar-EG-SalmaNeural`). Replies
-longer than about 3,000 characters are cut at a sentence. Response headers:
+not read. The voice is held to the reply's language. Replies longer than about
+3,000 characters are cut at a sentence. Response headers:
 `x-usage-cost-usd`, `x-voice`, `x-spoken-characters`.
 
 Cache the audio for each message on your side, by message id. Playing the same
