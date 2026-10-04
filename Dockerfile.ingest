@@ -26,15 +26,19 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 COPY requirements.txt requirements-ingest.txt ./
+# requirements-ingest.txt (paddleocr + paddlepaddle) is deliberately not
+# installed. It is the layout tier, ingestion.layout.tier2 is false, and it has
+# read zero pages in production — every one of the 2,982 so far went to the
+# vision model. It was 1.5 GB of the image, downloaded again on every task
+# start, for software never loaded.
 RUN pip install --no-compile --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 \
-    && pip install --no-compile -r requirements.txt \
-    && pip install --no-compile -r requirements-ingest.txt
+    && pip install --no-compile -r requirements.txt
 
 # ---------------------------------------------------------------------------
 FROM python:3.11-slim AS runtime
 
-# The layout models are read through OpenCV, which wants these at runtime and
-# is the one part of the stack that does not ship its own.
+# OpenCV wants these; it comes in with the document tooling and does not ship
+# its own.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -44,9 +48,7 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PADDLE_PDX_MODEL_SOURCE=huggingface \
-    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
-    PADDLE_PDX_CACHE_HOME=/opt/paddle
+    HF_HOME=/opt/models
 
 COPY agent/ agent/
 COPY shared/ shared/
@@ -56,13 +58,17 @@ COPY scripts/ scripts/
 COPY config.yaml .
 
 RUN useradd --create-home --uid 1000 appuser \
-    && mkdir -p /opt/paddle && chown -R appuser /opt/paddle
+    && mkdir -p /opt/models && chown -R appuser /opt/models
 USER appuser
 
-# The weights, fetched at build time. A job that downloads gigabytes on its
-# first page pays for it on every cold task, and fails the whole run when the
-# hoster is slow — which is how the first attempt at this was measured.
-RUN python -c "from paddleocr import PPStructureV3; PPStructureV3(device='cpu')"
+# The embedder, fetched at build time rather than at run time. Every task was
+# pulling BGE-M3 from HuggingFace on first use — 2.2 GB per run, through the
+# NAT Gateway, before a single page was read. Measured over September: 303 GB
+# of the 316 GB that gateway processed was task startup, not page reading.
+# Baked here it arrives with the image, which is the thing a task has to fetch
+# anyway.
+RUN python -c "from shared.config import get_config; \
+    from shared.embeddings import get_embedder; get_embedder(get_config())"
 
 # python, not `python -m ingestion`: a task override replaces the command, and
 # the same image has to be able to run the comparison script as well as the
