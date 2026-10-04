@@ -24,7 +24,8 @@
         {"name": "DATABASE_URL", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/AI_SERVICE_DATABASE_URL"},
         {"name": "AI_WEBHOOK_SHARED_SECRET", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/AI_WEBHOOK_SHARED_SECRET"},
         {"name": "QDRANT_API_KEY", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/ai-service/QDRANT_API_KEY"},
-        {"name": "OPENROUTER_API_KEY", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/ai-service/OPENROUTER_API_KEY"}
+        {"name": "OPENROUTER_API_KEY", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/ai-service/OPENROUTER_API_KEY"},
+        {"name": "GOOGLE_APPLICATION_CREDENTIALS", "valueFrom": "arn:aws:ssm:eu-central-1:649631967545:parameter/edu-ai/ai-service/GOOGLE_APPLICATION_CREDENTIALS"}
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
