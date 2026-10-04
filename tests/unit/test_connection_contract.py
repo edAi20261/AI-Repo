@@ -141,6 +141,25 @@ def test_a_connection_is_proved_alive_before_a_turn_gets_it(monkeypatch):
     assert seen["check"] is not None
 
 
+def test_a_connection_that_died_while_idle_fails_fast_instead_of_hanging(monkeypatch):
+    """The connection check sends SELECT 1 on a pooled socket. When the socket
+    was dropped silently while idle (no RST), nothing answers and nothing is
+    bounded: statement_timeout lives on the server, which never sees the query.
+    A tester's run sat in psycopg's wait() until the 120s turn limit and every
+    database-backed request answered 504 until the process was restarted.
+
+    Keepalives find a socket that died while idle; tcp_user_timeout bounds a
+    send that is never acknowledged. Both must end well inside a turn."""
+    config = Config.load()
+    kwargs = _pooled_with(monkeypatch, config)["kwargs"]
+
+    assert kwargs["keepalives"] == 1
+    idle_detection = (kwargs["keepalives_idle"]
+                      + kwargs["keepalives_interval"] * kwargs["keepalives_count"])
+    unacknowledged = kwargs["tcp_user_timeout"] / 1000
+    assert max(idle_detection, unacknowledged) < config.get("api.request_timeout") / 2
+
+
 # --- Qdrant -----------------------------------------------------------------
 
 def _qdrant_constructions(tree: ast.AST) -> list[ast.Call]:

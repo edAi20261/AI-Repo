@@ -330,6 +330,18 @@ database:
   # difference between p95 239ms and p95 350ms, and it is what stops a
   # connection the server dropped from failing inside a student's turn.
   pool_check_connections: true
+  # A pooled socket can die while idle without a reset: a NAT or firewall drops
+  # the flow, a failover moves the host. statement_timeout cannot help, because
+  # the server never sees the query; the check's SELECT 1 then waited until the
+  # 120s turn limit and every database request answered 504 until a restart.
+  # Keepalives find a socket that died idle within idle + interval x count
+  # (35s); tcp_user_timeout fails a send nobody acknowledges within 15s. Both
+  # are bounded by the turn rather than swept: well under api.request_timeout,
+  # and far above the 486ms handshake a replacement connection costs.
+  keepalives_idle_seconds: 20
+  keepalives_interval_seconds: 5
+  keepalives_count: 3
+  tcp_user_timeout_ms: 15000
 
 agent:
   # Retrieval is two-stage. A dense search finds candidates; BM25 over those same
