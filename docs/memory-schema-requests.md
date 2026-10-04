@@ -135,3 +135,28 @@ GRANT SELECT ON engagement.ai_chat_messages, engagement.ai_chat_sessions
 ```
 
 Read-only, two tables. Nothing here writes to that schema.
+
+---
+
+## 5. Two ingestion paths, not one (fixed, recorded here so it is not re-learned)
+
+`python -m ingestion` as an ECS task is not the only way a lesson is ingested.
+`system/ingestion_jobs.py` imports `run_ingestion` and calls it **inside the
+service process**, which is what happens when a teacher publishes a lesson.
+
+So a credential the ingestion needs has to reach *both* the ingest task and the
+service task. When vision and topic extraction moved to Vertex, only the ingest
+task got it: homework capture returned 500, and a published lesson would have
+had every page read as blank and then failed at the topics stage.
+
+The ECS execution role is the other half of it. `edu-ai-ecs-task-execution-ssm`
+lists its parameters one by one rather than by prefix, so a new secret is
+unreadable until it is added there too — and the task fails to start with
+`ResourceInitializationError`, before any application log exists to explain it.
+
+Both are done. The checklist for the next secret:
+
+1. `ssm put-parameter` under `/edu-ai/ai-service/`
+2. add the ARN to the `edu-ai-ecs-task-execution-ssm` role policy
+3. add it to `infra/ingest-task-definition.json` **and** the service task definition
+4. deploy the service onto the new revision — registering it is not deploying it
