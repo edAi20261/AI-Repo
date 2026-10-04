@@ -38,22 +38,17 @@ def _vertex_gateway(config: Config) -> tuple[str, str]:
     carries the project and region, and the credential is an OAuth token that
     expires in an hour rather than a key that does not.
     """
-    import json
+    from .gcp import access_token, project_of, vertex_base_url
 
-    from .gcp import access_token, vertex_base_url
-
-    path = config.secret(config.get("vision.credentials_env")
-                         or "GOOGLE_APPLICATION_CREDENTIALS")
-    if not path:
+    source = config.secret(config.get("vision.credentials_env")
+                           or "GOOGLE_APPLICATION_CREDENTIALS")
+    if not source:
         raise ValueError(
             "a task is configured for vertex but no service account is set; "
-            "point GOOGLE_APPLICATION_CREDENTIALS at the JSON key.")
-    project = config.get("vision.project")
-    if not project:
-        with open(path, encoding="utf-8") as handle:
-            project = json.load(handle).get("project_id")
+            "GOOGLE_APPLICATION_CREDENTIALS takes a path or the JSON itself.")
+    project = config.get("vision.project") or project_of(source)
     location = config.get("vision.location") or "us-central1"
-    return vertex_base_url(project, location), access_token(path)
+    return vertex_base_url(project, location), access_token(source)
 
 
 def llm_key_available(config: Config, spec: dict) -> bool:
