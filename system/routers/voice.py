@@ -11,6 +11,7 @@ import logging
 from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import Response
 
+from agent.voice.service import audio_type
 from shared.errors import UnprocessableError
 
 from ..dependencies import Authenticated, RequestId, RuntimeDep
@@ -24,7 +25,8 @@ router = APIRouter(
 )
 
 ACCEPTED = ("audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "audio/mp3", "audio/wav",
-            "audio/x-wav", "audio/wave", "audio/m4a", "audio/x-m4a", "audio/aac", "video/webm")
+            "audio/x-wav", "audio/wave", "audio/m4a", "audio/x-m4a", "audio/aac", "audio/flac",
+            "video/webm")
 
 
 @router.post(
@@ -43,18 +45,18 @@ async def transcribe(
                      "otherwise: the language is detected, including Arabic and English "
                      "mixed in one sentence.")),
 ) -> TranscriptResponse:
-    content_type = (audio.content_type or "").split(";", 1)[0].strip().lower()
-    if content_type not in ACCEPTED:
-        raise UnprocessableError(f"Send the recording as one of {', '.join(ACCEPTED)}.",
-                                 details={"received": audio.content_type})
     content = await audio.read()
     limit = runtime.config.get("voice.transcribe.max_upload_bytes")
     if not content:
         raise UnprocessableError("The recording was empty.")
+    content_type = audio_type(content, audio.content_type)
+    if content_type not in ACCEPTED:
+        raise UnprocessableError(f"Send the recording as one of {', '.join(ACCEPTED)}.",
+                                 details={"received": audio.content_type})
     if len(content) > limit:
         raise UnprocessableError("That recording is too long. Ask one question at a time.",
                                  details={"bytes": len(content), "limit": limit})
-    heard = await runtime.transcribe(content, audio.content_type or content_type,
+    heard = await runtime.transcribe(content, content_type,
                                      language=language, billed_user_id=billed_user_id)
     return TranscriptResponse.of(heard.result, request_id, heard.meter)
 
