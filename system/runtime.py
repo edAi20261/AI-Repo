@@ -33,6 +33,7 @@ from agent.persona.models import Exemplar, Persona
 from agent.persona.store import PersonaStore
 from agent.persona.voice import PersonaDirectory
 from agent.tagging import suggest_topics
+from agent.voice.service import Heard, hear, speak
 from agent.tools import get_latest_report
 from shared.config import Config
 from shared.metering import Meter, start_meter
@@ -61,6 +62,10 @@ def _degraded(result: dict[str, Any]) -> bool:
 
 def _unreadable(result: HomeworkCapture) -> bool:
     return result.unreadable
+
+
+def _unheard(result: Heard) -> bool:
+    return not result.heard
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,17 @@ class AgentRuntime:
                                   partial(capture, content, config=self._config,
                                           language_hint=language),
                                   failed=_unreadable)
+
+    async def transcribe(self, audio: bytes, content_type: str, *,
+                         language: Optional[str], billed_user_id: str) -> Metered:
+        return await self._billed(billed_user_id, Action.VOICE_TRANSCRIBE,
+                                  partial(hear, audio, content_type, config=self._config,
+                                          language=language),
+                                  failed=_unheard)
+
+    async def speak(self, text: str, language: str, *, billed_user_id: str) -> Metered:
+        return await self._billed(billed_user_id, Action.VOICE_SPEAK,
+                                  partial(speak, text, language, config=self._config))
 
     async def class_analytics(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._offload(class_analytics, payload["user_ids"],

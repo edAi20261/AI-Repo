@@ -36,6 +36,7 @@ from .routers import (
     personas,
     reports,
     topics,
+    voice,
 )
 from .runtime import AgentRuntime
 from .security import (
@@ -91,7 +92,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     register_exception_handlers(app)
     for module in (health, chat, grading, homework, reports, learners, classes, topics,
-                   ingestion, memory, credits, personas):
+                   ingestion, memory, credits, personas, voice):
         app.include_router(module.router)
     return app
 

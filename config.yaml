@@ -553,6 +553,29 @@ persona:
   selection_sample_chars: 40000
   build_timeout_seconds: 300
 
+voice:
+  transcribe:
+    url: https://api.elevenlabs.io/v1/speech-to-text
+    model: scribe_v2
+    api_key_env: ELEVENLABS_API_KEY
+    provider_logging: true
+    usd_per_minute: 0.0037
+    timeout_seconds: 60
+    max_upload_bytes: 10000000
+  speak:
+    api_key_env: AZURE_SPEECH_KEY
+    region_env: AZURE_SPEECH_REGION
+    output_format: audio-24khz-48kbitrate-mono-mp3
+    content_type: audio/mpeg
+    usd_per_million_chars: 15
+    max_chars: 3000
+    timeout_seconds: 30
+    voices:
+      ar: ar-EG-SalmaNeural
+      en: en-US-AvaMultilingualNeural
+      fr: fr-FR-DeniseNeural
+      de: de-DE-KatjaNeural
+
 render:
   # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.
   # User-agnostic: student, teacher and parent all use the same renderers.
@@ -668,6 +691,8 @@ credits:
     class_report:     { credits: 2, per: 1 }
     homework_capture: { credits: 1, per: 1 }
     persona_build:    { credits: 5, per: 1 }
+    voice_transcribe: { credits: 1, per: 1 }
+    voice_speak:      { credits: 1, per: 1 }
 
 environments:
   local:

@@ -385,6 +385,79 @@ within five minutes (`persona.cache_ttl_seconds`).
 
 ---
 
+## 7. Voice
+
+The student can ask by voice and hear the reply. It has two parts, and neither
+one answers anything itself:
+
+1. **Mic → text.** The student presses the mic, speaks, then presses stop. The
+   recording goes to `POST /ai/voice/transcribe`, and the words come back. Put
+   them in the message box. The student can fix them, then presses send as usual
+   (`/ai/chat`).
+2. **Reply → speech.** A speaker button on a tutor reply sends that reply's text
+   to `POST /ai/voice/speak` and plays the audio that comes back.
+
+**Keys this service needs:** `ELEVENLABS_API_KEY`, `AZURE_SPEECH_KEY`,
+`AZURE_SPEECH_REGION`. Without them both endpoints answer `503` with
+`details.missing` naming the variable.
+
+### `POST /ai/voice/transcribe` (paid: `voice_transcribe`)
+
+This is a multipart upload with one field, `audio`: the Blob from the browser's
+`MediaRecorder`. Chrome makes `audio/webm;codecs=opus` and Safari makes
+`audio/mp4`; both are fine, and so are ogg, mp3, wav and m4a. The limit is 10 MB,
+which is a few minutes. Query parameters:
+
+| Param | Required | Notes |
+|---|---|---|
+| `billed_user_id` | yes | the student |
+| `language` | no | Leave it out. The language is detected, including Arabic and English mixed in one sentence. Send it only when you are sure |
+
+```json
+{ "request_id": "…", "text": "ليه الإشارة بتتقلب لما أضرب في سالب؟",
+  "heard": true, "language": "ar", "seconds": 3.4, "usage": { … } }
+```
+
+`heard: false` means there was no speech in the recording. Show "I didn't catch
+that, try again". The credit is refunded. A `422` means the file is not readable
+audio.
+
+### `POST /ai/voice/speak` (paid: `voice_speak`)
+
+```json
+{ "text": "<the reply exactly as /ai/chat returned it>",
+  "language": "<the reply's language from /ai/chat>",
+  "billed_user_id": "uuid" }
+```
+
+The response body is the audio (`audio/mpeg`), not JSON. Stream it straight to
+the browser. Send the reply as it is, Markdown and LaTeX included. This service
+turns it into what a teacher would say: `$x^2$` becomes "x squared", Arabic
+maths is read in Arabic, and citations, links, emoji and the sources block are
+not read. Arabic is read by an Egyptian voice (`ar-EG-SalmaNeural`). Replies
+longer than about 3,000 characters are cut at a sentence. Response headers:
+`x-usage-cost-usd`, `x-voice`, `x-spoken-characters`.
+
+Cache the audio for each message on your side, by message id. Playing the same
+reply twice should not be charged twice.
+
+### What the UI should do
+
+- **Mic button**, in the chat composer, with three states: `idle → recording`
+  (red, pulsing, with a timer) `→ transcribing` (spinner) `→ idle`, and the text
+  in the box. Ask for mic permission on the first press, and explain it if the
+  student says no.
+- **Do not auto-send** the transcript. Let the student see it and fix it first.
+- **Speaker button** on each tutor reply: `idle → loading → playing (stop)`.
+  Only one reply plays at a time. Pressing the mic stops playback.
+- **Optional:** an "auto-play replies" toggle. Autoplay only the reply that just
+  arrived, never history. Browsers block sound until the user has interacted
+  with the page, and pressing the mic counts.
+- **Privacy:** recordings are of children. Do not store the audio; the
+  transcript is enough.
+
+---
+
 ## Errors
 
 Every failure returns the same envelope:
