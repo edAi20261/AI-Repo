@@ -88,6 +88,14 @@ def test_a_table_is_read_row_by_row_and_symbols_are_silent():
     assert speakable(reply, "fr") == "x, y\n1, 2\nOn a x est inférieur ou égal à 5"
 
 
+def test_maths_written_without_latex_is_still_spoken():
+    """Found by the feature test: quiz options and formulas the tutor writes in
+    plain text came back as "B, twelve" for "b) -12" and "x" for "×"."""
+    assert speakable("b) -12, a range 5-10, a well-known rule", "en") == \
+        "b) minus 12, a range 5-10, a well-known rule"
+    assert speakable("المساحة = الطول × العرض", "ar") == "المساحة يساوي الطول في العرض"
+
+
 def test_a_long_reply_is_cut_at_a_sentence():
     assert cap("One. Two three four. Five six seven eight nine.", 30) == "One. Two three four."
 
@@ -116,7 +124,7 @@ def test_the_codec_parameter_never_reaches_the_provider(config, monkeypatch):
 def test_silence_is_heard_as_nothing_rather_than_an_error(config, monkeypatch):
     _provider(monkeypatch, Reply(json={"language_code": "eng", "text": "", "words": []}))
     heard = hear(b"...", "audio/webm", config=config)
-    assert heard.heard is False and heard.text == ""
+    assert heard.heard is False and heard.text == "" and heard.language is None
 
 
 def test_an_unreadable_recording_is_the_requests_fault(config, monkeypatch):
@@ -206,6 +214,30 @@ def test_a_file_that_is_not_audio_is_refused_before_anything_is_paid(config, mon
     with _client(get_config(reload=True)) as client:
         response = client.post("/ai/voice/transcribe", params={"billed_user_id": "s-1"},
                                files={"audio": ("q.png", b"\x89PNG", "image/png")},
+                               headers=HEADERS)
+    assert response.status_code == 422 and provider.calls == []
+
+
+def test_a_recording_relabelled_by_a_proxy_is_still_accepted(config, monkeypatch):
+    """Found by the feature test: a backend that forwards the upload sends it as
+    application/octet-stream, and every recording was refused as "not audio"."""
+    monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", "token")
+    provider = _provider(monkeypatch, Reply(json=SCRIBE))
+    with _client(get_config(reload=True)) as client:
+        response = client.post("/ai/voice/transcribe", params={"billed_user_id": "s-1"},
+                               files={"audio": ("blob", b"\x1aE\xdf\xa3webm...",
+                                                "application/octet-stream")},
+                               headers=HEADERS)
+    assert response.status_code == 200, response.text
+    assert provider.calls[0]["files"]["file"][2] == "audio/webm"
+
+
+def test_an_unknown_file_relabelled_as_generic_is_still_refused(config, monkeypatch):
+    monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", "token")
+    provider = _provider(monkeypatch, Reply(json=SCRIBE))
+    with _client(get_config(reload=True)) as client:
+        response = client.post("/ai/voice/transcribe", params={"billed_user_id": "s-1"},
+                               files={"audio": ("blob", b"%PDF-1.4", "application/octet-stream")},
                                headers=HEADERS)
     assert response.status_code == 422 and provider.calls == []
 

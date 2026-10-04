@@ -20,6 +20,14 @@ from .spoken import speakable
 
 logger = logging.getLogger(__name__)
 
+_SIGNATURES = (
+    (b"\x1aE\xdf\xa3", "audio/webm"),
+    (b"OggS", "audio/ogg"),
+    (b"fLaC", "audio/flac"),
+    (b"ID3", "audio/mpeg"),
+)
+GENERIC_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream"})
+
 _LANGUAGES = {"ar": "ar", "ara": "ar", "arz": "ar", "en": "en", "eng": "en",
               "fr": "fr", "fra": "fr", "fre": "fr", "de": "de", "deu": "de", "ger": "de"}
 
@@ -48,7 +56,8 @@ def hear(audio: bytes, content_type: str, *, config: Config,
     """A recorded question, as the words the student said."""
     transcript = speech.transcribe(audio, _bare(content_type), config=config,
                                    language=language)
-    heard = Heard(text=transcript.text, language=_LANGUAGES.get(transcript.language or ""),
+    heard = Heard(text=transcript.text,
+                  language=_LANGUAGES.get(transcript.language or "") if transcript.text else None,
                   seconds=transcript.seconds)
     logger.info("speech transcribed", extra={
         "bytes": len(audio), "seconds": round(heard.seconds, 1),
@@ -69,6 +78,25 @@ def speak(text: str, language: str, *, config: Config) -> Spoken:
         "bytes": len(audio)})
     return Spoken(audio=audio, content_type=config.get("voice.speak.content_type"),
                   voice=voice, characters=len(spoken))
+
+
+def audio_type(content: bytes, declared: Optional[str]) -> Optional[str]:
+    """What the recording is: as declared, or read off its first bytes when a proxy
+    relabelled it as a generic upload on the way here. None when it is not audio
+    we recognise."""
+    bare = _bare(declared or "")
+    if bare not in GENERIC_TYPES:
+        return bare
+    for signature, kind in _SIGNATURES:
+        if content.startswith(signature):
+            return kind
+    if content[4:8] == b"ftyp":
+        return "audio/mp4"
+    if content[:4] == b"RIFF" and content[8:12] == b"WAVE":
+        return "audio/wav"
+    if len(content) > 1 and content[0] == 0xFF and content[1] & 0xE0 == 0xE0:
+        return "audio/mpeg"
+    return None
 
 
 def cap(text: str, limit: int) -> str:

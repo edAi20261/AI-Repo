@@ -33,6 +33,8 @@ _EMPHASIS = re.compile(r"(\*\*|__|\*|_|~~|`)(?=\S)(.+?)(?<=\S)\1")
 _TRAILER = ("📚", "🧩")
 _SPACES = re.compile(r"[ \t]+")
 _SPACE_BEFORE_PUNCTUATION = re.compile(r"\s+([.,;:!?؟،])")
+_STANDALONE_EQUALS = re.compile(r"(?<=\S)\s+=\s+(?=\S)")
+_NEGATIVE_NUMBER = re.compile(r"(?<![\w)\]])[-−](?=\d)")
 _BLANK_LINES = re.compile(r"\n{2,}")
 
 
@@ -133,6 +135,7 @@ def speakable(text: str, language: str) -> str:
     text = _BULLET.sub("", text)
     for _ in range(3):
         text = _EMPHASIS.sub(lambda m: m.group(2), text)
+    text = _plain_maths(text, words)
     text = _without_symbols(text)
     lines = [_SPACE_BEFORE_PUNCTUATION.sub(r"\1", _SPACES.sub(" ", line)).strip()
              for line in text.splitlines()]
@@ -183,6 +186,19 @@ def _power(exponent: str, words: MathWords) -> str:
 def _unbrace(value: str) -> str:
     value = value.strip()
     return value[1:-1].strip() if value.startswith("{") and value.endswith("}") else value
+
+
+def _plain_maths(text: str, words: MathWords) -> str:
+    """Maths written without LaTeX: a minus sign before a number, and the symbols
+    that only ever mean one thing. A voice reads "-12" as "twelve" and "×" as "x"."""
+    text = _NEGATIVE_NUMBER.sub(f"{words.minus} ", text)
+    text = _STANDALONE_EQUALS.sub(f" {words.equals} ", text)
+    for symbol, spoken in (("×", words.times), ("÷", words.divided), ("±", words.plus_minus),
+                           ("≤", words.less_equal), ("≥", words.greater_equal),
+                           ("≠", words.not_equal), ("≈", words.approx), ("∞", words.infinity),
+                           ("−", words.minus)):
+        text = text.replace(symbol, f" {spoken} ")
+    return text
 
 
 def _without_trailers(text: str) -> str:
