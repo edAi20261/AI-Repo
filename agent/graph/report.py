@@ -47,13 +47,19 @@ def run_report(payload: dict[str, Any], *, config: Optional[Config] = None) -> d
         "user_id": payload.get("user_id"),
         "subject_id": payload.get("subject_id"),
         "lecture_ids": payload.get("lecture_ids") or None,
-        "language": payload.get("language", "en"),
+        "language": _language(payload, config),
     })
     result = dict(state.get("result", {}))
     result.update(_store(result, payload.get("user_id"), config))
     if state.get("visual_spec"):
         result["visual_spec"] = state["visual_spec"]
     return result
+
+
+def _language(payload: dict[str, Any], config: Config) -> str:
+    # The router passes the key whether or not the caller sent one, so a .get
+    # default never applied and None reached the prompt.
+    return payload.get("language") or config.get("language.default")
 
 
 def _store(result: dict[str, Any], user_id: Optional[str], config: Config) -> dict[str, Any]:
@@ -84,7 +90,7 @@ def run_class_report(payload: dict[str, Any], *, config: Optional[Config] = None
                                   topic_limit=config.get("report.weak_topic_limit", 5))
         try:
             narrative, claims = narrate_claims(llm, REPORT_CLASS_PROMPT, evidence,
-                                               language=payload.get("language", "en"),
+                                               language=_language(payload, config),
                                                config=config)
         except Exception:
             logger.error("class report narrate failed; degrading", exc_info=True)

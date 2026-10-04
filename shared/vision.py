@@ -28,7 +28,10 @@ M = TypeVar("M", bound=BaseModel)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_TIMEOUT = 180
-DEFAULT_MAX_TOKENS = 4096
+# Gemini counts its hidden thinking against this and spends thousands of tokens
+# before writing a word, so a budget sized for a model without it truncates the
+# answer mid-JSON. Must match config.yaml; test_config_contract enforces that.
+DEFAULT_MAX_TOKENS = 16384
 
 # Which environment variable holds the key, per gateway. The transport is the
 # same everywhere — an OpenAI-shaped /chat/completions with a bearer token —
@@ -169,6 +172,13 @@ def _post(
                 "model": model,
                 "max_tokens": config.get("vision.max_tokens", DEFAULT_MAX_TOKENS),
                 "temperature": 0,
+                # Gemini thinks before it answers and bills the thinking at the
+                # output rate — 5,074 tokens of it against 496 of transcription
+                # on a measured page, which made reading a page cost more than
+                # the model this replaced. Transcription is copying words off an
+                # image; it does not need the deliberation.
+                **({"reasoning_effort": config.get("vision.reasoning_effort")}
+                   if config.get("vision.reasoning_effort") else {}),
                 "usage": {"include": True},
                 "messages": [{
                     "role": "user",

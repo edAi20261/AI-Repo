@@ -46,6 +46,7 @@ llm:
     explain:         { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     summarize:       { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 4000 }
     compose:         { provider: openrouter, model: google/gemini-2.5-flash-lite, max_tokens: 2000 }
+    speech:          { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 2000 }
     assessment:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 4000 }
     grade:           { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 4000 }
     report:          { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 2000 }
@@ -104,7 +105,21 @@ vision:
   # carries both, so it is derived rather than typed out twice.
   base_url: null
   timeout_seconds: 180           # a scanned page costs one call, so this is per page
-  max_tokens: 4096
+  # Gemini counts its hidden thinking against this, and on a dense Arabic page
+  # it thinks ~5,000 tokens before writing ~500. At 4096 the JSON was cut off
+  # mid-string and failed to parse: measured 2 of 4 pages truncated, which the
+  # run then retried onto the fallback model and rate-limited itself. At 16384,
+  # 0 of 4.
+  max_tokens: 16384
+  # How much deliberation to pay for. Measured over three dense pages, cost per
+  # call and the characters transcribed:
+  #   default   $0.01624   5074 thinking   1725 chars
+  #   low       $0.00635    907 thinking   1707 chars   <- picked
+  #   minimal   $0.00492    485 thinking   1554 chars
+  # low keeps 99% of the text for 39% of the price. minimal is cheaper again
+  # and loses a tenth of the words, which is not a trade worth making when the
+  # job is copying a page exactly. Null leaves the provider's default.
+  reasoning_effort: low
 
 embeddings:
   # Bilingual index embedder. `hash` is a deterministic test embedder (no model).
@@ -329,6 +344,18 @@ database:
   # difference between p95 239ms and p95 350ms, and it is what stops a
   # connection the server dropped from failing inside a student's turn.
   pool_check_connections: true
+  # A pooled socket can die while idle without a reset: a NAT or firewall drops
+  # the flow, a failover moves the host. statement_timeout cannot help, because
+  # the server never sees the query; the check's SELECT 1 then waited until the
+  # 120s turn limit and every database request answered 504 until a restart.
+  # Keepalives find a socket that died idle within idle + interval x count
+  # (35s); tcp_user_timeout fails a send nobody acknowledges within 15s. Both
+  # are bounded by the turn rather than swept: well under api.request_timeout,
+  # and far above the 486ms handshake a replacement connection costs.
+  keepalives_idle_seconds: 20
+  keepalives_interval_seconds: 5
+  keepalives_count: 3
+  tcp_user_timeout_ms: 15000
 
 agent:
   # Retrieval is two-stage. A dense search finds candidates; BM25 over those same
@@ -571,6 +598,7 @@ voice:
     content_type: audio/mpeg
     usd_per_million_chars: 50
     max_chars: 3000
+    script_max_growth: 4
     timeout_seconds: 30
     voices:
       ar: EXAVITQu4vr4xnSDxMaL
