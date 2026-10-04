@@ -1,14 +1,15 @@
-"""Speech in and speech out, through the providers that do it best for us.
+"""Speech in and speech out, both through ElevenLabs.
 
-Speech to text is ElevenLabs Scribe. On Egyptian Arabic mixed with English,
-the way our students actually talk, it was the only production API with a
-usable error rate (13.1% WER against 45.9% for the next best, arXiv 2605.19069).
-It also detects the language itself, so a student switching between the two
+Speech to text is Scribe. On Egyptian Arabic mixed with English, the way our
+students actually talk, it was the only production API with a usable error
+rate (13.1% WER against 45.9% for the next best, arXiv 2605.19069). It also
+detects the language itself, so a student switching between the two
 mid-sentence needs no hint.
 
-Text to speech is Azure. It is the only provider with Egyptian Arabic voices
-(ar-EG-SalmaNeural, ar-EG-ShakirNeural); every other offers Gulf or Modern
-Standard Arabic, which an Egyptian child hears as somebody else's teacher.
+Text to speech is the same account, so one key covers both directions. Its
+voices are multilingual; the reply's language is passed so a voice never
+drifts into another one. It has no Egyptian Arabic voice, which is the cost of
+one provider instead of two.
 
 Both are one synchronous HTTP call. A failure raises with the provider's reason,
 so an expired key and an unreadable recording are not the same "something went
@@ -20,7 +21,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Optional
-from xml.sax.saxutils import escape
 
 from .config import Config
 from .errors import ServiceUnavailableError, UnprocessableError
@@ -84,23 +84,19 @@ def transcribe(audio: bytes, content_type: str, *, config: Config,
                       language=payload.get("language_code"), seconds=seconds)
 
 
-def synthesize(text: str, voice: str, *, config: Config) -> bytes:
-    """``text`` read aloud by ``voice``, in the configured audio format."""
+def synthesize(text: str, voice: str, language: str, *, config: Config) -> bytes:
+    """``text`` read aloud by ``voice``, held to ``language``."""
     import httpx
 
     key = _key(config, "voice.speak.api_key_env")
-    region = _key(config, "voice.speak.region_env")
-    locale = "-".join(voice.split("-")[:2])
-    ssml = (f"<speak version='1.0' xml:lang='{locale}'>"
-            f"<voice name='{escape(voice)}'>{escape(text)}</voice></speak>")
     try:
         response = httpx.post(
-            f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
-            headers={"Ocp-Apim-Subscription-Key": key,
-                     "Content-Type": "application/ssml+xml",
-                     "X-Microsoft-OutputFormat": config.get("voice.speak.output_format"),
-                     "User-Agent": "eduai-ai-service"},
-            content=ssml.encode("utf-8"),
+            f"{config.get('voice.speak.url')}/{voice}",
+            headers={"xi-api-key": key, "content-type": "application/json"},
+            params={"output_format": config.get("voice.speak.output_format"),
+                    "enable_logging": str(config.get("voice.speak.provider_logging")).lower()},
+            json={"text": text, "model_id": config.get("voice.speak.model"),
+                  "language_code": language},
             timeout=config.get("voice.speak.timeout_seconds"),
         )
     except httpx.HTTPError as error:

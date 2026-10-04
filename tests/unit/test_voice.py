@@ -50,8 +50,6 @@ SCRIBE = {"language_code": "ara", "language_probability": 0.98,
 def config(monkeypatch):
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
-    monkeypatch.setenv("AZURE_SPEECH_KEY", "az-key")
-    monkeypatch.setenv("AZURE_SPEECH_REGION", "uaenorth")
     return get_config(reload=True)
 
 
@@ -144,15 +142,17 @@ def test_voice_without_keys_says_what_is_missing(config, monkeypatch):
 
 # --- speaking -------------------------------------------------------------------
 
-def test_an_arabic_reply_is_read_by_an_egyptian_voice(config, monkeypatch):
+def test_a_reply_is_spoken_in_its_own_language(config, monkeypatch):
+    """A multilingual voice left to guess reads an Arabic reply with English
+    vowels; the reply's language is passed so it never has to guess."""
     provider = _provider(monkeypatch, Reply(content=b"ID3mp3"))
-    spoken = speak("الناتج $x < 5$ & **صحيح**", "ar", config=config)
+    spoken = speak("الناتج $x < 5$ و **صحيح** [1]", "ar", config=config)
     sent = provider.calls[0]
-    ssml = sent["content"].decode()
-    assert spoken.audio == b"ID3mp3" and spoken.voice == "ar-EG-SalmaNeural"
-    assert sent["url"] == "https://uaenorth.tts.speech.microsoft.com/cognitiveservices/v1"
-    assert "xml:lang='ar-EG'" in ssml and "<voice name='ar-EG-SalmaNeural'>" in ssml
-    assert "x أصغر من 5 &amp; صحيح" in ssml
+    assert spoken.audio == b"ID3mp3" and spoken.content_type == "audio/mpeg"
+    assert sent["url"] == f"https://api.elevenlabs.io/v1/text-to-speech/{spoken.voice}"
+    assert sent["headers"]["xi-api-key"] == "el-key"
+    assert sent["json"] == {"text": "الناتج x أصغر من 5 و صحيح", "model_id": "eleven_flash_v2_5",
+                            "language_code": "ar"}
 
 
 def test_a_reply_with_nothing_to_say_is_refused(config, monkeypatch):
@@ -219,7 +219,7 @@ def test_the_speak_endpoint_returns_audio(config, monkeypatch):
     assert response.status_code == 200, response.text
     assert response.content == b"ID3mp3"
     assert response.headers["content-type"] == "audio/mpeg"
-    assert response.headers["x-voice"] == "en-US-AvaMultilingualNeural"
+    assert response.headers["x-voice"] == get_config().get("voice.speak.voices.en")
 
 
 def test_a_recording_with_no_speech_costs_nothing(config, monkeypatch):
