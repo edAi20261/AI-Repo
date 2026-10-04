@@ -104,7 +104,21 @@ vision:
   # carries both, so it is derived rather than typed out twice.
   base_url: null
   timeout_seconds: 180           # a scanned page costs one call, so this is per page
-  max_tokens: 4096
+  # Gemini counts its hidden thinking against this, and on a dense Arabic page
+  # it thinks ~5,000 tokens before writing ~500. At 4096 the JSON was cut off
+  # mid-string and failed to parse: measured 2 of 4 pages truncated, which the
+  # run then retried onto the fallback model and rate-limited itself. At 16384,
+  # 0 of 4.
+  max_tokens: 16384
+  # How much deliberation to pay for. Measured over three dense pages, cost per
+  # call and the characters transcribed:
+  #   default   $0.01624   5074 thinking   1725 chars
+  #   low       $0.00635    907 thinking   1707 chars   <- picked
+  #   minimal   $0.00492    485 thinking   1554 chars
+  # low keeps 99% of the text for 39% of the price. minimal is cheaper again
+  # and loses a tenth of the words, which is not a trade worth making when the
+  # job is copying a page exactly. Null leaves the provider's default.
+  reasoning_effort: low
 
 embeddings:
   # Bilingual index embedder. `hash` is a deterministic test embedder (no model).
