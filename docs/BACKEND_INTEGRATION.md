@@ -43,6 +43,8 @@ caller is allowed to do, so a wrong role grants the wrong capabilities.
 | `session_id` | no | Conversation id. **Now carries the standing answer language**: stable for a conversation, new for a new one |
 | `grade` | no | academic year, e.g. `g8` |
 | `language` | no | Fallback only — the message decides. Never send the UI language |
+| `teacher_id` | no | The teacher of the class the student takes this subject in (`Class.teacherId` for the student's `ClassStudent` row). When that teacher has an approved persona, the tutor explains the way they do. See §6 |
+| `persona_version` | no | A teacher previewing an unapproved version. Send it only with `user_type: teacher` and `user_id` equal to `teacher_id`, or the turn is refused with `422` |
 
 Unknown fields are rejected with `422` — deliberate, so a typo surfaces instead
 of being silently ignored.
@@ -60,6 +62,7 @@ of being silently ignored.
   "assessment":    {},
   "grade_result":  {},
   "prereq_topics": [{ "label": "Oxygen", "strength": "required", "depth": 1 }],
+  "persona_version": 2,
   "usage":         { "cost_usd": 0.0042, "prompt_tokens": 3100, "completion_tokens": 450, "calls": 2 }
 }
 ```
@@ -67,6 +70,8 @@ of being silently ignored.
 For a normal turn, pass `response` and `visuals` through to the frontend. The
 rest is populated only when the planner produced it — `assessment` when the
 student asked for a quiz, `grade_result` when it graded something.
+`persona_version` is set when the reply was written in the teacher's persona;
+label that bubble as the AI tutor in the teacher's style, never as the teacher.
 
 `usage` is always present: what the model gateway billed for every call the
 turn made, retries included. It is for metering, never for the student — store
@@ -286,6 +291,170 @@ index `(user_id, created_at DESC)`.
 
 If this service cannot reach them while credits are on, paid calls answer `503`
 rather than run free.
+
+---
+
+## 6. Teacher personas
+
+A teacher uploads written material in their own words: chat exports, written
+transcripts of lessons, explanations they wrote. They can also answer a short
+questionnaire. The service drafts a persona from it: a **card** describing how they
+teach, and **examples** that are passages of their own words. The teacher reviews
+it, corrects the card, and approves it. From then on, a student in their class who
+chats with `teacher_id` set gets explanations in that teacher's manner. The
+facts still come from the lesson, and the reply language is still the student's.
+
+Nothing is live until the teacher approves it. A new build is always a draft.
+
+**Before any of this works:** create `ai.teacher_personas` and
+`ai.teacher_persona_exemplars` (`docs/persona-schema-requests.md`), then set
+`persona.enabled: true`. Until then the endpoints answer `503` and chat ignores
+`teacher_id`.
+
+### What the platform owns
+
+- **Consent.** Record the teacher's agreement before calling build, and send when
+  it was given as `consented_at`.
+- **Who may act for whom.** Every call takes `teacher_id` from you. Check that the
+  caller is that teacher, or an admin of their school.
+- **Uploads.** Store files where lesson PDFs go and send a presigned `https` or
+  `s3://` URI. Paths on this server are refused.
+- **Which teacher a chat belongs to.** Resolve the student's class for the
+  subject, then send its teacher as `teacher_id` on every chat turn.
+
+### Build — `POST /ai/personas/build` (paid: `persona_build`)
+
+```json
+{
+  "teacher_id": "uuid",
+  "teacher_name": "Ms Mona",
+  "billed_user_id": "uuid",
+  "consented_at": "2026-09-30T10:00:00Z",
+  "language": "en",
+  "sources": [
+    { "source_id": "wa-1", "kind": "chat", "uri": "https://.../export.txt",
+      "teacher_speaker": "Ms Mona" },
+    { "source_id": "note-1", "kind": "explanation", "text": "When I teach ratios I..." }
+  ],
+  "questionnaire": [
+    { "question": "How do you open a new topic?", "answer": "With a story from ..." }
+  ]
+}
+```
+
+| `kind` | What it is | Formats read |
+|---|---|---|
+| `chat` / `transcript` | A conversation. Set `teacher_speaker` to the name the teacher appears under. A file with more than one speaker and no `teacher_speaker` is skipped, not guessed | WhatsApp export, `Name: text` lines, JSON `[{speaker, text}]` or `{messages: [...]}` (Telegram), WebVTT/SRT |
+| `explanation` | Text the teacher wrote | plain text, Markdown |
+
+Each source has either `text` or `uri`, not both. The limits are 50 sources and 30
+questionnaire answers. Students' names, emails, phone numbers and links are
+replaced before anything is stored.
+
+The response has the new draft `persona` (`version`, `status: "draft"`,
+`card`, `sources` provenance), the chosen `exemplars[]` (`text`, `prompt` = what
+the student had just said, `move` = what it shows), and `skipped[]` (each source
+that could not be used, with its reason). Show `skipped` to the teacher.
+If there is too little of the teacher's own words and no questionnaire, the
+response is `422` with the reasons.
+
+Only written material is accepted: audio and video are not supported.
+A build makes two model calls. Allow 300s, which is the most this service will
+spend on one (`persona.build_timeout_seconds`).
+
+### Review and approve
+
+| Call | Does |
+|---|---|
+| `GET /ai/personas/{teacher_id}` | every version, newest first, plus `active_version` |
+| `GET /ai/personas/{teacher_id}/versions/{v}` | one version, with its examples |
+| `PUT /ai/personas/{teacher_id}/versions/{v}/card` | replace the card with the teacher's edits. Body is the card itself. `409` on the active version: deactivate it first, or edit a draft |
+| `POST /ai/personas/{teacher_id}/versions/{v}/activate` | approve it. The previously active version becomes `inactive` |
+| `POST /ai/personas/{teacher_id}/deactivate` | students go back to the default tutor |
+| `DELETE /ai/personas/{teacher_id}` | destroy every version and example. Call it when a teacher withdraws consent or leaves |
+
+The card has these fields: `summary`, `tone`, `explaining[]`, `checking[]`,
+`mistakes[]`, `encouragement[]`, `phrases[]` and `avoid[]`. Every value is one
+line. Limits: summary 600 chars, tone 80, at most 6/4/4/4/8/5 entries, 240 chars
+each (phrases 100).
+
+**Preview before approving.** Call `/ai/chat` as the teacher (`user_type:
+teacher`, `user_id` = `teacher_id`) with `teacher_id` and `persona_version` set.
+A change reaches the instance that made it at once, and every other instance
+within five minutes (`persona.cache_ttl_seconds`).
+
+---
+
+## 7. Voice
+
+The student can ask by voice and hear the reply. It has two parts, and neither
+one answers anything itself:
+
+1. **Mic → text.** The student presses the mic, speaks, then presses stop. The
+   recording goes to `POST /ai/voice/transcribe`, and the words come back. Put
+   them in the message box. The student can fix them, then presses send as usual
+   (`/ai/chat`).
+2. **Reply → speech.** A speaker button on a tutor reply sends that reply's text
+   to `POST /ai/voice/speak` and plays the audio that comes back.
+
+**Key this service needs:** `ELEVENLABS_API_KEY`. One key covers both
+directions. Without it, both endpoints answer `503` with `details.missing`
+naming the variable.
+
+### `POST /ai/voice/transcribe` (paid: `voice_transcribe`)
+
+This is a multipart upload with one field, `audio`: the Blob from the browser's
+`MediaRecorder`. Chrome makes `audio/webm;codecs=opus` and Safari makes
+`audio/mp4`; both are fine, and so are ogg, mp3, wav and m4a. The limit is 10 MB,
+which is a few minutes. Query parameters:
+
+| Param | Required | Notes |
+|---|---|---|
+| `billed_user_id` | yes | the student |
+| `language` | no | Leave it out. The language is detected, including Arabic and English mixed in one sentence. Send it only when you are sure |
+
+```json
+{ "request_id": "…", "text": "ليه الإشارة بتتقلب لما أضرب في سالب؟",
+  "heard": true, "language": "ar", "seconds": 3.4, "usage": { … } }
+```
+
+`heard: false` means there was no speech in the recording. Show "I didn't catch
+that, try again". The credit is refunded. A `422` means the file is not readable
+audio.
+
+### `POST /ai/voice/speak` (paid: `voice_speak`)
+
+```json
+{ "text": "<the reply exactly as /ai/chat returned it>",
+  "language": "<the reply's language from /ai/chat>",
+  "billed_user_id": "uuid" }
+```
+
+The response body is the audio (`audio/mpeg`), not JSON. Stream it straight to
+the browser. Send the reply as it is, Markdown and LaTeX included. This service
+turns it into what a teacher would say: `$x^2$` becomes "x squared", Arabic
+maths is read in Arabic, and citations, links, emoji and the sources block are
+not read. The voice is held to the reply's language. Replies longer than about
+3,000 characters are cut at a sentence. Response headers:
+`x-usage-cost-usd`, `x-voice`, `x-spoken-characters`.
+
+Cache the audio for each message on your side, by message id. Playing the same
+reply twice should not be charged twice.
+
+### What the UI should do
+
+- **Mic button**, in the chat composer, with three states: `idle → recording`
+  (red, pulsing, with a timer) `→ transcribing` (spinner) `→ idle`, and the text
+  in the box. Ask for mic permission on the first press, and explain it if the
+  student says no.
+- **Do not auto-send** the transcript. Let the student see it and fix it first.
+- **Speaker button** on each tutor reply: `idle → loading → playing (stop)`.
+  Only one reply plays at a time. Pressing the mic stops playback.
+- **Optional:** an "auto-play replies" toggle. Autoplay only the reply that just
+  arrived, never history. Browsers block sound until the user has interacted
+  with the page, and pressing the mic counts.
+- **Privacy:** recordings are of children. Do not store the audio; the
+  transcript is enough.
 
 ---
 

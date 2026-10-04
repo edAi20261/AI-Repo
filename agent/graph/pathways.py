@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ..models import Style
+from ..models import PersonaVoice, Style
 
 _SYLLABUS = "syllabus"
 
@@ -40,11 +40,14 @@ def build_namespaces(*, session_id: Optional[str] = None) -> list[str]:
     return namespaces
 
 
-def resolve_style(pathway: str) -> Style:
-    """The tone a pathway is answered in.
+def resolve_style(pathway: str, persona: Optional[PersonaVoice] = None) -> Style:
+    """The tone a pathway is answered in, or the teacher's own when their class has
+    an approved persona.
 
     There was an ``AdaptiveProfile`` parameter here, accepted "so callers don't
     change" when the per-user profile landed. No caller ever passed it, so the
     branch behind it could not run, and the model it took was unreachable from
     anywhere in the service."""
+    if persona is not None:
+        return Style(tone=persona.card.tone, persona=persona)
     return Style(tone="professional" if pathway == "teacher" else "friendly")

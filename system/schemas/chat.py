@@ -35,6 +35,17 @@ class ChatRequest(Schema):
     grade_ref: Optional[GradeReference] = Field(
         default=None, description="Set when the turn grades a saved assessment."
     )
+    teacher_id: Optional[str] = Field(
+        default=None,
+        description=("The teacher of the class this student is studying the subject in. "
+                     "When they have an approved persona, the tutor explains the way they do."),
+    )
+    persona_version: Optional[int] = Field(
+        default=None, ge=1,
+        description=("Previews one version of a persona before it is approved. Only the "
+                     "teacher it belongs to may send it: user_type teacher, with user_id "
+                     "equal to teacher_id."),
+    )
     language: Optional[Language] = Field(
         default=None,
         description=("Fallback answer language, used only when the message itself "
@@ -54,6 +65,8 @@ class ChatRequest(Schema):
             "lecture_ids": self.lecture_ids,
             "session_id": self.session_id,
             "grade": self.grade,
+            "teacher_id": self.teacher_id,
+            "persona_version": self.persona_version,
         }
         if self.grade_ref:
             state["grade_ref"] = self.grade_ref.model_dump()
@@ -110,6 +123,9 @@ class ChatResponse(Schema):
         default_factory=list,
         description="Sources the reply cites, numbered to match its [n] markers.",
     )
+    persona_version: Optional[int] = Field(
+        default=None,
+        description="The version of the teacher's persona the reply was written in, if any.")
     usage: Usage
 
     @classmethod
@@ -127,7 +143,13 @@ class ChatResponse(Schema):
             prereq_topics=[_as_dict(topic) for topic in state.get("prereq_topics") or []],
             citations=[SourceRef.from_citation(c)
                        for c in state.get("published_citations") or []],
+            persona_version=_persona_version(state.get("style")),
         )
+
+
+def _persona_version(style: Any) -> Optional[int]:
+    persona = getattr(style, "persona", None)
+    return persona.version if persona else None
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

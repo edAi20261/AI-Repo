@@ -33,8 +33,10 @@ from .routers import (
     ingestion,
     learners,
     memory,
+    personas,
     reports,
     topics,
+    voice,
 )
 from .runtime import AgentRuntime
 from .security import (
@@ -84,13 +86,13 @@ def create_app(config: Config | None = None) -> FastAPI:
             # DELETE is here for /ai/memory/{user_id}: a student asking to be
             # forgotten is the one request this service must not refuse on a
             # preflight.
-            allow_methods=["GET", "POST", "DELETE"],
+            allow_methods=["GET", "POST", "PUT", "DELETE"],
             allow_headers=["*"],
         )
 
     register_exception_handlers(app)
     for module in (health, chat, grading, homework, reports, learners, classes, topics,
-                   ingestion, memory, credits):
+                   ingestion, memory, credits, personas, voice):
         app.include_router(module.router)
     return app
 

@@ -60,6 +60,7 @@ from ..retrieval import DEFAULT_MIN_SCORE
 from ..scope import lecture_filter
 from ..subjects import SubjectDirectory
 from ..learner import standing
+from ..persona.voice import PersonaDirectory, Voices
 from ..profile import Carryover, carried_over, record
 from ..tools import rag_search, resolve_topics
 from .pathways import build_namespaces, resolve_style
@@ -113,12 +114,14 @@ def build_classify(config, store: ConversationStore, window: HistoryWindow,
 
 # --- load_context -----------------------------------------------------------
 
-def build_load_context(config):
+def build_load_context(config, personas: PersonaDirectory):
     def load_context(state) -> dict:
         pathway = state["pathway"]
         namespaces = build_namespaces(session_id=state.get("session_id"))
-        style = resolve_style(pathway)
-        logger.info("load_context", extra={"pathway": pathway, "namespaces": namespaces})
+        style = resolve_style(pathway, _persona(state, pathway, personas))
+        logger.info("load_context", extra={
+            "pathway": pathway, "namespaces": namespaces,
+            "persona_version": style.persona.version if style.persona else None})
         return {
             "namespaces": namespaces,
             "style": style,
@@ -127,6 +130,21 @@ def build_load_context(config):
         }
 
     return load_context
+
+
+def _persona(state, pathway: str, personas: PersonaDirectory):
+    """The persona of the teacher whose class this turn belongs to.
+
+    A named version is a preview of a persona that may not be approved yet, so
+    only the teacher it belongs to may speak to it.
+    """
+    teacher_id, version = state.get("teacher_id"), state.get("persona_version")
+    if version is not None and not (teacher_id and pathway == "teacher"
+                                    and state.get("user_id") == teacher_id):
+        raise UnprocessableError(
+            "persona_version previews a persona, which only its own teacher may do.",
+            details={"teacher_id": teacher_id, "user_type": pathway})
+    return personas.voice(teacher_id, version) if teacher_id else None
 
 
 # --- understand ---------------------------------------------------------------
@@ -300,7 +318,7 @@ def _after_understand(state) -> str:
 
 # --- converse -----------------------------------------------------------------
 
-def build_converse(config, llm):
+def build_converse(config, llm, voices: Voices):
     """A reply to a turn that needs no course material, written by the model."""
     def converse(state) -> dict:
         language = state.get("language", "en")
@@ -314,6 +332,7 @@ def build_converse(config, llm):
             capabilities="\n" + _allowed_descriptions(allowed),
             history=state.get("history") or "",
             message=state.get("message", ""),
+            voice=voices.render(state.get("style"), state.get("message", "")),
         )
         try:
             reply = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()
@@ -809,24 +828,24 @@ def _sources_block(citations: list[Citation]) -> str:
     return f"{SOURCES_MARK}\n" + "\n".join(lines) if lines else ""
 
 
-def _compose_llm(llm, answers, prereqs, language, tone) -> str:
+def _compose_llm(llm, answers, prereqs, language, tone, voice) -> str:
     joined = "\n\n".join(a.get("text", "") for a in answers)
     prereq_str = ", ".join(p.label for p in prereqs) or "(none)"
     prompt_text = COMPOSE_PROMPT.render(language=language, tone=tone, answers=joined,
-        formatting=FORMATTING_CONTRACT, prereq_topics=prereq_str)
+        formatting=FORMATTING_CONTRACT, prereq_topics=prereq_str, voice=voice)
     return llm.invoke([HumanMessage(content=prompt_text)]).content
 
 
 NOTHING_PRODUCED = "∅"
 
 
-def _no_material(state, llm, language: str) -> str:
+def _no_material(state, llm, language: str, voice: str) -> str:
     """A turn whose tasks produced nothing, explained by the tutor rather than a fixed line."""
     if llm is None:
         return NOTHING_PRODUCED
     prompt = NO_MATERIAL_PROMPT.render(
         language=language, style=(state.get("style") or Style()).tone, scope="",
-        history=state.get("history") or "", message=state.get("message", ""))
+        history=state.get("history") or "", message=state.get("message", ""), voice=voice)
     try:
         text = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()
     except Exception as error:
@@ -836,7 +855,7 @@ def _no_material(state, llm, language: str) -> str:
     return text
 
 
-def build_compose(config, llm):
+def build_compose(config, llm, voices: Voices):
     def compose(state) -> dict:
         out = _compose(state)
         out.setdefault("reply_body", out.get("response", ""))
@@ -870,7 +889,9 @@ def build_compose(config, llm):
             if visuals:
                 parts.append(_visual_line(visuals))
             response = "\n\n".join(p for p in parts if p)
-            return {"response": response or _no_material(state, llm, language)}
+            return {"response": response or _no_material(
+                state, llm, language, voices.render(state.get("style"),
+                                                    state.get("message", "")))}
 
         # One global [n] numbering across tasks before merging (each subgraph numbered from [1]).
         answers, citations = _renumber_citations(
@@ -882,7 +903,8 @@ def build_compose(config, llm):
         if llm is not None and len(answers) > 1:
             try:
                 # body = _compose_llm(llm, answers, prereqs, language, tone)
-                body = _compose_llm(llm, answers, [], language, tone)
+                body = _compose_llm(llm, answers, [], language, tone,
+                                    voices.render(state.get("style"), with_examples=False))
             except Exception:
                 logger.error("compose LLM call failed; concatenating", exc_info=True)
                 body = "\n\n".join(a.get("text", "") for a in answers)

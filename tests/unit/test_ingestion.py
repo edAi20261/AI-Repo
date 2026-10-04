@@ -162,8 +162,11 @@ def test_llm_override_merges_over_base():
     base = cfg.llm_for()
     et = cfg.llm_for("extract_topics")
     # extract_topics overrides provider/model/temperature, inherits the rest.
+    # It is vertex now: ingestion's two chat calls follow vision onto the
+    # account that holds this project's credit, while every task that answers
+    # a student stays on OpenRouter.
     assert et["temperature"] == 0.0
-    assert et["provider"] == "openrouter"
+    assert et["provider"] == "vertex"
     assert et["max_tokens"] == base["max_tokens"]
 
 
@@ -583,12 +586,25 @@ def test_a_caption_with_nothing_in_it_is_empty_not_absent():
 
 
 def test_vision_model_id_is_locked():
-    # The locked round-2 winner must match exactly, in config not code.
-    assert Config.load().get("vision.model") == "qwen/qwen3-vl-235b-a22b-instruct"
+    """Pinned in config, not code, and it must move deliberately.
+
+    Was qwen/qwen3-vl-235b-a22b-instruct via OpenRouter. Measured on eight
+    pages of a scanned Arabic question bank, gemini via vertex reads the same
+    pages for $0.0065 against $0.0127 and answers in ~6.9s against ~60s — and
+    bills to the Cloud account where this project's credit is.
+    """
+    assert Config.load().get("vision.model") == "google/gemini-2.5-flash"
 
 
 def test_vision_factory_selects_real_client_with_key():
+    """A real client whenever the gateway vision points at has its credential.
+
+    The credential is no longer always OPENROUTER_API_KEY: vertex authenticates
+    with a service account, so the factory has to ask the provider rather than
+    one hardcoded variable.
+    """
     cfg = Config.load()
+    cfg.override("vision.provider", "openrouter")
     saved = os.environ.get("OPENROUTER_API_KEY")
     try:
         os.environ["OPENROUTER_API_KEY"] = "test-key"

@@ -16,6 +16,9 @@ class Action(StrEnum):
     STUDENT_REPORT = "student_report"
     CLASS_REPORT = "class_report"
     HOMEWORK_CAPTURE = "homework_capture"
+    PERSONA_BUILD = "persona_build"
+    VOICE_TRANSCRIBE = "voice_transcribe"
+    VOICE_SPEAK = "voice_speak"
 
 
 @dataclass(frozen=True)

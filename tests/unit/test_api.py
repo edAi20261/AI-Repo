@@ -798,7 +798,7 @@ def test_a_dependency_failing_is_not_reported_as_a_bug_in_this_service():
 def test_unusable_source_material_is_not_a_server_error():
     """A lesson whose PDF is missing is the request's problem, not the
     service's, and a retry will not fix it."""
-    from ingestion.utils.source import SourceError
+    from shared.source import SourceError
     from shared.errors import ServiceError
 
     assert issubclass(SourceError, ServiceError)

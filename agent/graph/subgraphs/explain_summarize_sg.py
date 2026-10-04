@@ -45,6 +45,7 @@ class ExplainSummarizeState(TypedDict, total=False):
     topic_ids: list[str]
     namespaces: list[str]
     style: Style | None
+    voice: str
     language: str
     subject_id: str | None
     lecture_ids: list[str] | None  # optional lecture scope; None -> whole subject
@@ -190,6 +191,7 @@ def _build_answer(mode: str, llm, config):
             style=style,
             instructions=instructions,
             formatting=FORMATTING_CONTRACT,
+            voice=state.get("voice") or "",
             history=state.get("history") or "",
             learner=state.get("learner") or NOTHING_RECORDED,
             context=primary_ctx,
@@ -200,6 +202,7 @@ def _build_answer(mode: str, llm, config):
             style=style,
             instructions=instructions,
             formatting=FORMATTING_CONTRACT,
+            voice=state.get("voice") or "",
             history=state.get("history") or "",
             learner=state.get("learner") or NOTHING_RECORDED,
             context=primary_ctx,
@@ -303,7 +306,8 @@ def _declined(scope: StudyScope, state: ExplainSummarizeState, llm, style: str) 
     prompt = NO_MATERIAL_PROMPT.render(
         language=language, style=style, scope=where,
         history=state.get("history") or "",
-        message=state.get("message") or state.get("query", ""))
+        message=state.get("message") or state.get("query", ""),
+        voice=state.get("voice") or "")
     try:
         text = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()
     except Exception as error:

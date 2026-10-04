@@ -30,6 +30,8 @@ class MainState(TypedDict, total=False):
     study_scope: Optional[dict[str, Any]]  # the UI selection this turn is bounded by
     grade: Optional[str]            # academic grade/year level (NOT a grading result — see grade_result)
     grade_ref: Optional[dict[str, Any]]  # structured {assessment_id, kind} from the frontend for a grade turn
+    teacher_id: Optional[str]
+    persona_version: Optional[int]
 
     # -- classify --
     pathway: str                    # student | teacher

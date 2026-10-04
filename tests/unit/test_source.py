@@ -7,8 +7,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ingestion.utils import source as source_module
-from ingestion.utils.source import FetchLimits, SourceError, materialise
+from shared import source as source_module
+from shared.source import FetchLimits, SourceError, materialise
 from shared.config import Config
 
 SIGNED_URL = "https://bucket.s3.eu-central-1.amazonaws.com/uploads/lesson.pdf?X-Amz-Signature=abc"

@@ -37,9 +37,10 @@ from ..layout import (
     tier3,
 )
 from ..layout.chunker import content_blocks
+from ..concurrency import DEFAULT_WORKERS, in_order, streamed
 from ..layout.page_cache import PageCache
 from ..prompts.page_layout import PAGE_LAYOUT_PROMPT
-from ..utils.source import materialise
+from shared.source import materialise
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,19 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
         "figures": 0, "stub_vision": 0, "unreadable": 0, "caption_failed": 0,
     }
     garbage_cfg = ocr.get("garbage", {})
+    is_math = state.get("subject_is_math", False)
+
+    # Read every page that needs a model before walking them, several at a
+    # time. A page is seconds of arithmetic and a minute of waiting on HTTP,
+    # and Fargate bills for the container existing rather than working — so
+    # one page at a time meant a book held a machine for ten hours to do
+    # twenty minutes of work.
+    transcribed: dict[int, tuple[bytes, Any]] = {}
+    if vision_enabled:
+        transcribed = _prefetch_transcriptions(
+            doc, state, ctx, min_chars=min_chars, render_dpi=render_dpi,
+            is_math=is_math, garbage_cfg=garbage_cfg, default_lang=default_lang,
+            workers=ocr.get("page_workers", DEFAULT_WORKERS))
 
     for page_no, page in pdf.iter_pages(doc):
         char_count = pdf.page_char_count(page)
@@ -121,6 +135,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
                 page_elems, page_figs = _vision_transcribe(
                     state, ctx, page, page_no, default_lang, "scanned",
                     render_dpi, norm, supported, counts,
+                    prefetched=transcribed.get(page_no),
                 )
             figures.extend(page_figs)
             elements.extend(page_elems)
@@ -135,8 +150,6 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             )
             continue
 
-        is_math = state.get("subject_is_math", False)
-
         # --- born-digital garbage page: glyph-noise text (subset Identity-H, no
         # ToUnicode) is unrecoverable, but the embedded images are intact. Transcribe
         # the TEXT via vision; take FIGURES from get_images (full-fidelity embedded
@@ -148,6 +161,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
                 page_elems, _ = _vision_transcribe(
                     state, ctx, page, page_no, default_lang, "garbage",
                     render_dpi, norm, supported, counts, with_figures=False,
+                    prefetched=transcribed.get(page_no),
                 )
             else:
                 counts["unreadable"] += 1
@@ -183,10 +197,13 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             counts["math"] += 1
             page_elems = []
             if vision_enabled:
-                math_png = pdf.render_page_png(page, dpi=render_dpi)
-                result = ctx.vision.transcribe_page(
-                    math_png, language_hint=page_lang, math=True
-                )
+                ready = transcribed.get(page_no)
+                if ready is not None:
+                    math_png, result = ready
+                else:
+                    math_png = pdf.render_page_png(page, dpi=render_dpi)
+                    result = ctx.vision.transcribe_page(
+                        math_png, language_hint=page_lang, math=True)
                 if ctx.vision.is_stub:
                     counts["stub_vision"] += 1
                 if result.unreadable:
@@ -463,6 +480,50 @@ def _read_page_with_layout_model(
     return parsed
 
 
+def _prefetch_transcriptions(
+    doc: Any, state: IngestionState, ctx: PipelineContext, *,
+    min_chars: int, render_dpi: int, is_math: bool, garbage_cfg: dict,
+    default_lang: str, workers: int,
+) -> dict[int, tuple[bytes, Any]]:
+    """Every page that needs a model, read ahead of the loop that consumes it.
+
+    Returns ``{page_no: (png, transcription)}``. Rendering happens here, on one
+    thread, because a PyMuPDF ``Document`` is not thread-safe; only the HTTP
+    call is handed out. A window at a time, because a rendered page is
+    megabytes and a whole book of them does not fit in the task.
+    """
+    wanted: list[tuple[int, Any, str]] = []
+    for page_no, page in pdf.iter_pages(doc):
+        char_count = pdf.page_char_count(page)
+        if char_count < min_chars:
+            wanted.append((page_no, page, "scanned"))
+        elif is_math:
+            wanted.append((page_no, page, "math"))
+        elif garbage_cfg and is_garbage(pdf.page_text(page), garbage_cfg):
+            wanted.append((page_no, page, "garbage"))
+    if not wanted:
+        return {}
+
+    def render(item):
+        no, page, route = item
+        return no, pdf.render_page_png(page, dpi=render_dpi), route
+
+    def read(item):
+        no, png, route = item
+        return no, png, ctx.vision.transcribe_page(
+            png, language_hint=default_lang, math=(route == "math"))
+
+    out: dict[int, tuple[bytes, Any]] = {
+        no: (png, result)
+        for no, png, result in streamed(wanted, render, read,
+                                        workers=workers, label="transcribe")
+    }
+    logger.info("pages transcribed ahead of the loop",
+                extra={"lecture_id": state["lecture_id"], "pages": len(out),
+                       "workers": workers})
+    return out
+
+
 def _read_page_with_vision(
     page: Any,
     page_no: int,
@@ -508,14 +569,20 @@ def _clear_previous_figures(ctx: PipelineContext, lecture_id: str) -> None:
 
 def _vision_transcribe(
     state, ctx, page, page_no, lang, route,
-    render_dpi, norm, supported, counts, with_figures=True,
+    render_dpi, norm, supported, counts, with_figures=True, prefetched=None,
 ) -> tuple[list[Element], list[Figure]]:
     """Render a page and transcribe its text via vision. Figures come from the
     returned boxes only when ``with_figures`` (scanned pages); a garbage page passes
     False and takes figures from get_images instead. Caller guards on vision_enabled;
     an unreadable page flags needs_review and is not indexed."""
-    png = pdf.render_page_png(page, dpi=render_dpi)
-    result = ctx.vision.transcribe_page(png, language_hint=lang)
+    # The prefetch has usually read this page already, several pages at a time
+    # while this loop was still on an earlier one. Falling back to reading it
+    # here keeps one path for a page the prefetch skipped.
+    if prefetched is not None:
+        png, result = prefetched
+    else:
+        png = pdf.render_page_png(page, dpi=render_dpi)
+        result = ctx.vision.transcribe_page(png, language_hint=lang)
     if ctx.vision.is_stub:
         counts["stub_vision"] += 1
     if result.unreadable:
@@ -706,11 +773,18 @@ def _figures_from_boxes(state, ctx, page_png, page_no, boxes, lang,
     image's pixel space) at full resolution, upload, then caption the crop."""
     if not boxes:
         return []
-    out: list[Figure] = []
-    for box in boxes:
+
+    # Cropping is arithmetic on bytes already in memory and the upload and the
+    # caption are both network, so the figures of a page go together. Measured
+    # over twelve pages of a question bank: thirteen figures captioned one
+    # after another cost 148s of a 219s run — two thirds of the time, for calls
+    # that have nothing to do with each other.
+    workers = ctx.config.get("ingestion.ocr.page_workers", DEFAULT_WORKERS)
+
+    def build(box):
         crop = _crop_png_pixels(page_png, box.bbox)
         if crop is None:
-            continue
+            return None
         key = figure_key(state["lecture_id"], page_no, crop)
         s3_uri = ctx.uploader.upload(crop, key)
         # Caption the full-res crop (better than a region of the whole page).
@@ -718,17 +792,17 @@ def _figures_from_boxes(state, ctx, page_png, page_no, boxes, lang,
         if caption is None:
             _note_caption_failure(counts)
             caption = FigureCaption(caption="", alt_text="")
-        out.append(
-            Figure(
-                lecture_id=state["lecture_id"],
-                page=page_no,
-                s3_uri=s3_uri,
-                bbox=tuple(box.bbox),
-                caption=caption.caption,
-                alt_text=caption.alt_text,
-            )
+        return Figure(
+            lecture_id=state["lecture_id"],
+            page=page_no,
+            s3_uri=s3_uri,
+            bbox=tuple(box.bbox),
+            caption=caption.caption,
+            alt_text=caption.alt_text,
         )
-    return out
+
+    return [f for f in in_order(list(boxes), build, workers=workers,
+                                label="caption") if f is not None]
 
 
 def _to_pixels(bbox, width: int, height: int) -> tuple[float, float, float, float]:

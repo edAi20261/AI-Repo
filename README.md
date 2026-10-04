@@ -279,6 +279,36 @@ remembered: `ai.user_memory` holds student and teacher rows only.
 | `teacher` | explain, summarize, assessment, grade, visual | professional |
 | `parent`  | explain, summarize, visual | friendly |
 
+### Teacher personas
+
+A teacher can give the tutor their own way of teaching. They upload material in their
+own words (chat exports, written lesson transcripts, written explanations) and
+can answer a short questionnaire. `agent/persona/` reads that material into passages of
+the teacher's words, with students' names and contact details removed. A model drafts a
+**card** describing how the teacher explains, checks understanding and reacts to
+mistakes, and picks up to 40 passages as **examples**. The result is stored as a
+draft. It reaches students only after the teacher reviews it and approves it.
+
+On a student's turn, `teacher_id` selects the teacher's approved persona. The card and
+the three examples nearest the question are added to the prompts that answer the
+student: explain, summarize, conversation, no-material and compose. They sit below the
+grounding and language rules, so the persona changes how the tutor explains and never
+what it says is true. Grading and quiz generation stay neutral. The contract is in
+`docs/BACKEND_INTEGRATION.md` §6, and the tables the backend must create are in
+`docs/persona-schema-requests.md`. `scripts/eval_persona.py` measures whether the
+replies sound like the teacher, and whether they add claims the plain tutor does not make.
+
+### Voice
+
+A student can ask by voice and hear the reply (`agent/voice/`, `shared/speech.py`).
+`POST /ai/voice/transcribe` turns a push-to-talk recording into text with
+ElevenLabs Scribe, which detects Arabic and English, including both mixed in one
+sentence. The text then goes through `/ai/chat` like anything typed.
+`POST /ai/voice/speak` reads a reply aloud with ElevenLabs, which uses the same
+key, in the reply's language. Markdown, citations and the sources block are
+removed first, and LaTeX is read as words in the reply's language. The contract is in
+`docs/BACKEND_INTEGRATION.md` §7.
+
 ### Grading and mastery
 
 Grading is AI-final. An answer is graded against the answer key or rubric when there is
