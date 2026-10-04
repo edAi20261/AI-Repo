@@ -335,3 +335,52 @@ def test_a_class_report_on_an_unreadable_roster_is_degraded_and_not_stored(monke
     result = report_mod.run_class_report({"class_id": "c1", "user_ids": ["s1", "s2"]},
                                          config=get_config())
     assert result["degraded"] is True and result["persisted"] is False
+
+
+def test_a_report_asked_for_without_a_language_is_still_written(monkeypatch):
+    """GET /ai/reports/{id} without ?language= passes language=None, and
+    payload.get("language", "en") kept the None. The prompt refused to render, every
+    such report came back available with an empty narrative and was never stored —
+    in production, every student and parent report the platform asked for."""
+    from agent.graph import report as report_mod
+
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "t1", "score": 0.2, "attempts": 4, "status": "weak"}],
+           trend={"direction": "flat", "count": 4, "events": []},
+           deps=[], labels={"t1": "Fractions"})
+    monkeypatch.setattr(report_mod, "save_report",
+                        lambda scope, payload, **k: {"report_id": "r1",
+                                                     "generated_at": "2026-10-04T15:00:00+00:00"})
+    writer = _Writer({"claims": [{"text": "Fractions need more practice.", "evidence": ["E1"]}]})
+    monkeypatch.setattr(report_mod, "maybe_llm", lambda config, task: writer)
+
+    for scope in ("student_progress", "parent"):
+        result = report_mod.run_report(
+            {"user_id": "u1", "scope": scope, "subject_id": None, "lecture_ids": None,
+             "language": None}, config=get_config())
+        assert result["narrative"] == "Fractions need more practice.", scope
+        assert result["degraded"] is False and result["persisted"] is True
+
+
+def test_a_class_report_asked_for_without_a_language_is_still_written(monkeypatch):
+    from agent.graph import report as report_mod
+
+    analysis = {"available": True, "degraded": False,
+                "students": {"total": 2, "with_evidence": 2},
+                "topics": [{"topic_id": "t1", "label": "Fractions", "strong": 0,
+                            "developing": 0, "weak": 2, "unknown": 0, "not_practised": 0,
+                            "mean_score": 0.3}],
+                "at_risk": [], "not_started": [], "mistakes": [], "most_missed": [],
+                "activity": []}
+    monkeypatch.setattr(report_mod, "class_analytics", lambda ids, **k: analysis)
+    monkeypatch.setattr(report_mod, "save_report",
+                        lambda scope, payload, **k: {"report_id": "r2",
+                                                     "generated_at": "2026-10-04T15:00:00+00:00"})
+    writer = _Writer({"claims": [{"text": "Both students find Fractions hard.",
+                                  "evidence": ["E1"]}]})
+    monkeypatch.setattr(report_mod, "maybe_llm", lambda config, task: writer)
+
+    result = report_mod.run_class_report(
+        {"class_id": "c1", "user_ids": ["s1", "s2"], "language": None}, config=get_config())
+    assert result["narrative"] == "Both students find Fractions hard."
+    assert result["persisted"] is True
