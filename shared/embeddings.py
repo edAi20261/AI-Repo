@@ -94,6 +94,10 @@ class LocalSentenceTransformerEmbedder(Embedder):
 
         self._model = SentenceTransformer(model_name, device=device)
         self._tokenizer = self._model.tokenizer
+        # The fast tokenizer refuses a second thread while one is inside it
+        # ("Already borrowed"), and encode() goes through the same tokenizer.
+        # Turns run in worker threads that share this one instance.
+        self._busy = threading.Lock()
         self._normalize = normalize
         self._batch_size = batch_size
         self.dimension = self._model.get_embedding_dimension()
@@ -106,18 +110,20 @@ class LocalSentenceTransformerEmbedder(Embedder):
         across a hundred languages, so the same code covers a corpus in any of
         them, and the ids are stable for the life of the model.
         """
-        return self._tokenizer(text, add_special_tokens=False)["input_ids"]
+        with self._busy:
+            return self._tokenizer(text, add_special_tokens=False)["input_ids"]
 
     def _encode(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
-        vectors = self._model.encode(
-            list(texts),
-            batch_size=self._batch_size,
-            normalize_embeddings=self._normalize,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
+        with self._busy:
+            vectors = self._model.encode(
+                list(texts),
+                batch_size=self._batch_size,
+                normalize_embeddings=self._normalize,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
         return vectors.tolist()
 
 
