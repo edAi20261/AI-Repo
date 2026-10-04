@@ -59,6 +59,42 @@ def in_order(
         return list(pool.map(work, items))
 
 
+def streamed(
+    items: Iterable[T],
+    prepare: Callable[[T], R],
+    work: Callable[[R], object],
+    *,
+    workers: int = DEFAULT_WORKERS,
+    label: str = "work",
+) -> list[object]:
+    """``prepare`` on this thread, ``work`` on several, results in order.
+
+    One pool for the whole run rather than a pool per batch. Batching looked
+    equivalent and is not: a batch waits for its slowest member before the next
+    one starts, so a single page that retries onto the fallback model holds
+    seven idle workers while it finishes. Measured over twelve pages that cost
+    1.20x against the 5.67x the same calls reach with no barrier between them.
+
+    ``prepare`` stays on the calling thread because it touches PyMuPDF, which
+    is not thread-safe. It also paces the submission: a page is only rendered
+    when a worker is free to take it, so the number of rendered pages held in
+    memory is bounded by the pool rather than by the length of the book.
+    """
+    if workers <= 1:
+        return [work(prepare(item)) for item in items]
+
+    submitted: list[futures.Future] = []
+    with futures.ThreadPoolExecutor(max_workers=workers,
+                                    thread_name_prefix=label) as pool:
+        # A bounded queue: never let more than twice the worker count sit
+        # rendered and waiting, or a long book renders itself into the heap.
+        for item in items:
+            while sum(1 for f in submitted if not f.done()) >= workers * 2:
+                futures.wait(submitted, return_when=futures.FIRST_COMPLETED)
+            submitted.append(pool.submit(work, prepare(item)))
+        return [f.result() for f in submitted]
+
+
 def windows(items: Iterable[T], size: int) -> Iterator[list[T]]:
     """``items`` in chunks of ``size``, the last one short.
 

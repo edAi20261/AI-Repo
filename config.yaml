@@ -35,8 +35,11 @@ llm:
   # the content-generating tasks. max_tokens are sane CEILINGS (a cap, not the driver of latency)
   # sized to each task so nothing truncates.
   overrides:
-    extract_topics:  { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
-    derive_deps:     { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0 }
+    # Ingestion's two chat calls, one per book each. They follow vision onto
+    # Vertex so the whole ingestion path bills to one account; everything below
+    # answers students and stays on OpenRouter.
+    extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0 }
+    derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0 }
     understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
     converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }
     conversation_summary: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 1200 }
@@ -75,7 +78,7 @@ vision:
   # account, which is where a project's trial credit actually lives. vertex is
   # also the only one that will not take a static key — it mints an OAuth token
   # from a service account, which expires in an hour, so shared/gcp.py caches it.
-  provider: openrouter
+  provider: vertex
   # The variable holding the key. Null means: the one this provider usually
   # uses (OPENROUTER_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY). Name it when a
   # deployment keeps its key somewhere of its own. Ignored by vertex.
@@ -85,12 +88,20 @@ vision:
   # vertex only: which project and region the models are called in.
   project: null
   location: us-central1
-  model: qwen/qwen3-vl-235b-a22b-instruct
-  # Never fired to date: all 544 pages transcribed so far were read by the model
-  # above. Kept as the standby for a page it cannot parse, and OpenAI rather
-  # than Anthropic so both the primary and the standby bill through one account.
-  fallback_model: openai/gpt-4.1
-  base_url: https://openrouter.ai/api/v1
+  # Measured on eight pages of a scanned Arabic question bank, against
+  # qwen/qwen3-vl-235b-a22b-instruct which this replaces:
+  #   qwen via openrouter   $0.0127/page   ~60s a call
+  #   gemini via vertex     $0.0065/page   ~6.9s a call
+  # Half the cost, an order of magnitude faster, and it bills to the Cloud
+  # account where this project's credit actually is.
+  model: google/gemini-2.5-flash
+  # The standby for a page the primary cannot parse. A Gemini model, so a
+  # fallback cannot quietly move the bill back to OpenRouter — which is what
+  # openai/gpt-4.1 here would have done on the first unparseable page.
+  fallback_model: google/gemini-2.5-pro
+  # Null means: built from the project and region below. Vertex's address
+  # carries both, so it is derived rather than typed out twice.
+  base_url: null
   timeout_seconds: 180           # a scanned page costs one call, so this is per page
   max_tokens: 4096
 

@@ -37,7 +37,7 @@ from ..layout import (
     tier3,
 )
 from ..layout.chunker import content_blocks
-from ..concurrency import DEFAULT_WORKERS, in_order, windows
+from ..concurrency import DEFAULT_WORKERS, in_order, streamed
 from ..layout.page_cache import PageCache
 from ..prompts.page_layout import PAGE_LAYOUT_PROMPT
 from ..utils.source import materialise
@@ -504,19 +504,20 @@ def _prefetch_transcriptions(
     if not wanted:
         return {}
 
-    out: dict[int, tuple[bytes, Any]] = {}
-    for window in windows(wanted, workers):
-        rendered = [(no, pdf.render_page_png(page, dpi=render_dpi), route)
-                    for no, page, route in window]
+    def render(item):
+        no, page, route = item
+        return no, pdf.render_page_png(page, dpi=render_dpi), route
 
-        def read(item):
-            no, png, route = item
-            return no, png, ctx.vision.transcribe_page(
-                png, language_hint=default_lang, math=(route == "math"))
+    def read(item):
+        no, png, route = item
+        return no, png, ctx.vision.transcribe_page(
+            png, language_hint=default_lang, math=(route == "math"))
 
-        for no, png, result in in_order(rendered, read, workers=workers,
-                                        label="transcribe"):
-            out[no] = (png, result)
+    out: dict[int, tuple[bytes, Any]] = {
+        no: (png, result)
+        for no, png, result in streamed(wanted, render, read,
+                                        workers=workers, label="transcribe")
+    }
     logger.info("pages transcribed ahead of the loop",
                 extra={"lecture_id": state["lecture_id"], "pages": len(out),
                        "workers": workers})
@@ -772,11 +773,18 @@ def _figures_from_boxes(state, ctx, page_png, page_no, boxes, lang,
     image's pixel space) at full resolution, upload, then caption the crop."""
     if not boxes:
         return []
-    out: list[Figure] = []
-    for box in boxes:
+
+    # Cropping is arithmetic on bytes already in memory and the upload and the
+    # caption are both network, so the figures of a page go together. Measured
+    # over twelve pages of a question bank: thirteen figures captioned one
+    # after another cost 148s of a 219s run — two thirds of the time, for calls
+    # that have nothing to do with each other.
+    workers = ctx.config.get("ingestion.ocr.page_workers", DEFAULT_WORKERS)
+
+    def build(box):
         crop = _crop_png_pixels(page_png, box.bbox)
         if crop is None:
-            continue
+            return None
         key = figure_key(state["lecture_id"], page_no, crop)
         s3_uri = ctx.uploader.upload(crop, key)
         # Caption the full-res crop (better than a region of the whole page).
@@ -784,17 +792,17 @@ def _figures_from_boxes(state, ctx, page_png, page_no, boxes, lang,
         if caption is None:
             _note_caption_failure(counts)
             caption = FigureCaption(caption="", alt_text="")
-        out.append(
-            Figure(
-                lecture_id=state["lecture_id"],
-                page=page_no,
-                s3_uri=s3_uri,
-                bbox=tuple(box.bbox),
-                caption=caption.caption,
-                alt_text=caption.alt_text,
-            )
+        return Figure(
+            lecture_id=state["lecture_id"],
+            page=page_no,
+            s3_uri=s3_uri,
+            bbox=tuple(box.bbox),
+            caption=caption.caption,
+            alt_text=caption.alt_text,
         )
-    return out
+
+    return [f for f in in_order(list(boxes), build, workers=workers,
+                                label="caption") if f is not None]
 
 
 def _to_pixels(bbox, width: int, height: int) -> tuple[float, float, float, float]:

@@ -131,19 +131,55 @@ class OpenRouterVisionClient(VisionClient):
 
 
 # Vision gateways implemented. Only OpenRouter (OpenAI-compatible) is wired.
-_VISION_GATEWAYS = {"openrouter"}
+_VISION_GATEWAYS = {"openrouter", "google", "openai", "vertex"}
 
 
 def get_vision_client(config: Config) -> VisionClient:
-    """Real client when engine is ``vision``, ``vision.model`` is set, the provider
-    is a supported gateway, and the key is present; else the stub."""
+    """The real client, or the stub when this deployment has no model to call.
+
+    The credential is asked of the provider rather than of one hardcoded
+    variable. It used to read OPENROUTER_API_KEY whatever the provider was, so
+    pointing vision at another gateway returned the stub — and the stub does
+    not fail, it returns empty pages. A book ingested that way is indexed
+    blank, and nothing in the run says so.
+
+    Which is why a configured-but-unreachable gateway is now loud. Falling back
+    to the stub silently is only correct when nobody asked for a real model.
+    """
     engine = config.get("ingestion.ocr.engine", "vision")
     provider = (config.get("vision.provider") or "").lower()
     model = config.get("vision.model")
-    has_key = bool(config.secret("OPENROUTER_API_KEY"))
-    if engine == "vision" and model and provider in _VISION_GATEWAYS and has_key:
-        return OpenRouterVisionClient(config)
-    return StubVisionClient()
+    if engine != "vision" or not model:
+        return StubVisionClient()
+    if provider not in _VISION_GATEWAYS:
+        logger.warning("vision.provider %r is not a gateway this knows; "
+                       "pages will not be read by a model", provider)
+        return StubVisionClient()
+    if not _credential_present(config, provider):
+        logger.error(
+            "vision is configured for %r but its credential is missing, so every "
+            "page would be indexed blank; set it, or set ingestion.ocr.engine "
+            "to something other than 'vision' deliberately", provider)
+        return StubVisionClient()
+    return OpenRouterVisionClient(config)
+
+
+def _credential_present(config: Config, provider: str) -> bool:
+    """Whether the gateway vision points at can actually be called.
+
+    Vertex authenticates with a service account rather than a key, so what
+    counts as present differs by provider — and asking the wrong question is
+    how a misconfigured deployment silently indexes empty books.
+    """
+    if provider == "vertex":
+        return bool(config.secret(config.get("vision.credentials_env")
+                                  or "GOOGLE_APPLICATION_CREDENTIALS"))
+    named = config.get("vision.api_key_env")
+    if named:
+        return bool(config.secret(named))
+    from shared.vision import PROVIDER_KEY_ENV
+
+    return bool(config.secret(PROVIDER_KEY_ENV.get(provider, "OPENROUTER_API_KEY")))
 
 
 # ===========================================================================
