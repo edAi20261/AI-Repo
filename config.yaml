@@ -120,6 +120,18 @@ vision:
   # and loses a tenth of the words, which is not a trade worth making when the
   # job is copying a page exactly. Null leaves the provider's default.
   reasoning_effort: low
+  # A 429 means "later", not "no". Three ingest tasks at eight pages each put
+  # twenty-four requests against one Vertex quota, and measured over the first
+  # twenty-two minutes of the external English and Science books that produced
+  # seven rejections and two pages lost outright. With no retry a rejected page
+  # dropped to the fallback model and, when that was limited too, was recorded
+  # unreadable — and a page lost to a quota counts against needs_review_ratio
+  # exactly as a blurred one does, so at 0.05 a quiet few minutes of rate
+  # limiting sends a whole paid-for textbook to manual review.
+  # Four attempts with a jittered 4s doubling waits out up to ~60s of limiting,
+  # which is well inside the 180s a page is already allowed.
+  retry_attempts: 4
+  retry_backoff_seconds: 4.0
 
 embeddings:
   # Bilingual index embedder. `hash` is a deterministic test embedder (no model).
