@@ -545,3 +545,63 @@ def test_a_lesson_nothing_could_be_read_from_is_held_back():
 
 def test_a_lesson_read_end_to_end_is_ready():
     assert _status(unreadable=0, pages=371) == "ready"
+
+
+# --- the page a model was paid to read word by word -------------------------
+
+def test_a_transcription_already_paid_for_is_read_back_not_bought_again(fake_postgres):
+    """Reading a page's words is the most expensive call in the pipeline and it
+    was the only one with no cache: the layout parse of a page was stored and
+    its transcription was not. A run that died at page 300 of 418 — or was
+    stopped to pick up a config change — paid for all 300 again, which is how
+    three external books came to be read twice."""
+    from ingestion.layout.page_cache import PageCache
+    from ingestion.schemas import PageTranscription
+    from shared.config import Config
+
+    stored = PageTranscription(text="الفصل الأول", figures=[{"bbox": (1, 2, 3, 4)}])
+    fake_postgres(rows=[(stored.model_dump(mode="json"),)])
+
+    cache = PageCache(Config.load(), model="a-vision-model", prompt_version="abc123",
+                      shape=PageTranscription)
+    got = cache.get("11111111-1111-1111-1111-111111111111", 300)
+
+    assert isinstance(got, PageTranscription)
+    assert got.text == "الفصل الأول"
+    assert [f.bbox for f in got.figures] == [(1.0, 2.0, 3.0, 4.0)]
+
+
+def test_a_layout_parse_is_never_served_as_a_transcription(fake_postgres):
+    """Both cost the same model call and both belong in this table, so the only
+    thing keeping them apart is the key and the shape. A parse read back as a
+    transcription would index a page as having no words at all."""
+    from ingestion.layout.page_cache import PageCache
+    from ingestion.schemas import PageTranscription
+    from shared.config import Config
+
+    parse = _page(7, [_block(PROSE)])
+    fake_postgres(rows=[(parse.model_dump(mode="json"),)])
+
+    cache = PageCache(Config.load(), model="a-vision-model", prompt_version="abc123",
+                      shape=PageTranscription)
+    got = cache.get("11111111-1111-1111-1111-111111111111", 7)
+
+    assert got is None
+    assert cache.report()["cache_misses"] == 1
+
+
+def test_the_maths_prompt_and_the_ordinary_one_are_kept_apart():
+    """One maths book holds scanned pages read with the ordinary prompt and
+    text-layer pages read with the maths one. A page stored under either and
+    served to the other is a page transcribed by a prompt that was not asked
+    for."""
+    from shared.config import Config
+
+    from ingestion.stages.extract import _transcription_cache
+
+    config = Config.load()
+    ordinary = _transcription_cache(config, False)
+    maths = _transcription_cache(config, True)
+
+    assert ordinary._prompt_version != maths._prompt_version
+    assert ordinary._shape is maths._shape
