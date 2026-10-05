@@ -13,6 +13,9 @@ venv/
 # Environment
 .env
 .env.local
+# The keys an ingest run on someone's own machine uses. The example beside
+# it is the one that is tracked.
+.env.ingest
 # Service-account credentials. A private key in a repository is a private key
 # on every machine that ever clones it, and it cannot be unpublished.
 .env.gcp.json
