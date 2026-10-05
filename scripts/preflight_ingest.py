@@ -1,0 +1,118 @@
+"""Prove this machine can finish a book before it starts one.
+
+A book is hours of paid model calls, and every one of them is wasted if the
+thing that writes the result is unreachable. The failures this catches are all
+ones that surface late and look like something else: a database the laptop's
+network cannot see, a Qdrant key that reads but cannot write, a service account
+that was never granted Vertex, an S3 bucket that accepts no figure crops.
+
+Checks what a run writes, not only what it reads. A credential that can read is
+the one that wastes the whole book.
+"""
+
+from __future__ import annotations
+
+import sys
+import uuid
+
+from shared.config import get_config
+from shared.logging import setup_logging
+
+PROBE = f"preflight/{uuid.uuid4()}"
+
+
+def _database(config) -> str:
+    from shared.postgres import connect
+
+    with connect(config, connect_timeout=10, statement_timeout_ms=15000) as conn:
+        with conn.cursor() as cur:
+            cur.execute("select current_user, current_database()")
+            who, where = cur.fetchone()
+            # Writing is the half that matters: a read-only grant looks healthy
+            # here and loses the book at the end.
+            cur.execute("select count(*) from ai.page_transcriptions limit 1")
+            cur.execute(
+                "insert into ai.page_transcriptions"
+                " (lecture_id, page, model, prompt_version, raw_output)"
+                " values (%s::uuid, -1, 'preflight', 'preflight', '{}'::jsonb)"
+                " on conflict (lecture_id, page, model, prompt_version) do nothing",
+                (str(uuid.UUID(int=0)),))
+            cur.execute(
+                "delete from ai.page_transcriptions"
+                " where model = 'preflight' and lecture_id = %s::uuid",
+                (str(uuid.UUID(int=0)),))
+        conn.commit()
+    return f"{who}@{where}, ai.* readable and writable"
+
+
+def _vectors(config) -> str:
+    from ingestion.stores import get_vector_store
+
+    store = get_vector_store(config)
+    name = config.get("vector_store.collection")
+    count = store.count(name) if hasattr(store, "count") else None
+    return f"{name}" + (f", {count} points" if count is not None else "")
+
+
+def _vision(config) -> str:
+    provider = config.get("vision.provider")
+    if provider != "vertex":
+        from shared.vision import _api_key
+
+        return f"{provider}, key present" if _api_key(config) else f"{provider}, NO KEY"
+    import os
+
+    from shared.gcp import access_token, project_of
+
+    source = os.environ.get(config.get("vision.credentials_env") or "", "")
+    if not source:
+        raise RuntimeError(
+            f"{config.get('vision.credentials_env')} is empty; Vertex needs a service account")
+    token = access_token(source)
+    return f"vertex, project {project_of(source)}, token {len(token)} chars"
+
+
+def _storage(config) -> str:
+    from shared.storage import get_uploader
+
+    uploader = get_uploader(config)
+    uri = uploader.upload(PROBE, b"preflight", content_type="text/plain")
+    uploader.delete_prefix(PROBE)
+    return f"{type(uploader).__name__}, wrote and removed {uri}"
+
+
+def _embedder(config) -> str:
+    from shared.embeddings import get_embedder
+
+    embedder = get_embedder(config)
+    vector = embedder.embed_documents(["preflight"])[0]
+    return f"{config.get('embeddings.model')}, {len(vector)} dimensions"
+
+
+CHECKS = (
+    ("database", _database),
+    ("vectors", _vectors),
+    ("vision", _vision),
+    ("storage", _storage),
+    ("embedder", _embedder),
+)
+
+
+def main() -> int:
+    setup_logging()
+    config = get_config()
+    failures = 0
+    for name, check in CHECKS:
+        try:
+            print(f"  ok    {name:9} {check(config)}", flush=True)
+        except Exception as error:      # noqa: BLE001 — every failure is reportable
+            failures += 1
+            print(f"  FAIL  {name:9} {type(error).__name__}: {error}", flush=True)
+    if failures:
+        print(f"\n{failures} check(s) failed. Fix these before starting a book: a run that "
+              f"cannot write is hours of model calls thrown away.", flush=True)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

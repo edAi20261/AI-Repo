@@ -111,7 +111,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     # and Fargate bills for the container existing rather than working — so
     # one page at a time meant a book held a machine for ten hours to do
     # twenty minutes of work.
-    transcribed: dict[int, tuple[bytes, Any]] = {}
+    transcribed: dict[int, Any] = {}
     if vision_enabled:
         transcribed = _prefetch_transcriptions(
             doc, state, ctx, min_chars=min_chars, render_dpi=render_dpi,
@@ -194,15 +194,14 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
         # (8/12 -> "8" then "12") and would index the corrupted version.
         math_png = None
         math_boxes = None
+        math_png = None
         if is_math:
             route = "math"
             counts["math"] += 1
             page_elems = []
             if vision_enabled:
-                ready = transcribed.get(page_no)
-                if ready is not None:
-                    math_png, result = ready
-                else:
+                result = transcribed.get(page_no)
+                if result is None:
                     math_png = pdf.render_page_png(page, dpi=render_dpi)
                     result = ctx.vision.transcribe_page(
                         math_png, language_hint=page_lang, math=True)
@@ -227,6 +226,11 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
         # math hybrid: add vision-detected figures get_images missed (vector geometry
         # diagrams have no embedded raster), deduped against the get_images figures.
         if math_boxes and ing.get("figures", {}).get("vision_fill_math", True):
+            # Rendered here rather than carried from the prefetch, for the same
+            # reason as the scanned path: one image per page held for the length
+            # of the run is what ran the task out of memory.
+            if math_png is None:
+                math_png = pdf.render_page_png(page, dpi=render_dpi)
             page_figs += _vision_fill_figures(
                 state, ctx, math_png, page_no, math_boxes, page_figs,
                 render_dpi, page_lang, ing,
@@ -509,10 +513,18 @@ def _prefetch_transcriptions(
 ) -> dict[int, tuple[bytes, Any]]:
     """Every page that needs a model, read ahead of the loop that consumes it.
 
-    Returns ``{page_no: (png, transcription)}``. Rendering happens here, on one
-    thread, because a PyMuPDF ``Document`` is not thread-safe; only the HTTP
-    call is handed out. A window at a time, because a rendered page is
-    megabytes and a whole book of them does not fit in the task.
+    Returns ``{page_no: transcription}``. Rendering happens here, on one thread,
+    because a PyMuPDF ``Document`` is not thread-safe; only the HTTP call is
+    handed out.
+
+    The rendered page is deliberately **not** kept. It used to be returned
+    alongside the transcription so the loop could crop figures out of it without
+    rendering twice, which held every page of the book — about a gigabyte at 300
+    dpi for four hundred pages — until the run ended. The embedder then loaded
+    its 2.3 GB on top, inside an 8 GB task, and the kernel killed the run: two
+    books died that way on 5 October after being read in full, one at 740 chunks
+    and one at 1,269, writing nothing. Re-rendering a page costs a fraction of a
+    second and only happens for pages that actually have a figure to crop.
     """
     wanted: list[tuple[int, Any, str]] = []
     for page_no, page in pdf.iter_pages(doc):
@@ -535,7 +547,7 @@ def _prefetch_transcriptions(
         cache = _transcription_cache(ctx.config, route == "math")
         stored = cache.get(state["lecture_id"], no) if cache else None
         if stored is not None:
-            return no, png, stored
+            return no, stored
         result = ctx.vision.transcribe_page(
             png, language_hint=default_lang, math=(route == "math"))
         # An unreadable page is not stored: it is the one answer worth paying
@@ -543,13 +555,10 @@ def _prefetch_transcriptions(
         # looking identical and only one of them will read next time.
         if cache and not result.unreadable:
             cache.put(state["lecture_id"], no, result, dpi=render_dpi)
-        return no, png, result
+        return no, result
 
-    out: dict[int, tuple[bytes, Any]] = {
-        no: (png, result)
-        for no, png, result in streamed(wanted, render, read,
-                                        workers=workers, label="transcribe")
-    }
+    out: dict[int, Any] = dict(
+        streamed(wanted, render, read, workers=workers, label="transcribe"))
     logger.info("pages transcribed ahead of the loop",
                 extra={"lecture_id": state["lecture_id"], "pages": len(out),
                        "workers": workers})
@@ -610,8 +619,9 @@ def _vision_transcribe(
     # The prefetch has usually read this page already, several pages at a time
     # while this loop was still on an earlier one. Falling back to reading it
     # here keeps one path for a page the prefetch skipped.
+    png: Optional[bytes] = None
     if prefetched is not None:
-        png, result = prefetched
+        result = prefetched
     else:
         png = pdf.render_page_png(page, dpi=render_dpi)
         result = ctx.vision.transcribe_page(png, language_hint=lang)
@@ -627,7 +637,11 @@ def _vision_transcribe(
         elem_lang = _language(text, lang, supported)
         page_elems.append(Element(text=text, page=page_no, route=route, language=elem_lang))
     page_figs: list[Figure] = []
-    if with_figures:
+    if with_figures and result.figures:
+        # Rendered now rather than carried from the prefetch: holding one image
+        # per page for the length of the run is what ran the task out of memory.
+        if png is None:
+            png = pdf.render_page_png(page, dpi=render_dpi)
         page_figs = _figures_from_boxes(state, ctx, png, page_no, result.figures, lang,
                                         counts)
         counts["figures"] += len(page_figs)

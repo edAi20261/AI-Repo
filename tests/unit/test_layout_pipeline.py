@@ -605,3 +605,53 @@ def test_the_maths_prompt_and_the_ordinary_one_are_kept_apart():
 
     assert ordinary._prompt_version != maths._prompt_version
     assert ordinary._shape is maths._shape
+
+
+# --- what the run holds while it reads ---------------------------------------
+
+def test_a_book_is_not_held_in_memory_while_it_is_read(monkeypatch):
+    """The prefetch used to return each page's rendered image beside its
+    transcription, so the loop could crop figures without rendering twice. That
+    held every page of the book — about a gigabyte at 300 dpi for four hundred
+    pages — until the run ended. The embedder then loaded its 2.3 GB on top,
+    inside an 8 GB task, and the kernel killed the run: on 5 October جيم died
+    after 740 chunks and المعاصر after 1,269, both having read every page and
+    written nothing."""
+    import importlib
+
+    from ingestion.schemas import PageTranscription
+
+    # ingestion.stages exports a function called `extract`, which shadows the
+    # module of the same name on a plain import.
+    extract = importlib.import_module("ingestion.stages.extract")
+
+    pages = 40
+    one_page_png = b"\x89PNG" + b"\x00" * 200_000
+
+    class _Page:
+        pass
+
+    monkeypatch.setattr(extract.pdf, "iter_pages",
+                        lambda doc: [(n, _Page()) for n in range(pages)])
+    monkeypatch.setattr(extract.pdf, "page_char_count", lambda page: 0)
+    monkeypatch.setattr(extract.pdf, "render_page_png",
+                        lambda page, dpi: one_page_png)
+    monkeypatch.setattr(extract, "_transcription_cache", lambda config, math: None)
+
+    class _Vision:
+        def transcribe_page(self, png, *, language_hint=None, math=False):
+            return PageTranscription(text="a page of words", figures=[])
+
+    ctx = type("Ctx", (), {"vision": _Vision(), "config": None})()
+    state = {"lecture_id": "11111111-1111-1111-1111-111111111111"}
+
+    out = extract._prefetch_transcriptions(
+        object(), state, ctx, min_chars=40, render_dpi=300, is_math=False,
+        garbage_cfg={}, default_lang="ar", workers=4)
+
+    assert len(out) == pages
+    held = sum(len(v) for v in out.values() if isinstance(v, bytes))
+    held += sum(len(part) for v in out.values() if isinstance(v, tuple)
+                for part in v if isinstance(part, bytes))
+    assert held == 0, f"{held} bytes of rendered page held for the whole run"
+    assert all(isinstance(v, PageTranscription) for v in out.values())
