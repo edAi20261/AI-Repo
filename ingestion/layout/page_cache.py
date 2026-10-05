@@ -17,6 +17,7 @@ import logging
 from typing import Optional
 
 from psycopg.types.json import Json
+from pydantic import BaseModel
 
 from shared.config import Config
 from shared.postgres import connect
@@ -55,10 +56,17 @@ class PageCache:
     once rather than per page.
     """
 
-    def __init__(self, config: Config, *, model: str, prompt_version: str) -> None:
+    def __init__(self, config: Config, *, model: str, prompt_version: str,
+                 shape: type[BaseModel] = ParsedPage) -> None:
+        # What a stored page is read back as. A page read for its layout and a
+        # page read for its words are different objects that cost the same model
+        # call, so both belong in this table — under their own prompt, and read
+        # back into their own shape. Storing one and validating it as the other
+        # serves a run the parse it did not ask for.
         self._config = config
         self._model = model
         self._prompt_version = prompt_version
+        self._shape = shape
         self._available = True
         self.hits = 0
         self.misses = 0
@@ -67,7 +75,7 @@ class PageCache:
     def enabled(self) -> bool:
         return self._available
 
-    def get(self, lecture_id: str, page: int) -> Optional[ParsedPage]:
+    def get(self, lecture_id: str, page: int) -> Optional[BaseModel]:
         """The stored parse for this page, or ``None`` if it has to be read again."""
         if not self._available:
             return None
@@ -80,8 +88,20 @@ class PageCache:
         if not rows:
             self.misses += 1
             return None
+        if not self._is_our_shape(rows[0][0]):
+            # Every field of a transcription has a default, so a layout parse
+            # validates into one with no words at all — and a page indexed as
+            # empty looks exactly like a page that was genuinely blank. The two
+            # kinds of page live in one table under their own prompt, which is
+            # what keeps them apart; this is the check that does not depend on
+            # anyone remembering that.
+            logger.warning("a cached page of another kind was ignored",
+                           extra={"lecture_id": lecture_id, "page": page,
+                                  "shape": self._shape.__name__})
+            self.misses += 1
+            return None
         try:
-            parsed = ParsedPage.model_validate(rows[0][0])
+            parsed = self._shape.model_validate(rows[0][0])
         except Exception:
             # A stored parse that no longer fits the schema is stale, not fatal:
             # the shape changed under it. Read the page again and overwrite.
@@ -96,7 +116,7 @@ class PageCache:
         self,
         lecture_id: str,
         page: int,
-        parsed: ParsedPage,
+        parsed: BaseModel,
         *,
         image_uri: Optional[str] = None,
         dpi: Optional[int] = None,
@@ -105,6 +125,18 @@ class PageCache:
             return
         self._run(_UPSERT, (lecture_id, page, self._model, self._prompt_version,
                             Json(parsed.model_dump(mode="json")), image_uri, dpi))
+
+    def _is_our_shape(self, stored: object) -> bool:
+        """Whether this row was written by something storing ``self._shape``.
+
+        Exact rather than a guess, because what goes in is a ``model_dump`` and
+        a model emits only its own declared fields — parse liberally, emit
+        strictly, so a row holding a field this shape never declares was
+        written by a different one.
+        """
+        if not isinstance(stored, dict):
+            return False
+        return bool(stored) and set(stored) <= set(self._shape.model_fields)
 
     def _run(self, sql: str, params: tuple, *, fetch: bool = False):
         try:

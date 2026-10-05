@@ -39,7 +39,9 @@ from ..layout import (
 from ..layout.chunker import content_blocks
 from ..concurrency import DEFAULT_WORKERS, in_order, streamed
 from ..layout.page_cache import PageCache
+from ..prompts import MATH_PAGE_TRANSCRIPTION_PROMPT, PAGE_TRANSCRIPTION_PROMPT
 from ..prompts.page_layout import PAGE_LAYOUT_PROMPT
+from ..schemas import PageTranscription
 from shared.source import materialise
 
 logger = logging.getLogger(__name__)
@@ -364,6 +366,26 @@ def _page_cache(cfg: Any, layout_cfg: dict) -> Optional[PageCache]:
                      prompt_version=PAGE_LAYOUT_PROMPT.fingerprint)
 
 
+@lru_cache(maxsize=8)
+def _transcription_cache(config: Any, math: bool):
+    """The cache for the page a model was paid to read word by word.
+
+    This is the most expensive call in the pipeline and it was the only one
+    without a cache: the layout parse of a page was stored and its
+    transcription was not, so a run that died on page 300 of 418 — or was
+    stopped to pick up a config change — paid for all 300 again. Three external
+    books were re-read twice for exactly that reason.
+
+    Keyed per prompt, not per document: a maths book holds scanned pages read
+    with the ordinary prompt and text-layer pages read with the maths one, and a
+    page stored under the wrong prompt is served to the run that asked for the
+    other.
+    """
+    prompt = MATH_PAGE_TRANSCRIPTION_PROMPT if math else PAGE_TRANSCRIPTION_PROMPT
+    return PageCache(config, model=config.get("vision.model"),
+                     prompt_version=prompt.fingerprint, shape=PageTranscription)
+
+
 @lru_cache(maxsize=4)
 def _layout_model_cache(config: Any):
     """The cache for pages the layout model read.
@@ -510,8 +532,18 @@ def _prefetch_transcriptions(
 
     def read(item):
         no, png, route = item
-        return no, png, ctx.vision.transcribe_page(
+        cache = _transcription_cache(ctx.config, route == "math")
+        stored = cache.get(state["lecture_id"], no) if cache else None
+        if stored is not None:
+            return no, png, stored
+        result = ctx.vision.transcribe_page(
             png, language_hint=default_lang, math=(route == "math"))
+        # An unreadable page is not stored: it is the one answer worth paying
+        # for again, because a quota rejection and a ruined scan reach here
+        # looking identical and only one of them will read next time.
+        if cache and not result.unreadable:
+            cache.put(state["lecture_id"], no, result, dpi=render_dpi)
+        return no, png, result
 
     out: dict[int, tuple[bytes, Any]] = {
         no: (png, result)
