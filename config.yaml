@@ -90,12 +90,18 @@ vision:
   # vertex only: which project and region the models are called in.
   project: null
   location: us-central1
-  # Measured on eight pages of a scanned Arabic question bank, against
-  # qwen/qwen3-vl-235b-a22b-instruct which this replaces:
-  #   qwen via openrouter   $0.0127/page   ~60s a call
-  #   gemini via vertex     $0.0065/page   ~6.9s a call
-  # Half the cost, an order of magnitude faster, and it bills to the Cloud
-  # account where this project's credit actually is.
+  # Against qwen/qwen3-vl-235b-a22b-instruct, which this replaces. The earlier
+  # $0.0065 here came from a short prompt and was not what a page costs; these
+  # are the tokens Vertex reported for the shipped prompt at 300 dpi, priced at
+  # list, over twelve pages of an external English book:
+  #   qwen via openrouter      $0.01270/page   ~60s a call
+  #   gemini flash via vertex  $0.00493/page   12.6s a call   (3,783 in, 722-3,308 out)
+  #   gemini pro via vertex    $0.02577/page   19.8s a call   <- the fallback below
+  # Vertex reports no cost field, so a run's own metered figure reads $0.00 and
+  # the bill has to come from the tokens or from Cloud Billing.
+  # The fallback is 5.2x flash and 2x qwen, so what the swap saves depends on
+  # how often a page needs it: at 5% the all-in page is $0.0062, half of qwen,
+  # and it only stops being cheaper than qwen past a 30% fallback rate.
   model: google/gemini-2.5-flash
   # The standby for a page the primary cannot parse. A Gemini model, so a
   # fallback cannot quietly move the bill back to OpenRouter — which is what
