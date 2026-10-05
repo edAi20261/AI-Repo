@@ -111,12 +111,19 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     # and Fargate bills for the container existing rather than working — so
     # one page at a time meant a book held a machine for ten hours to do
     # twenty minutes of work.
+    layout_reads: dict[int, tuple] = {}
+    if layout_on:
+        layout_reads = _prefetch_layout_reads(
+            doc, state, layout_cfg=layout_cfg, cache=cache, min_chars=min_chars,
+            render_dpi=render_dpi, config=cfg, counts=counts,
+            workers=ocr.get("page_workers", DEFAULT_WORKERS))
+
     transcribed: dict[int, Any] = {}
     if vision_enabled:
         transcribed = _prefetch_transcriptions(
             doc, state, ctx, min_chars=min_chars, render_dpi=render_dpi,
             is_math=is_math, garbage_cfg=garbage_cfg, default_lang=default_lang,
-            workers=ocr.get("page_workers", DEFAULT_WORKERS))
+            workers=ocr.get("page_workers", DEFAULT_WORKERS), counts=counts)
 
     for page_no, page in pdf.iter_pages(doc):
         char_count = pdf.page_char_count(page)
@@ -124,7 +131,8 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
         if layout_on:
             parsed = _parse_layout(
                 page, page_no, state, layout_cfg, char_count, counts, cache,
-                render_dpi=render_dpi, config=cfg)
+                render_dpi=render_dpi, config=cfg,
+                planned=layout_reads.get(page_no))
             if parsed is not None:
                 parsed_pages.append(parsed)
 
@@ -200,8 +208,10 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
             counts["math"] += 1
             page_elems = []
             if vision_enabled:
-                result = transcribed.get(page_no)
-                if result is None:
+                ready = transcribed.get(page_no)
+                if ready is not None:
+                    result = ready[0]
+                else:
                     math_png = pdf.render_page_png(page, dpi=render_dpi)
                     result = ctx.vision.transcribe_page(
                         math_png, language_hint=page_lang, math=True)
@@ -418,6 +428,27 @@ def _page_direction(page: Any, layout_cfg: dict) -> str:
     return layout_cfg.get("reading_direction", "ltr")
 
 
+def _layout_plan(
+    page: Any, page_no: int, state: IngestionState, layout_cfg: dict, char_count: int,
+) -> tuple[PageMeta, list, int]:
+    """How this page should be read, decided from its text layer alone.
+
+    Separated from the reading so the decision can be made on the thread that
+    owns the PyMuPDF document while the reading happens on eight others. It is
+    also the one place the tier is chosen: deciding it again next to the reader
+    is how the two come to disagree.
+    """
+    meta = PageMeta(
+        doc_id=state["lecture_id"],
+        page=page_no,
+        width=float(page.rect.width),
+        height=float(page.rect.height),
+        reading_direction=_page_direction(page, layout_cfg),
+    )
+    blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
+    return meta, blocks, choose_tier(page, char_count=char_count, blocks=blocks)
+
+
 def _parse_layout(
     page: Any,
     page_no: int,
@@ -429,26 +460,30 @@ def _parse_layout(
     *,
     render_dpi: int,
     config: Any,
+    planned: Optional[tuple] = None,
 ) -> Optional[dict]:
     """This page as typed blocks in reading order, or ``None`` when no tier can.
 
     The router decides per page rather than per document: one PDF holds clean
     text-layer pages, magazine spreads whose drawing order is not their reading
     order, and scans with no text at all.
+
+    ``planned`` is what the prefetch already worked out and already read, for
+    the pages it covered. Without it this does the whole thing here, which is
+    the path a page the prefetch skipped still takes.
     """
-    meta = PageMeta(
-        doc_id=state["lecture_id"],
-        page=page_no,
-        width=float(page.rect.width),
-        height=float(page.rect.height),
-        reading_direction=_page_direction(page, layout_cfg),
-    )
-    blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
-    wanted = choose_tier(page, char_count=char_count, blocks=blocks)
+    if planned is not None:
+        meta, blocks, wanted, prefetched, already_tried = planned
+    else:
+        meta, blocks, wanted = _layout_plan(page, page_no, state, layout_cfg, char_count)
+        prefetched, already_tried = None, False
     counts[f"layout_wants_tier{wanted}"] = counts.get(f"layout_wants_tier{wanted}", 0) + 1
 
     if wanted == TEXT_LAYER:
         return ParsedPage(meta=meta, blocks=blocks).model_dump()
+
+    if prefetched is not None:
+        return prefetched.model_dump()
 
     # A page the router sent here has a text layer that cannot be trusted with
     # it: scattered boxes whose drawing order is not their reading order, or no
@@ -461,7 +496,9 @@ def _parse_layout(
         if read is not None:
             return read.model_dump()
 
-    if not content_blocks(blocks) or wanted == VISION:
+    # ``already_tried`` means the prefetch asked a model about this page and got
+    # nothing back. Asking again here would pay for the same refusal twice.
+    if not already_tried and (not content_blocks(blocks) or wanted == VISION):
         read = _read_page_with_vision(
             page, page_no, state, meta, render_dpi, config, cache, counts)
         if read is not None:
@@ -509,8 +546,8 @@ def _read_page_with_layout_model(
 def _prefetch_transcriptions(
     doc: Any, state: IngestionState, ctx: PipelineContext, *,
     min_chars: int, render_dpi: int, is_math: bool, garbage_cfg: dict,
-    default_lang: str, workers: int,
-) -> dict[int, tuple[bytes, Any]]:
+    default_lang: str, workers: int, counts: dict,
+) -> dict[int, Any]:
     """Every page that needs a model, read ahead of the loop that consumes it.
 
     Returns ``{page_no: transcription}``. Rendering happens here, on one thread,
@@ -546,22 +583,107 @@ def _prefetch_transcriptions(
         no, png, route = item
         cache = _transcription_cache(ctx.config, route == "math")
         stored = cache.get(state["lecture_id"], no) if cache else None
-        if stored is not None:
-            return no, stored
-        result = ctx.vision.transcribe_page(
-            png, language_hint=default_lang, math=(route == "math"))
-        # An unreadable page is not stored: it is the one answer worth paying
-        # for again, because a quota rejection and a ruined scan reach here
-        # looking identical and only one of them will read next time.
-        if cache and not result.unreadable:
-            cache.put(state["lecture_id"], no, result, dpi=render_dpi)
-        return no, result
+        if stored is None:
+            stored = ctx.vision.transcribe_page(
+                png, language_hint=default_lang, math=(route == "math"))
+            # An unreadable page is not stored: it is the one answer worth
+            # paying for again, because a quota rejection and a ruined scan
+            # reach here looking identical and only one will read next time.
+            if cache and not stored.unreadable:
+                cache.put(state["lecture_id"], no, stored, dpi=render_dpi)
+
+        # The figures are cut and captioned here, while this page's image is
+        # still in hand and while seven other pages are in flight. They used to
+        # be done by the loop, one page after another: a page with figures cost
+        # a second round trip, and that doubled a loop already running at 31
+        # seconds a page. Doing it here also means the rendered page is finished
+        # with by the time this returns, instead of being carried.
+        tally: dict[str, int] = {}
+        figures: list[Figure] = []
+        if route == "scanned" and stored.figures and not stored.unreadable:
+            figures = _figures_from_boxes(state, ctx, png, no, stored.figures,
+                                          default_lang, tally)
+        return no, (stored, figures, tally)
 
     out: dict[int, Any] = dict(
         streamed(wanted, render, read, workers=workers, label="transcribe"))
+    # Counted here rather than in the workers: eight threads incrementing one
+    # dictionary is a lost count, and these numbers decide whether a book is
+    # indexed or sent to review.
+    for _, (_, figures, tally) in out.items():
+        for key, value in tally.items():
+            counts[key] = counts.get(key, 0) + value
+        counts["figures"] += len(figures)
     logger.info("pages transcribed ahead of the loop",
                 extra={"lecture_id": state["lecture_id"], "pages": len(out),
                        "workers": workers})
+    return out
+
+
+def _prefetch_layout_reads(
+    doc: Any, state: IngestionState, *, layout_cfg: dict, cache: Optional[PageCache],
+    min_chars: int, render_dpi: int, config: Any, workers: int, counts: dict,
+) -> dict[int, tuple]:
+    """Every page the layout parser needs a model for, read several at a time.
+
+    The same change that took transcription from a page at a time to a book in
+    twelve minutes, applied to the other model call in this stage. The loop was
+    running at 31 seconds a page against a model that answers in 13, because it
+    asked for one page, waited, then asked for the next: measured on 5 October,
+    a 418-page book spent twelve minutes reading every page and three and a half
+    hours walking back over them.
+
+    The decision about how to read a page is made here, on the thread that owns
+    the document, and handed to ``_parse_layout`` with the answer — so the tier
+    is still chosen exactly once.
+    """
+    plans: list[tuple] = []
+    for page_no, page in pdf.iter_pages(doc):
+        meta, blocks, wanted = _layout_plan(
+            page, page_no, state, layout_cfg, pdf.page_char_count(page))
+        plans.append((page_no, page, meta, blocks, wanted))
+
+    needs_model = [
+        plan for plan in plans
+        if plan[4] != TEXT_LAYER and (not content_blocks(plan[3]) or plan[4] == VISION)
+    ]
+    out: dict[int, tuple] = {
+        page_no: (meta, blocks, wanted, None, False)
+        for page_no, _, meta, blocks, wanted in plans
+    }
+    if not needs_model:
+        return out
+
+    def render(plan):
+        page_no, page, meta, blocks, wanted = plan
+        return page_no, meta, blocks, wanted, pdf.render_page_png(page, dpi=render_dpi)
+
+    def read(item):
+        page_no, meta, blocks, wanted, png = item
+        parsed = None
+        if cache is not None:
+            parsed = cache.get(state["lecture_id"], page_no)
+        if parsed is None:
+            parsed = tier3.parse_page(
+                png, meta, config=config,
+                language_hint=state.get("language_hint"),
+                direction=meta.reading_direction)
+            if parsed is not None and cache is not None:
+                cache.put(state["lecture_id"], page_no, parsed, dpi=render_dpi)
+        return page_no, (meta, blocks, wanted, parsed, True)
+
+    out.update(dict(streamed(needs_model, render, read,
+                             workers=workers, label="layout")))
+    # Tallied here rather than in the workers: eight threads incrementing one
+    # dictionary lose counts, and a page that no model could read is the number
+    # that decides whether this book is indexed at all.
+    read_count = sum(1 for _, _, _, parsed, tried in out.values() if tried and parsed)
+    counts["layout_read_by_vision"] = counts.get("layout_read_by_vision", 0) + read_count
+    counts["layout_unread"] = (counts.get("layout_unread", 0)
+                               + len(needs_model) - read_count)
+    logger.info("pages read for layout ahead of the loop",
+                extra={"lecture_id": state["lecture_id"], "pages": len(needs_model),
+                       "read": read_count, "workers": workers})
     return out
 
 
@@ -620,8 +742,9 @@ def _vision_transcribe(
     # while this loop was still on an earlier one. Falling back to reading it
     # here keeps one path for a page the prefetch skipped.
     png: Optional[bytes] = None
+    ready_figures: Optional[list[Figure]] = None
     if prefetched is not None:
-        result = prefetched
+        result, ready_figures, _ = prefetched
     else:
         png = pdf.render_page_png(page, dpi=render_dpi)
         result = ctx.vision.transcribe_page(png, language_hint=lang)
@@ -637,14 +760,17 @@ def _vision_transcribe(
         elem_lang = _language(text, lang, supported)
         page_elems.append(Element(text=text, page=page_no, route=route, language=elem_lang))
     page_figs: list[Figure] = []
-    if with_figures and result.figures:
-        # Rendered now rather than carried from the prefetch: holding one image
-        # per page for the length of the run is what ran the task out of memory.
-        if png is None:
-            png = pdf.render_page_png(page, dpi=render_dpi)
-        page_figs = _figures_from_boxes(state, ctx, png, page_no, result.figures, lang,
-                                        counts)
-        counts["figures"] += len(page_figs)
+    if with_figures:
+        if ready_figures is not None:
+            # Already cut and captioned by the prefetch, alongside seven other
+            # pages, while this page's image was still in hand. Counted there.
+            page_figs = ready_figures
+        elif result.figures:
+            if png is None:
+                png = pdf.render_page_png(page, dpi=render_dpi)
+            page_figs = _figures_from_boxes(state, ctx, png, page_no, result.figures,
+                                            lang, counts)
+            counts["figures"] += len(page_figs)
     return page_elems, page_figs
 
 

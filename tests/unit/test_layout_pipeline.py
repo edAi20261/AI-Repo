@@ -645,13 +645,102 @@ def test_a_book_is_not_held_in_memory_while_it_is_read(monkeypatch):
     ctx = type("Ctx", (), {"vision": _Vision(), "config": None})()
     state = {"lecture_id": "11111111-1111-1111-1111-111111111111"}
 
+    counts = {"figures": 0}
     out = extract._prefetch_transcriptions(
         object(), state, ctx, min_chars=40, render_dpi=300, is_math=False,
-        garbage_cfg={}, default_lang="ar", workers=4)
+        garbage_cfg={}, default_lang="ar", workers=4, counts=counts)
 
     assert len(out) == pages
-    held = sum(len(v) for v in out.values() if isinstance(v, bytes))
-    held += sum(len(part) for v in out.values() if isinstance(v, tuple)
-                for part in v if isinstance(part, bytes))
+
+    def _bytes_in(value) -> int:
+        if isinstance(value, bytes):
+            return len(value)
+        if isinstance(value, (tuple, list)):
+            return sum(_bytes_in(part) for part in value)
+        return 0
+
+    held = sum(_bytes_in(v) for v in out.values())
     assert held == 0, f"{held} bytes of rendered page held for the whole run"
-    assert all(isinstance(v, PageTranscription) for v in out.values())
+    assert all(isinstance(v[0], PageTranscription) for v in out.values())
+
+
+# --- the loop that walked the book one page at a time ------------------------
+
+def _layout_fakes(monkeypatch, extract, pages, reader):
+    """A document of ``pages`` scanned pages, with ``reader`` as the model."""
+    class _Rect:
+        width = height = 600.0
+
+    class _Page:
+        rect = _Rect()
+
+    monkeypatch.setattr(extract.pdf, "iter_pages",
+                        lambda doc: [(n, _Page()) for n in range(pages)])
+    monkeypatch.setattr(extract.pdf, "page_char_count", lambda page: 0)
+    monkeypatch.setattr(extract.pdf, "render_page_png", lambda page, dpi: b"png")
+    monkeypatch.setattr(extract, "_layout_plan",
+                        lambda page, page_no, state, cfg, chars: (
+                            extract.PageMeta(doc_id="d", page=page_no, width=600.0,
+                                             height=600.0, reading_direction="ltr"),
+                            [], extract.VISION))
+    monkeypatch.setattr(extract.tier3, "parse_page", reader)
+
+
+def test_the_layout_reads_of_a_book_overlap(monkeypatch):
+    """The loop asked a model about one page, waited, then asked about the next.
+    Measured on 5 October: a 418-page book spent twelve minutes reading every
+    page in parallel and three and a half hours walking back over them at 31
+    seconds each, against a model that answers in thirteen."""
+    import importlib
+    import threading
+
+    extract = importlib.import_module("ingestion.stages.extract")
+
+    together = threading.Barrier(4, timeout=5)
+
+    def reader(png, meta, **kwargs):
+        together.wait()          # only passes if four are in flight at once
+        return extract.ParsedPage(meta=meta, blocks=[])
+
+    _layout_fakes(monkeypatch, extract, 8, reader)
+    counts: dict = {}
+
+    out = extract._prefetch_layout_reads(
+        object(), {"lecture_id": "11111111-1111-1111-1111-111111111111"},
+        layout_cfg={}, cache=None, min_chars=40, render_dpi=300, config=None,
+        workers=4, counts=counts)
+
+    assert len(out) == 8
+    assert counts["layout_read_by_vision"] == 8
+    assert counts.get("layout_unread", 0) == 0
+
+
+def test_a_page_no_model_could_read_is_not_paid_for_twice(monkeypatch):
+    """The prefetch asks, and the loop used to ask again for anything that came
+    back empty — the same refusal, charged twice."""
+    import importlib
+
+    extract = importlib.import_module("ingestion.stages.extract")
+
+    asked = []
+
+    def reader(png, meta, **kwargs):
+        asked.append(meta.page)
+        return None
+
+    _layout_fakes(monkeypatch, extract, 3, reader)
+    counts: dict = {}
+    state = {"lecture_id": "11111111-1111-1111-1111-111111111111"}
+
+    planned = extract._prefetch_layout_reads(
+        object(), state, layout_cfg={}, cache=None, min_chars=40, render_dpi=300,
+        config=None, workers=2, counts=counts)
+    assert counts["layout_unread"] == 3
+    assert sorted(asked) == [0, 1, 2]
+
+    for page_no in range(3):
+        extract._parse_layout(
+            None, page_no, state, {}, 0, counts, None,
+            render_dpi=300, config=None, planned=planned[page_no])
+
+    assert sorted(asked) == [0, 1, 2], "the loop asked a second time"
