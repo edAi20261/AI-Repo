@@ -29,19 +29,15 @@ def _database(config) -> str:
             cur.execute("select current_user, current_database()")
             who, where = cur.fetchone()
             # Writing is the half that matters: a read-only grant looks healthy
-            # here and loses the book at the end.
-            cur.execute("select count(*) from ai.page_transcriptions limit 1")
+            # on a select and loses the book at the end. Rolled back rather than
+            # deleted, so a check that fails halfway cannot leave a row behind —
+            # this runs against the live database.
             cur.execute(
                 "insert into ai.page_transcriptions"
                 " (lecture_id, page, model, prompt_version, raw_output)"
-                " values (%s::uuid, -1, 'preflight', 'preflight', '{}'::jsonb)"
-                " on conflict (lecture_id, page, model, prompt_version) do nothing",
-                (str(uuid.UUID(int=0)),))
-            cur.execute(
-                "delete from ai.page_transcriptions"
-                " where model = 'preflight' and lecture_id = %s::uuid",
-                (str(uuid.UUID(int=0)),))
-        conn.commit()
+                " values (%s::uuid, 0, 'preflight', %s, '{}'::jsonb)",
+                (str(uuid.UUID(int=0)), PROBE))
+        conn.rollback()
     return f"{who}@{where}, ai.* readable and writable"
 
 
@@ -77,6 +73,8 @@ def _storage(config) -> str:
 
     uploader = get_uploader(config)
     uri = uploader.upload(PROBE, b"preflight", content_type="text/plain")
+    # Removing it is part of the check: a run that can write crops but not clear
+    # the previous ones logs a failure on every book.
     uploader.delete_prefix(PROBE)
     return f"{type(uploader).__name__}, wrote and removed {uri}"
 

@@ -35,7 +35,8 @@ if [ -z "$manifest" ] || [ ! -f "$manifest" ]; then
   exit 2
 fi
 shift
-extra=("$@")
+extra=()
+[ "$#" -gt 0 ] && extra=("$@")
 
 for needed in docker; do
   command -v "$needed" >/dev/null 2>&1 || { echo "$needed is not installed" >&2; exit 2; }
@@ -69,8 +70,11 @@ declare -a failed=()
 ingest_one() {
   local source="$1" lecture="$2" subject="$3" title="$4"
   local name mount log
-  name="ingest-${lecture:0:8}"
-  log="$LOG_DIR/${lecture:0:8}.log"
+  # The whole id, not a prefix of it. Books from one shelf are given ids that
+  # differ in the last characters, so a short name put two books in one log and
+  # the first one's was overwritten without a word.
+  name="ingest-$lecture"
+  log="$LOG_DIR/$lecture.log"
 
   # The book is mounted read only at a fixed path, so the manifest can hold a
   # Windows path, a WSL path or a relative one and the container sees one shape.
@@ -86,7 +90,7 @@ ingest_one() {
       --memory "${INGEST_MEMORY:-10g}" \
       "$IMAGE" -m ingestion "/books/$base" \
         --lecture-id "$lecture" --subject-id "$subject" --lesson-title "$title" \
-        "${extra[@]}" > "$log" 2>&1; then
+        ${extra[@]+"${extra[@]}"} > "$log" 2>&1; then
     echo "finished $title" | tee -a "$summary"
   else
     echo "FAILED   $title  (see $log)" | tee -a "$summary"
@@ -115,7 +119,9 @@ wait
 
 echo | tee -a "$summary"
 if [ "${#failed[@]}" -eq 0 ]; then
-  echo "all books finished. Check they indexed: scripts/ingest_status.py" | tee -a "$summary"
+  echo "all books finished. Now check they were indexed:" | tee -a "$summary"
+  echo "  docker run --rm --env-file $ENV_FILE -v \"\$PWD:/w\" $IMAGE \\" | tee -a "$summary"
+  echo "    -m scripts.ingest_status /w/$(basename "$manifest")" | tee -a "$summary"
 else
   echo "${#failed[@]} book(s) failed:" | tee -a "$summary"
   printf '  %s\n' "${failed[@]}" | tee -a "$summary"
