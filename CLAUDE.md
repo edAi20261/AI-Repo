@@ -138,6 +138,13 @@ the second customer.
 - **Lint** must not regress: `ruff check` before and after, no new findings.
   Never run `ruff --fix` across the repo — it reformats unrelated files and has
   already deleted a deliberate re-export.
+- **Done** means `.venv/bin/python scripts/verify.py` passes, the same lint and
+  suite CI runs, and you paste its last lines. A bare `pytest` inherits `.env`,
+  whose `DATABASE_URL` is production.
+- **Agents.** A change built by the `developer` and `qa-tester` subagents moves
+  through `sdlc/changes/<id>/` (`intent.md` → `plan.md` → `qa.md`); see
+  `sdlc/README.md`. Their limits are enforced in `.claude/hooks/sdlc_guard.py`,
+  not only written in their prompts.
 - **PRs** are one concern each, and describe the failure they fix, not the diff.
   No attribution lines.
 - **Shared resources.** `DATABASE_URL` and Qdrant point at production. Reads are
