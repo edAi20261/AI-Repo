@@ -285,7 +285,23 @@ ingestion:
     # crash rather than a slow path. 1 turns this off.
     page_workers: 8               # the only one implemented; any other value turns
                                  # page vision off and leaves the text layer alone
-    garbage:                     # legibility gate: glyph-noise digital pages -> vision
+    # Reading a book into the page cache before the pipeline walks it
+    # (ingestion/read_ahead.py): each page rendered once, on every core, and
+    # both of its model calls made from that one image. Measured over twenty
+    # pages of a scanned 1033 x 1375 pt textbook at 300 dpi on an idle 2-vCPU
+    # machine: 0.83s a page on one thread — and the pipeline rendered each page
+    # twice — against 0.45s a page through two processes.
+    read_ahead:
+      enabled: true
+      # Model calls in flight from one machine. Twice page_workers because a
+      # worker here makes a page's two calls one after the other. Not yet swept
+      # at this width: 24 in flight against one Vertex quota measured seven
+      # 429s over 22 minutes, every one absorbed by vision.retry_attempts, and a
+      # page that still fails is read by the pipeline afterwards rather than
+      # lost. Lower it before raising retry_attempts if a run is rate limited.
+      workers: 16
+      render_processes: 0         # 0 = one per CPU
+    garbage:                    # legibility gate: glyph-noise digital pages -> vision
       symbol_ratio: 0.45         # non-alphanumeric share above this: symbol-junk (any length)
       word_check_min_chars: 80   # run the word check only past this length
       min_word_hits: 3           # Latin page below this many common-word hits: cipher garbage

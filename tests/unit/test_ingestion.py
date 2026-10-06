@@ -1363,6 +1363,7 @@ def test_a_direct_run_labels_its_chunks_like_a_resolved_one(monkeypatch):
     subject name, so every citation from it was labelled by whatever the layout
     parser took for a heading: "Visualize It!", "is a straight line"."""
     import ingestion.__main__ as cli
+    import ingestion.lesson as lesson
 
     captured = {}
 
@@ -1370,11 +1371,12 @@ def test_a_direct_run_labels_its_chunks_like_a_resolved_one(monkeypatch):
         def get_subject(self, subject_id):
             return {"name": "Biology", "language": "en"}
 
-    monkeypatch.setattr(cli, "get_backend_client", lambda config, **k: _Backend())
+    monkeypatch.setattr(lesson, "get_backend_client", lambda config, **k: _Backend())
     monkeypatch.setattr(cli, "run_ingestion",
                         lambda state, **k: captured.update(state) or {"stats": {}})
     cli.main(["lesson.pdf", "--lecture-id", "l1", "--subject-id", "s1",
-              "--lesson-title", "The Water Cycle", "--lesson-order", "4"])
+              "--lesson-title", "The Water Cycle", "--lesson-order", "4",
+              "--no-read-ahead"])
     assert captured["subject_name"] == "Biology"
     assert captured["lesson_title"] == "The Water Cycle"
     assert captured["lesson_order"] == 4

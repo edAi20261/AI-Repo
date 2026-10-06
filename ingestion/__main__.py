@@ -19,74 +19,58 @@ local fixtures manifest. With no DATABASE_URL / QDRANT_URL the run uses dry-run 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-from pathlib import Path
 
 from shared.logging import setup_logging
+from shared.source import materialise
 
 from . import get_backend_client, get_config, new_state, resolve_lesson, run_ingestion
 from .backend import BackendClient, LessonSource
 from .context import PipelineContext
-from .utils.grades import to_platform_grade
+from .lesson import add_lesson_arguments, apply_lesson_overrides, lesson_state
+from .lesson import report as _report
+from .read_ahead import ReadAheadUnavailable, read_ahead
 
 logger = logging.getLogger(__name__)
 
 
-def _to_uri(source: str) -> str:
-    """Accept a local path or a file:///s3:// URI; normalise a bare path."""
-    if "://" in source:
-        return source
-    return Path(source).resolve().as_uri()
+def _ingest(state, config, *, ctx: PipelineContext | None = None,
+            read_ahead: bool = True) -> dict:
+    """The whole pipeline, with the book's pages read ahead when that can help."""
+    ctx = ctx or PipelineContext.build(config)
+    if read_ahead and config.get("ingestion.ocr.read_ahead.enabled") \
+            and not state.get("source_text"):
+        _read_ahead_whole_book(state, ctx, config)
+    return run_ingestion(state, ctx=ctx, config=config)
 
 
-def _report(lesson_id: str, result: dict) -> None:
-    # The stats block is deliberate CLI output the operator reads; warnings go to
-    # the logger so they are captured in production the same as everywhere else.
-    print(f"# {lesson_id}")
-    print(json.dumps(result.get("stats", {}), ensure_ascii=False, indent=2))
-    if result.get("ingestion_status"):
-        print(f"ingestion_status: {result['ingestion_status']}")
-    for err in result.get("errors", []):
-        logger.warning(err, extra={"lecture_id": lesson_id})
+def _read_ahead_whole_book(state, ctx: PipelineContext, config) -> None:
+    """Every page into the cache, so the extract stage finds them read.
 
-
-def _subject_of(config, subject_id: str) -> dict:
-    """The subject's name and language, so a direct run labels its chunks the way a
-    resolved run does. A citation without them is labelled by whatever the layout
-    parser took for a heading."""
+    A remote source is fetched for this and again by the extract stage: one more
+    download of a file that takes seconds, against renders that take minutes.
+    Nothing read ahead is wasted if this fails part way — the cache keeps it and
+    the pipeline reads what is missing.
+    """
     try:
-        return get_backend_client(config).get_subject(subject_id) or {}
-    except Exception:
-        logger.warning("subject facts unavailable; chunks will carry no subject name "
-                       "or language", extra={"subject_id": subject_id}, exc_info=True)
-        return {}
+        with materialise(state["source_uri"], config) as path:
+            report = read_ahead(path, state, ctx)
+    except ReadAheadUnavailable as reason:
+        logger.warning("pages not read ahead; the pipeline reads them itself: %s", reason,
+                       extra={"lecture_id": state.get("lecture_id")})
+        return
+    logger.info("pages read ahead", extra={"lecture_id": state.get("lecture_id"), **report})
 
 
 def _run_direct(args, config) -> int:
-    subject = _subject_of(config, args.subject_id)
-    if not args.lesson_title:
-        logger.warning("no --lesson-title: citations from this lecture will be labelled "
-                       "by section headings only", extra={"lecture_id": args.lecture_id})
-    state = new_state(
-        lecture_id=args.lecture_id,
-        subject_id=args.subject_id,
-        source_uri=_to_uri(args.source),
-        grade=to_platform_grade(args.grade),
-        subject_name=subject.get("name"),
-        lesson_title=args.lesson_title,
-        lesson_order=args.lesson_order,
-        namespace=args.namespace,
-        version=args.version,
-        language_hint=subject.get("language"),
-        subject_is_math=args.subject_is_math,
-    )
-    _report(args.lecture_id, run_ingestion(state, config=config))
+    state = lesson_state(args, config)
+    _report(args.lecture_id, _ingest(state, config, read_ahead=args.read_ahead))
     return 0
 
 
 def _run_one_resolved(
-    client: BackendClient, lesson_id: str, config, ctx: PipelineContext
+    client: BackendClient, lesson_id: str, config, ctx: PipelineContext,
+    *, read_ahead: bool = True,
 ) -> None:
     src: LessonSource = resolve_lesson(client, lesson_id)
     state = new_state(
@@ -101,13 +85,13 @@ def _run_one_resolved(
         language_hint=src.language,
         subject_is_math=src.subject_is_math,
     )
-    _report(lesson_id, run_ingestion(state, ctx=ctx, config=config))
+    _report(lesson_id, _ingest(state, config, ctx=ctx, read_ahead=read_ahead))
 
 
 def _run_resolve(args, config) -> int:
     client = get_backend_client(config, fixtures_path=args.fixtures)
     ctx = PipelineContext.build(config)
-    _run_one_resolved(client, args.resolve, config, ctx)
+    _run_one_resolved(client, args.resolve, config, ctx, read_ahead=args.read_ahead)
     return 0
 
 
@@ -122,7 +106,7 @@ def _run_backfill(args, config) -> int:
     # rebuilding per lesson reloads the embedding model each time.
     ctx = PipelineContext.build(config)
     for lesson_id in pending:
-        _run_one_resolved(client, lesson_id, config, ctx)
+        _run_one_resolved(client, lesson_id, config, ctx, read_ahead=args.read_ahead)
     return 0
 
 
@@ -132,32 +116,17 @@ def main(argv: list[str] | None = None) -> int:
         description="Ingest lesson files into chunks, topics and the vector index.",
     )
     parser.add_argument("source", nargs="?", help="direct mode: local path / file:// / s3:// URI")
-    parser.add_argument("--lecture-id", help="direct mode: content.lessons.id (uuid)")
-    parser.add_argument("--subject-id", help="direct mode subject id, or backfill filter")
-    parser.add_argument("--grade", default=None, help="grade level of the subject")
-    parser.add_argument("--lesson-title", default=None, help="direct mode: the lesson's title")
-    parser.add_argument("--lesson-order", type=int, default=None,
-                        help="direct mode: the lesson's position in its subject")
-    parser.add_argument(
-        "--subject-is-math",
-        action="store_true",
-        help="force every page down the vision route (maths subject)",
-    )
-    parser.add_argument("--namespace", default="syllabus")
-    parser.add_argument("--version", type=int, default=1, help="re-ingestion version")
+    add_lesson_arguments(parser)
 
     parser.add_argument("--resolve", metavar="LESSON_ID", help="resolve one lesson id and run")
     parser.add_argument("--backfill", action="store_true", help="run every pending lesson")
     parser.add_argument("--fixtures", default=None, help="fixtures manifest for offline resolve")
-    parser.add_argument("--layout-model", dest="layout_model", action="store_true", default=None,
-                        help="read magazine-style pages with the document layout model")
-    parser.add_argument("--no-layout-model", dest="layout_model", action="store_false",
-                        help="read every page with the text layer or the vision model")
+    parser.add_argument("--no-read-ahead", dest="read_ahead", action="store_false",
+                        help="let the pipeline read each page itself, one pass at a time")
 
     args = parser.parse_args(argv)
     config = get_config()
-    if args.layout_model is not None:
-        config.override("ingestion.layout.tier2.enabled", args.layout_model)
+    apply_lesson_overrides(args, config)
     setup_logging(config)
 
     if args.backfill:

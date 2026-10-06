@@ -82,7 +82,21 @@ def run_ingestion(
     return result
 
 
-def _run_sequential(state: IngestionState, ctx: PipelineContext) -> IngestionState:
-    for name in _STAGE_ORDER:
+def run_stages(
+    state: IngestionState, ctx: PipelineContext, names: tuple[str, ...],
+) -> IngestionState:
+    """Some of the stages, in pipeline order — for a run split across machines.
+
+    Names outside the pipeline, or out of its order, are refused: a stage run
+    before the one it reads from works on an empty list and reports success.
+    """
+    positions = [_STAGE_ORDER.index(name) for name in names]
+    if positions != sorted(positions):
+        raise ValueError(f"stages {names} are not in pipeline order {_STAGE_ORDER}")
+    for name in names:
         state = _run_stage(getattr(stages, name), state, ctx, name)
     return state
+
+
+def _run_sequential(state: IngestionState, ctx: PipelineContext) -> IngestionState:
+    return run_stages(state, ctx, _STAGE_ORDER)
