@@ -9,8 +9,11 @@ decided them would read one book two ways.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import unicodedata
+import uuid
 from pathlib import Path
 
 from . import get_backend_client
@@ -18,6 +21,15 @@ from .state import new_state
 from .utils.grades import to_platform_grade
 
 logger = logging.getLogger(__name__)
+
+# Fixed for good. Every generated id is derived from it, so changing it gives
+# every book already indexed a new identity, and the next upload of one lands
+# beside its old copy instead of replacing it.
+ID_NAMESPACE = uuid.UUID("5b1f6c0e-2a7d-5e43-9c1b-7d0a4e8f2c61")
+# What fetch_book leaves beside a downloaded book: the name it had where it came
+# from, since the download itself is saved under a fixed name.
+NAME_SUFFIX = ".name"
+UNTITLED = "Untitled book"
 
 
 def to_uri(source: str) -> str:
@@ -50,6 +62,79 @@ def _subject_of(config, subject_id: str) -> dict:
         return {}
 
 
+def fill_in_identity(args) -> None:
+    """Give a book the ids and title nobody typed, the same way on every machine.
+
+    The ids used to come from the platform backend, which created the lesson
+    first. Without it, a person uploading a book has nothing to type, so:
+
+      - the lecture id is derived from the book's own bytes: the same file is
+        always the same lecture, so uploading it again replaces it rather than
+        indexing a second copy;
+      - the subject id from the subject's name, so books named under one
+        subject share one topic catalogue — or from the title when no subject
+        is named, which makes the book its own subject;
+      - the title from the PDF, else the name the file had when it was fetched.
+
+    Derived, never random: each machine of a split run works this out for
+    itself, and a random id would give every machine a different book.
+    """
+    if not args.lesson_title:
+        args.lesson_title = _title_of(args.source)
+    if not args.lecture_id:
+        args.lecture_id = str(uuid.uuid5(ID_NAMESPACE, "book:" + _fingerprint(args.source)))
+    if not args.subject_id:
+        named = args.subject_name or args.lesson_title
+        args.subject_id = str(uuid.uuid5(ID_NAMESPACE, "subject:" + _key(named)))
+
+
+def _fingerprint(source: str) -> str:
+    path = Path(source[len("file://"):] if source.startswith("file://") else source)
+    if not path.is_file():
+        # A remote source is fetched later; its address is what is known now.
+        return "uri:" + source
+    digest = hashlib.sha256()
+    with open(path, "rb") as book:
+        for block in iter(lambda: book.read(1 << 20), b""):
+            digest.update(block)
+    return "sha256:" + digest.hexdigest()
+
+
+def _title_of(source: str) -> str:
+    path = Path(source)
+    if path.is_file():
+        try:
+            from .utils import pdf
+
+            doc = pdf.open_document(str(path))
+            try:
+                title = _clean((doc.metadata or {}).get("title") or "")
+            finally:
+                doc.close()
+            if title:
+                return title
+        except Exception:      # noqa: BLE001 — a title is a nicety, not a reason to fail
+            logger.warning("could not read the PDF's own title", exc_info=True)
+        sidecar = Path(str(path) + NAME_SUFFIX)
+        if sidecar.is_file():
+            title = _clean(Path(sidecar.read_text(encoding="utf-8")).stem.replace("_", " "))
+            if title:
+                return title
+        if path.stem.lower() not in ("book", "lesson", "document"):
+            return _clean(path.stem.replace("_", " ")) or UNTITLED
+    return UNTITLED
+
+
+def _clean(text: str) -> str:
+    """Without the invisible direction marks a right-to-left file name carries."""
+    kept = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return " ".join(kept.split())
+
+
+def _key(name: str) -> str:
+    return unicodedata.normalize("NFKC", _clean(name)).casefold()
+
+
 def lesson_state(args, config):
     """The state a direct run starts from.
 
@@ -58,6 +143,10 @@ def lesson_state(args, config):
     part of this state, and two machines that disagreed about it would read the
     same book two ways.
     """
+    fill_in_identity(args)
+    logger.info("book identity", extra={"lecture_id": args.lecture_id,
+                                        "subject_id": args.subject_id,
+                                        "lesson_title": args.lesson_title})
     subject = _subject_of(config, args.subject_id)
     if not args.lesson_title:
         logger.warning("no --lesson-title: citations from this lecture will be labelled "
@@ -79,10 +168,14 @@ def lesson_state(args, config):
 
 def add_lesson_arguments(parser: argparse.ArgumentParser) -> None:
     """The arguments that describe one lesson, for every command that takes one."""
-    parser.add_argument("--lecture-id", help="direct mode: content.lessons.id (uuid)")
-    parser.add_argument("--subject-id", help="direct mode subject id, or backfill filter")
+    parser.add_argument("--lecture-id",
+                        help="content.lessons.id; derived from the book's bytes when left out")
+    parser.add_argument("--subject-id",
+                        help="the subject; derived from --subject-name (or the title) when "
+                             "left out. In backfill mode, a filter")
     parser.add_argument("--grade", default=None, help="grade level of the subject")
-    parser.add_argument("--lesson-title", default=None, help="direct mode: the lesson's title")
+    parser.add_argument("--lesson-title", default=None,
+                        help="the book's title; from the PDF or its file name when left out")
     parser.add_argument("--lesson-order", type=int, default=None,
                         help="direct mode: the lesson's position in its subject")
     parser.add_argument(

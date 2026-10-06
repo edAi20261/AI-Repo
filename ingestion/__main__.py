@@ -133,11 +133,11 @@ def main(argv: list[str] | None = None) -> int:
         return _run_backfill(args, config)
     if args.resolve:
         return _run_resolve(args, config)
-    if args.source and args.lecture_id and args.subject_id:
+    if args.source:
         return _run_direct(args, config)
 
     parser.error(
-        "choose one: <source> --lecture-id --subject-id (direct), "
+        "choose one: <source> (direct), "
         "--resolve <lesson_id>, or --backfill"
     )
     return 2  # unreachable; parser.error exits

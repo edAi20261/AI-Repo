@@ -83,13 +83,21 @@ password, over SSL), or run the workflow on a machine you control (a GitHub
    with the link**. Copy the link.
 2. In the repository: **Actions** → **Ingest a book** (left side) → **Run
    workflow**.
-3. Fill in the link, the lecture ID, the subject ID and the title. Pick the
-   language if the backend is not connected. Leave the machine counts alone
-   unless told otherwise.
+3. Paste the link and pick the book's **language**. That is all that is needed.
+   Optionally type a **subject** (e.g. English — books with the same subject are
+   grouped) and a **title** (otherwise the file's name is used). Leave the IDs
+   and machine counts empty unless told otherwise.
 4. **Run workflow**. It appears in the list within a few seconds.
 
 When it finishes, open the run: the summary at the top shows the status,
-pages, unreadable pages, figures, chunks, topics and prerequisite links.
+the **lecture and subject IDs it used**, pages, unreadable pages, figures,
+chunks, topics and prerequisite links.
+
+**The IDs are worked out from the book itself.** The same PDF always gets the
+same lecture ID, so uploading a book again replaces its old copy in the index
+rather than adding a second one. A changed PDF — even a fixed typo — is a new
+lecture. To attach a book to a lesson that already exists in the platform,
+type that lesson's ID in the Lecture ID box.
 
 ### From a list, without the website
 
@@ -97,8 +105,11 @@ With the GitHub CLI installed and logged in (`gh auth login`), make a
 `books.tsv` — one book per line, separated by Tab:
 
 ```
-https://drive.google.com/file/d/…/view	LECTURE_ID	SUBJECT_ID	English — Grade 7 — Term 1	en
+https://drive.google.com/file/d/…/view	en	English	English — Grade 7 — Term 1
+https://drive.google.com/file/d/…/view	ar	Arabic
 ```
+
+(link, language, then optionally subject and title)
 
 then:
 

@@ -265,6 +265,8 @@ def _summarise(state: dict) -> None:
         "",
         "| | |",
         "|---|---|",
+        f"| Lecture ID | `{state['lecture_id']}` |",
+        f"| Subject ID | `{state.get('subject_id')}` |",
         f"| Pages | {extract.get('pages', 0)} |",
         f"| Unreadable pages | {extract.get('unreadable', 0)} |",
         f"| Figures | {extract.get('figures', 0)} |",
@@ -336,8 +338,6 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(args, "layout_model"):
         apply_lesson_overrides(args, config)
     setup_logging(config)
-    if args.command in ("read", "prepare") and not (args.lecture_id and args.subject_id):
-        parser.error(f"{args.command} needs --lecture-id and --subject-id")
     return {
         "read": _cmd_read,
         "prepare": _cmd_prepare,

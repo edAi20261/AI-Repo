@@ -2,7 +2,12 @@
 # workflow's inputs as an array so a title with spaces or quotes stays one word.
 # Inputs arrive as environment variables, never pasted into the script — a
 # lesson title is text a person typed.
-LESSON_ARGS=(--lecture-id "$LECTURE_ID" --subject-id "$SUBJECT_ID")
+# Anything left empty is worked out from the book itself, identically on every
+# machine (ingestion/lesson.py, fill_in_identity).
+LESSON_ARGS=()
+[ -n "${LECTURE_ID:-}" ] && LESSON_ARGS+=(--lecture-id "$LECTURE_ID")
+[ -n "${SUBJECT_ID:-}" ] && LESSON_ARGS+=(--subject-id "$SUBJECT_ID")
+[ -n "${SUBJECT_NAME:-}" ] && LESSON_ARGS+=(--subject-name "$SUBJECT_NAME")
 [ -n "${LESSON_TITLE:-}" ] && LESSON_ARGS+=(--lesson-title "$LESSON_TITLE")
 case "${LANGUAGE:-}" in ""|"ask the backend") ;; *) LESSON_ARGS+=(--language "$LANGUAGE");; esac
 [ -n "${GRADE:-}" ] && LESSON_ARGS+=(--grade "$GRADE")

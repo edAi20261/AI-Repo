@@ -19,6 +19,10 @@ from urllib.parse import parse_qs, urlparse
 from shared.config import get_config
 from shared.source import FetchLimits, SourceError, materialise
 
+# Beside the book: the name it had where it came from, which becomes its title
+# when nobody gives one. Kept in step with ingestion.lesson.NAME_SUFFIX.
+NAME_SUFFIX = ".name"
+
 _DRIVE_HOSTS = {"drive.google.com", "docs.google.com", "drive.usercontent.google.com"}
 _DRIVE_FILE = re.compile(r"/file/d/([A-Za-z0-9_-]{10,})")
 PDF_MAGIC = b"%PDF-"
@@ -36,7 +40,25 @@ def drive_file_id(url: str) -> str | None:
     return ids[0] if ids else None
 
 
-def _download_drive(file_id: str, destination: Path, limits: FetchLimits) -> None:
+def _filename(disposition: str) -> str | None:
+    """The file name from a Content-Disposition header, if it carries one."""
+    from email.message import Message
+
+    message = Message()
+    message["content-disposition"] = disposition
+    name = message.get_filename()
+    if not name:
+        return None
+    # Drive sends the name as raw UTF-8, which arrives read as Latin-1: an
+    # Arabic title would otherwise become a line of accented gibberish.
+    try:
+        name = name.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    return Path(name).name
+
+
+def _download_drive(file_id: str, destination: Path, limits: FetchLimits) -> str | None:
     import httpx
 
     url = "https://drive.usercontent.google.com/download"
@@ -45,6 +67,7 @@ def _download_drive(file_id: str, destination: Path, limits: FetchLimits) -> Non
     with httpx.stream("GET", url, params=params, timeout=limits.timeout_seconds,
                       follow_redirects=True) as response:
         response.raise_for_status()
+        name = _filename(response.headers.get("content-disposition", ""))
         with open(destination, "wb") as sink:
             for block in response.iter_bytes(limits.chunk_bytes):
                 written += len(block)
@@ -52,6 +75,7 @@ def _download_drive(file_id: str, destination: Path, limits: FetchLimits) -> Non
                     raise SourceError(f"the file is over {limits.max_bytes} bytes "
                                       "(ingestion.source.max_bytes)")
                 sink.write(block)
+    return name
 
 
 def fetch(source: str, destination: Path) -> int:
@@ -59,10 +83,13 @@ def fetch(source: str, destination: Path) -> int:
     limits = FetchLimits.from_config(config)
     file_id = drive_file_id(source)
     if file_id:
-        _download_drive(file_id, destination, limits)
+        name = _download_drive(file_id, destination, limits)
     else:
+        name = Path(urlparse(source).path).name or None
         with materialise(source, config) as path:
             shutil.copyfile(path, destination)
+    if name:
+        Path(str(destination) + NAME_SUFFIX).write_text(name, encoding="utf-8")
 
     with open(destination, "rb") as head:
         start = head.read(1024)

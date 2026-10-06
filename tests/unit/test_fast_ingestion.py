@@ -539,3 +539,117 @@ def test_a_book_run_across_machines_ends_in_the_index_one_machine_would_build(
     assert finished["stats"]["embed"] == alone["stats"]["embed"]
     assert finished["stats"]["index"] == alone["stats"]["index"]
     assert finished["ingestion_status"] == alone["ingestion_status"] == "ready"
+
+
+# --- a book with nothing typed about it -----------------------------------------------
+
+def _lesson_args(*argv):
+    import argparse
+
+    from ingestion.lesson import add_lesson_arguments, fill_in_identity
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source")
+    add_lesson_arguments(parser)
+    args = parser.parse_args(list(argv))
+    fill_in_identity(args)
+    return args
+
+
+def test_every_machine_gives_an_untyped_book_the_same_identity(scanned_book):
+    """Each machine of a split run works the ids out for itself. A random id
+    would make six machines read six different books into the cache, and
+    the run that builds the index would find none of them."""
+    book = scanned_book(3)
+    first, second = _lesson_args(book), _lesson_args(book)
+    assert first.lecture_id == second.lecture_id
+    assert first.subject_id == second.subject_id
+
+
+def test_the_same_book_uploaded_again_replaces_itself(scanned_book, tmp_path):
+    """The index replaces a lecture by its id. An id that changed between two
+    uploads of one book would index it twice, and every answer would cite it
+    twice."""
+    import shutil
+
+    book = scanned_book(3)
+    copy = tmp_path / "renamed.pdf"
+    shutil.copyfile(book, copy)
+    assert _lesson_args(book).lecture_id == _lesson_args(str(copy)).lecture_id
+    assert _lesson_args(scanned_book(4)).lecture_id != _lesson_args(book).lecture_id
+
+
+def test_books_named_under_one_subject_share_it(scanned_book):
+    """Prerequisites are drawn from the subject's topic catalogue, so two
+    English books that landed in two subjects could never link to each other."""
+    a = _lesson_args(scanned_book(3), "--subject-name", "English")
+    b = _lesson_args(scanned_book(4), "--subject-name", " english ")
+    assert a.subject_id == b.subject_id
+    assert a.lecture_id != b.lecture_id
+
+
+def test_ids_that_were_typed_are_kept(scanned_book):
+    args = _lesson_args(scanned_book(2), "--lecture-id", "L1", "--subject-id", "S1",
+                        "--lesson-title", "Tides")
+    assert (args.lecture_id, args.subject_id, args.lesson_title) == ("L1", "S1", "Tides")
+
+
+def test_an_untitled_book_is_named_after_the_file_it_came_from(scanned_book):
+    """A Drive download is saved as book.pdf; its real name travels beside it.
+    Drive's right-to-left names carry invisible direction marks, which must
+    not reach a citation a student reads."""
+    from pathlib import Path
+
+    book = Path(scanned_book(2))
+    fetched = book.with_name("book.pdf")
+    book.rename(fetched)
+    Path(str(fetched) + ".name").write_text(
+        "‎⁨جيم_انجليزي_1ع_الترم_الاول⁩.pdf", encoding="utf-8")
+
+    assert _lesson_args(str(fetched)).lesson_title == "جيم انجليزي 1ع الترم الاول"
+
+
+def test_a_drive_file_name_in_arabic_arrives_readable():
+    """Drive sends the name as raw UTF-8; read as the header's Latin-1 it is
+    accented gibberish."""
+    from scripts.fetch_book import _filename
+
+    raw = 'attachment; filename="كتاب.pdf"'.encode("utf-8").decode("latin-1")
+    assert _filename(raw) == "كتاب.pdf"
+
+
+def test_a_split_run_with_nothing_typed_reads_each_page_once(
+        scanned_book, wired, monkeypatch, tmp_path):
+    """The readers and prepare each derive the book's id on their own. If they
+    disagreed, prepare would look the pages up under another lecture, find
+    none, and pay to read the whole book a second time."""
+    import pickle
+
+    import ingestion.context as context
+    import ingestion.distributed as distributed
+    import ingestion.lesson as lesson
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost")
+    monkeypatch.setenv("QDRANT_URL", "dryrun")
+    monkeypatch.setenv("LOCAL_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.setattr(distributed, "get_config", lambda: wired.config)
+    monkeypatch.setattr(context, "get_vision_client", lambda cfg: wired.ctx.vision)
+    monkeypatch.setattr(lesson, "get_backend_client",
+                        lambda cfg, **k: (_ for _ in ()).throw(ValueError("no backend")))
+
+    book = scanned_book(7)
+    for shard in range(2):
+        assert distributed.main(["read", book, "--language", "en",
+                                 "--shard", str(shard), "--of", "2", "--workers", "2"]) == 0
+    paid = (wired.calls.layout, wired.calls.words)
+    assert paid == (7, 7)
+
+    out = tmp_path / "state.pkl"
+    assert distributed.main(["prepare", book, "--language", "en", "--out", str(out)]) == 0
+    assert (wired.calls.layout, wired.calls.words) == paid
+
+    with open(out, "rb") as source:
+        state = pickle.load(source)["state"]
+    assert state["lecture_id"] == _lesson_args(book).lecture_id
+    assert state["chunks"]
