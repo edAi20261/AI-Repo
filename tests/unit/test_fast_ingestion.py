@@ -706,3 +706,32 @@ def test_nobody_is_asked_for_the_language_of_a_book_already_read(scanned_book, w
     finally:
         doc.close()
     assert found == "ar"
+
+
+# --- the first run of the ingest workflow ---------------------------------------------
+
+def test_a_secret_pasted_with_a_space_around_it_still_works(monkeypatch):
+    """QDRANT_URL was saved in the repository's secrets as " https://…". Every
+    machine of the first ingest run failed its preflight with "Host ' https'
+    contains invalid character ' '" before reading a page."""
+    from shared.config import Config
+
+    monkeypatch.setenv("QDRANT_URL", " https://example.qdrant.io\n")
+    assert Config.secret("QDRANT_URL") == "https://example.qdrant.io"
+    monkeypatch.delenv("QDRANT_URL")
+    assert Config.secret("QDRANT_URL", "dryrun") == "dryrun"
+
+
+def test_the_storage_preflight_writes_and_clears_a_probe(monkeypatch, tmp_path):
+    """The check handed the uploader its key as the bytes and its bytes as the
+    key, so it failed with "a bytes-like object is required" on every machine
+    — whatever the S3 credentials were."""
+    from scripts import preflight_ingest
+    from shared.config import Config
+
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.setenv("LOCAL_ARTIFACT_DIR", str(tmp_path))
+    result = preflight_ingest._storage(Config.load())
+
+    assert "wrote and removed" in result
+    assert not any(p.is_file() for p in tmp_path.rglob("*"))

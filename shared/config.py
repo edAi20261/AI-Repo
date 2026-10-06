@@ -124,8 +124,16 @@ class Config:
 
     @staticmethod
     def secret(name: str, default: str | None = None) -> str | None:
-        """Read a secret/connection value from the environment."""
-        return os.environ.get(name, default)
+        """Read a secret/connection value from the environment.
+
+        Without the whitespace around it. A value pasted into a CI secrets form
+        or a .env file arrives with a leading space or a trailing newline often
+        enough, and nothing it names — a URL, a key, a bucket — contains either:
+        a Qdrant URL saved as " https://…" failed every run of the ingest
+        workflow with "Host ' https' contains invalid character".
+        """
+        value = os.environ.get(name)
+        return default if value is None else value.strip()
 
     # -- convenience accessors -----------------------------------------------
 

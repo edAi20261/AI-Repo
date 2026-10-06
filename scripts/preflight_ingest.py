@@ -72,7 +72,9 @@ def _storage(config) -> str:
     from shared.storage import get_uploader
 
     uploader = get_uploader(config)
-    uri = uploader.upload(PROBE, b"preflight", content_type="text/plain")
+    # Inside a folder of its own: removing it is a delete by prefix, which S3
+    # does for any prefix and a local disk only for a directory.
+    uri = uploader.upload(b"preflight", f"{PROBE}/probe.txt", content_type="text/plain")
     # Removing it is part of the check: a run that can write crops but not clear
     # the previous ones logs a failure on every book.
     uploader.delete_prefix(PROBE)
