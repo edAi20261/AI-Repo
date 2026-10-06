@@ -83,7 +83,7 @@ def _embedder(config) -> str:
     from shared.embeddings import get_embedder
 
     embedder = get_embedder(config)
-    vector = embedder.embed_documents(["preflight"])[0]
+    vector = embedder.embed(["preflight"])[0]
     return f"{config.get('embeddings.model')}, {len(vector)} dimensions"
 
 
@@ -96,11 +96,22 @@ CHECKS = (
 )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m scripts.preflight_ingest")
+    parser.add_argument("--skip", action="append", default=[],
+                        choices=[name for name, _ in CHECKS],
+                        help="a check this machine does not need, e.g. the embedder "
+                             "on a machine that only reads pages")
+    args = parser.parse_args(argv)
     setup_logging()
     config = get_config()
     failures = 0
     for name, check in CHECKS:
+        if name in args.skip:
+            print(f"  skip  {name}", flush=True)
+            continue
         try:
             print(f"  ok    {name:9} {check(config)}", flush=True)
         except Exception as error:      # noqa: BLE001 — every failure is reportable
