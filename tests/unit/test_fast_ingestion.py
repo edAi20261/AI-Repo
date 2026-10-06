@@ -618,7 +618,7 @@ def test_a_drive_file_name_in_arabic_arrives_readable():
     assert _filename(raw) == "كتاب.pdf"
 
 
-def test_a_split_run_with_nothing_typed_reads_each_page_once(
+def test_a_split_run_given_only_the_book_reads_each_page_once(
         scanned_book, wired, monkeypatch, tmp_path):
     """The readers and prepare each derive the book's id on their own. If they
     disagreed, prepare would look the pages up under another lecture, find
@@ -640,16 +640,69 @@ def test_a_split_run_with_nothing_typed_reads_each_page_once(
 
     book = scanned_book(7)
     for shard in range(2):
-        assert distributed.main(["read", book, "--language", "en",
+        assert distributed.main(["read", book,
                                  "--shard", str(shard), "--of", "2", "--workers", "2"]) == 0
     paid = (wired.calls.layout, wired.calls.words)
     assert paid == (7, 7)
 
     out = tmp_path / "state.pkl"
-    assert distributed.main(["prepare", book, "--language", "en", "--out", str(out)]) == 0
+    assert distributed.main(["prepare", book, "--out", str(out)]) == 0
     assert (wired.calls.layout, wired.calls.words) == paid
 
     with open(out, "rb") as source:
         state = pickle.load(source)["state"]
     assert state["lecture_id"] == _lesson_args(book).lecture_id
     assert state["chunks"]
+
+
+# --- a book's language, from its own words --------------------------------------------
+
+ENGLISH = ("Read the email and answer the questions. My best friend lives in another "
+           "city, so we write to each other every week about school and our projects. ")
+ARABIC = ("اقرأ البريد الإلكتروني وأجب عن الأسئلة. يعيش صديقي المفضل في مدينة أخرى، "
+          "لذلك نكتب لبعضنا كل أسبوع عن المدرسة ومشاريعنا. ")
+
+
+def test_an_arabic_book_is_read_as_arabic():
+    from ingestion.stages.extract import book_language
+
+    assert book_language(ARABIC * 10, ("ar", "en", "fr", "de")) == "ar"
+
+
+def test_an_english_workbook_glossed_in_arabic_stays_english():
+    """Egyptian English textbooks translate every word list into Arabic. At the
+    per-message rule (30% Arabic letters makes a turn Arabic) the whole book
+    would be indexed and answered as Arabic."""
+    from ingestion.stages.extract import book_language
+    from shared.language.script import arabic_ratio
+
+    glossed = (ENGLISH + ARABIC) * 6
+    assert 0.3 <= arabic_ratio(glossed) < 0.5
+    assert book_language(glossed, ("ar", "en", "fr", "de")) == "en"
+
+
+def test_too_little_text_is_not_a_language():
+    """A guess looks exactly like a decision, and is worse than the default."""
+    from ingestion.stages.extract import book_language
+
+    assert book_language("Unit 1", ("ar", "en")) is None
+
+
+def test_nobody_is_asked_for_the_language_of_a_book_already_read(scanned_book, wired):
+    """The readers have already paid for every page's words; the language is
+    in them. Chunks are labelled with it, so an Arabic book left on the
+    English default is answered in the wrong language."""
+    book = scanned_book(4)
+    wired.ctx.vision.transcribe_page = (
+        lambda png, *, language_hint=None, math=False: PageTranscription(text=ARABIC * 3))
+    read_ahead_module.read_ahead(book, _state(language_hint=None), wired.ctx,
+                                 processes=1, workers=2)
+
+    state = _state(language_hint=None)
+    doc = extract.pdf.open_document(book)
+    try:
+        found = extract._language_of_book(doc, state, wired.config, ("ar", "en", "fr", "de"),
+                                          min_chars=40, garbage_cfg={})
+    finally:
+        doc.close()
+    assert found == "ar"

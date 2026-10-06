@@ -16,7 +16,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from shared.language import LanguagePolicy
-from shared.language.script import reading_direction
+from shared.language.script import ARABIC, arabic_ratio, reading_direction
 
 from ..context import PipelineContext
 from ..schemas import FigureCaption
@@ -71,9 +71,14 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     ocr = ing.get("ocr", {})
     norm = ing.get("normalise", {})
     supported = tuple(cfg.get("language.supported", ["ar", "en", "fr", "de"]))
+    min_chars = ocr.get("min_chars_per_page", 40)
+    if not state.get("language_hint"):
+        found = _language_of_book(doc, state, cfg, supported, min_chars=min_chars,
+                                  garbage_cfg=ocr.get("garbage", {}))
+        if found:
+            state["language_hint"] = found
     default_lang = transcription_language(state, cfg)
 
-    min_chars = ocr.get("min_chars_per_page", 40)
     render_dpi = ocr.get("render_dpi", 300)
     vision_enabled = ocr.get("engine") == "vision"
 
@@ -541,6 +546,59 @@ def _read_page_with_layout_model(
     if layout_cache is not None:
         layout_cache.put(state["lecture_id"], page_no, parsed, dpi=render_dpi)
     return parsed
+
+
+# A book is Arabic when most of its letters are. The per-message rule
+# (language.arabic_ratio, 0.30) is right for a short turn and wrong for a
+# book: an English workbook for Arabic-speaking pupils glosses every word in
+# Arabic, and at 0.30 would be indexed — and answered — as an Arabic book.
+BOOK_ARABIC_MAJORITY = 0.5
+# Below this much text a book's language is a guess, and a guess is worse than
+# the configured default because it looks like a decision.
+BOOK_MIN_CHARS = 400
+
+
+def book_language(text: str, supported: tuple[str, ...]) -> Optional[str]:
+    """The language most of a book is written in, or ``None`` if it cannot be told."""
+    if len("".join(text.split())) < BOOK_MIN_CHARS:
+        return None
+    if "ar" in supported and arabic_ratio(text) >= BOOK_ARABIC_MAJORITY:
+        return "ar"
+    latin = ARABIC.sub(" ", text)
+    decision = _policy(tuple(supported), "en").resolve_document(latin)
+    return decision.code if decision.source == "detected" else None
+
+
+def _language_of_book(
+    doc: Any, state: IngestionState, cfg: Any, supported: tuple[str, ...], *,
+    min_chars: int, garbage_cfg: dict,
+) -> Optional[str]:
+    """The book's language, from what is already known about its words.
+
+    Nobody is asked for it. Its text layer is read for free, and a scanned
+    book's pages have already been read into the cache by the machines that
+    read ahead — so this costs no model call. A book nothing has read yet keeps
+    the configured default.
+    """
+    sample: list[str] = []
+    routes: dict[int, str] = {}
+    for page_no, page in pdf.iter_pages(doc):
+        chars = pdf.page_char_count(page)
+        route = transcription_route(page, chars, min_chars=min_chars,
+                                    is_math=bool(state.get("subject_is_math")),
+                                    garbage_cfg=garbage_cfg)
+        if route:
+            routes[page_no] = route
+        else:
+            sample.append(pdf.page_text(page))
+    if routes:
+        found = cached_transcriptions(cfg, state["lecture_id"], routes)
+        sample.extend(t.text for t in found.values() if not t.unreadable)
+    language = book_language("\n".join(sample), supported)
+    logger.info("book language", extra={"lecture_id": state["lecture_id"],
+                                        "language": language or "unknown",
+                                        "pages_sampled": len(sample)})
+    return language
 
 
 def transcription_language(state: IngestionState, cfg: Any) -> str:

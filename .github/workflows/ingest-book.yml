@@ -29,50 +29,15 @@ on:
   workflow_dispatch:
     inputs:
       source:
-        description: "The PDF: a Google Drive link shared as 'Anyone with the link', an https URL, or an s3:// URI"
+        description: "Link to the book (Google Drive link shared as 'Anyone with the link')"
         required: true
-      lesson_title:
-        description: "Title (optional — taken from the file name when empty)"
-        required: false
-        default: ""
-      subject_name:
-        description: "Subject, e.g. English (optional — books with the same subject are grouped)"
-        required: false
-        default: ""
-      language:
-        description: "The book's language"
-        type: choice
-        options: ["ask the backend", "ar", "en", "fr", "de"]
-        default: "ask the backend"
-      grade:
-        description: "Grade (optional)"
-        default: ""
-      subject_is_math:
-        description: "Maths: read every page with the maths prompt"
-        type: boolean
-        default: false
-      lecture_id:
-        description: "Lecture ID (optional — generated from the book itself when empty)"
-        required: false
-        default: ""
-      subject_id:
-        description: "Subject ID (optional — generated from the subject name when empty)"
-        required: false
-        default: ""
-      read_machines:
-        description: "Machines reading pages. Each holds 8 model calls in flight"
-        default: "6"
-      embed_machines:
-        description: "Machines embedding chunks"
-        default: "8"
 
-run-name: "Ingest: ${{ inputs.lesson_title || inputs.source }}"
+run-name: "Ingest: ${{ inputs.source }}"
 
 # One run per book at a time: two runs of one book would each replace the
-# other's chunks in the index. Keyed on the link when no id was typed — a key
-# shared by every such run would queue them all behind each other.
+# other's chunks in the index.
 concurrency:
-  group: ingest-${{ inputs.lecture_id || inputs.source }}
+  group: ingest-${{ inputs.source }}
   cancel-in-progress: false
 
 permissions:
@@ -90,16 +55,10 @@ env:
   GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
   BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
   AI_WEBHOOK_SHARED_SECRET: ${{ secrets.AI_WEBHOOK_SHARED_SECRET }}
-  # The inputs, as variables: a title is text a person typed, and text pasted
-  # into a script is a script.
+  # The link, as a variable: it is text a person pasted, and text pasted into a
+  # script is a script. Everything else about the book — its ids, title and
+  # language — is worked out from the book itself.
   SOURCE: ${{ inputs.source }}
-  LECTURE_ID: ${{ inputs.lecture_id }}
-  SUBJECT_ID: ${{ inputs.subject_id }}
-  LESSON_TITLE: ${{ inputs.lesson_title }}
-  SUBJECT_NAME: ${{ inputs.subject_name }}
-  LANGUAGE: ${{ inputs.language }}
-  GRADE: ${{ inputs.grade }}
-  SUBJECT_IS_MATH: ${{ inputs.subject_is_math }}
   PYTHONUNBUFFERED: "1"
   TOKENIZERS_PARALLELISM: "false"
 
@@ -116,8 +75,10 @@ jobs:
     steps:
       - id: plan
         env:
-          READ_MACHINES: ${{ inputs.read_machines }}
-          EMBED_MACHINES: ${{ inputs.embed_machines }}
+          # Readers hold 8 model calls each in flight against one Vertex quota;
+          # embedders are bounded by CPU. Change here, not per run.
+          READ_MACHINES: "6"
+          EMBED_MACHINES: "8"
         run: |
           python3 - <<'PY'
           import json, os

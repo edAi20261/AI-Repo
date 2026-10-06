@@ -54,8 +54,6 @@ Repository → **Settings** → **Secrets and variables** → **Actions** →
 | `AWS_ACCESS_KEY_ID` | for S3 |
 | `AWS_SECRET_ACCESS_KEY` | for S3 |
 | `GOOGLE_APPLICATION_CREDENTIALS` | the service account's whole JSON file, pasted on one line |
-| `BACKEND_API_BASE_URL` | optional — lets the run ask the backend for the subject's name and language |
-| `AI_WEBHOOK_SHARED_SECRET` | optional — goes with the one above |
 
 Secrets are never shown in logs, and nobody can read them back once saved.
 
@@ -83,38 +81,30 @@ password, over SSL), or run the workflow on a machine you control (a GitHub
    with the link**. Copy the link.
 2. In the repository: **Actions** → **Ingest a book** (left side) → **Run
    workflow**.
-3. Paste the link and pick the book's **language**. That is all that is needed.
-   Optionally type a **subject** (e.g. English — books with the same subject are
-   grouped) and a **title** (otherwise the file's name is used). Leave the IDs
-   and machine counts empty unless told otherwise.
+3. Paste the link. That is the only box.
 4. **Run workflow**. It appears in the list within a few seconds.
 
-When it finishes, open the run: the summary at the top shows the status,
-the **lecture and subject IDs it used**, pages, unreadable pages, figures,
-chunks, topics and prerequisite links.
+Everything else is worked out from the book:
 
-**The IDs are worked out from the book itself.** The same PDF always gets the
-same lecture ID, so uploading a book again replaces its old copy in the index
-rather than adding a second one. A changed PDF — even a fixed typo — is a new
-lecture. To attach a book to a lesson that already exists in the platform,
-type that lesson's ID in the Lecture ID box.
+- **Language** — from the words on its pages, once they are read. A book is
+  Arabic when most of its letters are, so an English workbook with Arabic
+  glosses stays English.
+- **Title** — from the PDF, else the file's name on Drive.
+- **Lecture ID** — from the file's bytes. Uploading the same PDF again replaces
+  its old copy rather than adding a second one; a changed PDF is a new book.
+- **Subject ID** — from the title, so each book is its own subject.
 
-### From a list, without the website
+When it finishes, the summary at the top of the run shows the status, the IDs
+it used, pages, unreadable pages, figures, chunks, topics and prerequisite
+links.
 
-With the GitHub CLI installed and logged in (`gh auth login`), make a
-`books.tsv` — one book per line, separated by Tab:
+### Several books at once
 
-```
-https://drive.google.com/file/d/…/view	en	English	English — Grade 7 — Term 1
-https://drive.google.com/file/d/…/view	ar	Arabic
-```
-
-(link, language, then optionally subject and title)
-
-then:
+With the GitHub CLI installed and logged in (`gh auth login`), put one link per
+line in `books.txt` and run:
 
 ```
-scripts/ingest_on_github.sh books.tsv
+scripts/ingest_on_github.sh books.txt
 ```
 
 Each book is its own run, and they run side by side. Your computer only sends

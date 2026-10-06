@@ -132,9 +132,11 @@ def read_ahead(
             route = routes.get(page_no)
             if route is not None and page_no not in have_words:
                 math = route == "math"
+                # No hint unless one was given: the book's language is decided
+                # afterwards from what these reads return, and the prompt takes
+                # an empty hint as "read whatever is there".
                 result = ctx.vision.transcribe_page(
-                    png, language_hint=_extract.transcription_language(state, cfg),
-                    math=math)
+                    png, language_hint=state.get("language_hint") or "", math=math)
                 if result.unreadable:
                     # Not stored, exactly as the extract stage does not store
                     # it: a quota rejection and a ruined scan look identical
