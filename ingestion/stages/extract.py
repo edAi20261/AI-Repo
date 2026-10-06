@@ -71,7 +71,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
     ocr = ing.get("ocr", {})
     norm = ing.get("normalise", {})
     supported = tuple(cfg.get("language.supported", ["ar", "en", "fr", "de"]))
-    default_lang = state.get("language_hint") or cfg.get("language.default", "en")
+    default_lang = transcription_language(state, cfg)
 
     min_chars = ocr.get("min_chars_per_page", 40)
     render_dpi = ocr.get("render_dpi", 300)
@@ -543,6 +543,52 @@ def _read_page_with_layout_model(
     return parsed
 
 
+def transcription_language(state: IngestionState, cfg: Any) -> str:
+    """The language a page transcription is asked to expect."""
+    return state.get("language_hint") or cfg.get("language.default", "en")
+
+
+def transcription_route(
+    page: Any, char_count: int, *, min_chars: int, is_math: bool, garbage_cfg: dict,
+) -> Optional[str]:
+    """Which transcription a page is paid for — ``scanned``, ``math``,
+    ``garbage`` — or ``None`` when its text layer is read for free.
+
+    The one place this is decided. The read-ahead that warms the cache from
+    several machines asks the same question as this stage, and a page the two
+    answered differently would be read twice or not at all.
+    """
+    if char_count < min_chars:
+        return "scanned"
+    if is_math:
+        return "math"
+    if garbage_cfg and is_garbage(pdf.page_text(page), garbage_cfg):
+        return "garbage"
+    return None
+
+
+def layout_needs_model(blocks: list, wanted: int) -> bool:
+    """Whether the layout parse of a page is a model call rather than free."""
+    return wanted != TEXT_LAYER and (not content_blocks(blocks) or wanted == VISION)
+
+
+def cached_transcriptions(
+    config: Any, lecture_id: str, routes: dict[int, str],
+) -> dict[int, Any]:
+    """``{page: transcription}`` for the pages in ``routes`` already paid for.
+
+    Asked once per prompt for the whole book, before anything is rendered: a
+    page's render costs seconds of CPU and a cached page does not need one.
+    """
+    found: dict[int, Any] = {}
+    for math in (False, True):
+        pages = [no for no, route in routes.items() if (route == "math") is math]
+        cache = _transcription_cache(config, math) if pages else None
+        if cache is not None:
+            found.update(cache.get_many(lecture_id, pages))
+    return found
+
+
 def _prefetch_transcriptions(
     doc: Any, state: IngestionState, ctx: PipelineContext, *,
     min_chars: int, render_dpi: int, is_math: bool, garbage_cfg: dict,
@@ -565,25 +611,31 @@ def _prefetch_transcriptions(
     """
     wanted: list[tuple[int, Any, str]] = []
     for page_no, page in pdf.iter_pages(doc):
-        char_count = pdf.page_char_count(page)
-        if char_count < min_chars:
-            wanted.append((page_no, page, "scanned"))
-        elif is_math:
-            wanted.append((page_no, page, "math"))
-        elif garbage_cfg and is_garbage(pdf.page_text(page), garbage_cfg):
-            wanted.append((page_no, page, "garbage"))
+        route = transcription_route(page, pdf.page_char_count(page), min_chars=min_chars,
+                                    is_math=is_math, garbage_cfg=garbage_cfg)
+        if route:
+            wanted.append((page_no, page, route))
     if not wanted:
         return {}
 
+    already = cached_transcriptions(ctx.config, state["lecture_id"],
+                                    {no: route for no, _, route in wanted})
+
     def render(item):
         no, page, route = item
-        return no, pdf.render_page_png(page, dpi=render_dpi), route
+        stored = already.get(no)
+        # The image is needed to read the page, or to cut its figures out of it.
+        # A page already read with nothing to cut needs neither: rendering it
+        # anyway cost a 300-page book its whole render time on a re-run.
+        needs_image = stored is None or (route == "scanned" and bool(stored.figures)
+                                         and not stored.unreadable)
+        png = pdf.render_page_png(page, dpi=render_dpi) if needs_image else None
+        return no, png, route, stored
 
     def read(item):
-        no, png, route = item
-        cache = _transcription_cache(ctx.config, route == "math")
-        stored = cache.get(state["lecture_id"], no) if cache else None
+        no, png, route, stored = item
         if stored is None:
+            cache = _transcription_cache(ctx.config, route == "math")
             stored = ctx.vision.transcribe_page(
                 png, language_hint=default_lang, math=(route == "math"))
             # An unreadable page is not stored: it is the one answer worth
@@ -643,10 +695,7 @@ def _prefetch_layout_reads(
             page, page_no, state, layout_cfg, pdf.page_char_count(page))
         plans.append((page_no, page, meta, blocks, wanted))
 
-    needs_model = [
-        plan for plan in plans
-        if plan[4] != TEXT_LAYER and (not content_blocks(plan[3]) or plan[4] == VISION)
-    ]
+    needs_model = [plan for plan in plans if layout_needs_model(plan[3], plan[4])]
     out: dict[int, tuple] = {
         page_no: (meta, blocks, wanted, None, False)
         for page_no, _, meta, blocks, wanted in plans
@@ -654,25 +703,28 @@ def _prefetch_layout_reads(
     if not needs_model:
         return out
 
+    already = (cache.get_many(state["lecture_id"], [plan[0] for plan in needs_model])
+               if cache is not None else {})
+    for page_no, _, meta, blocks, wanted in needs_model:
+        if page_no in already:
+            out[page_no] = (meta, blocks, wanted, already[page_no], True)
+    to_read = [plan for plan in needs_model if plan[0] not in already]
+
     def render(plan):
         page_no, page, meta, blocks, wanted = plan
         return page_no, meta, blocks, wanted, pdf.render_page_png(page, dpi=render_dpi)
 
     def read(item):
         page_no, meta, blocks, wanted, png = item
-        parsed = None
-        if cache is not None:
-            parsed = cache.get(state["lecture_id"], page_no)
-        if parsed is None:
-            parsed = tier3.parse_page(
-                png, meta, config=config,
-                language_hint=state.get("language_hint"),
-                direction=meta.reading_direction)
-            if parsed is not None and cache is not None:
-                cache.put(state["lecture_id"], page_no, parsed, dpi=render_dpi)
+        parsed = tier3.parse_page(
+            png, meta, config=config,
+            language_hint=state.get("language_hint"),
+            direction=meta.reading_direction)
+        if parsed is not None and cache is not None:
+            cache.put(state["lecture_id"], page_no, parsed, dpi=render_dpi)
         return page_no, (meta, blocks, wanted, parsed, True)
 
-    out.update(dict(streamed(needs_model, render, read,
+    out.update(dict(streamed(to_read, render, read,
                              workers=workers, label="layout")))
     # Tallied here rather than in the workers: eight threads incrementing one
     # dictionary lose counts, and a page that no model could read is the number

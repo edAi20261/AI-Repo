@@ -14,7 +14,7 @@ a word invalidates the cache without anyone remembering to say so.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Iterable, Optional
 
 from psycopg.types.json import Json
 from pydantic import BaseModel
@@ -34,6 +34,14 @@ NO_STATEMENT_TIMEOUT = 0
 _SELECT = """
 SELECT raw_output FROM ai.page_transcriptions
 WHERE lecture_id = %s::uuid AND page = %s AND model = %s AND prompt_version = %s
+"""
+
+# One round trip for a whole book rather than one per page. A run that finds
+# every page already read used to ask for them one at a time, and render each
+# one before asking — three hundred renders to learn that nothing needed reading.
+_SELECT_MANY = """
+SELECT page, raw_output FROM ai.page_transcriptions
+WHERE lecture_id = %s::uuid AND page = ANY(%s) AND model = %s AND prompt_version = %s
 """
 
 _UPSERT = """
@@ -85,10 +93,39 @@ class PageCache:
             # An outage is not a miss. Counting it as one reports a cache that
             # is working and simply cold, which is the opposite of what happened.
             return None
-        if not rows:
+        parsed = self._validated(lecture_id, page, rows[0][0]) if rows else None
+        if parsed is None:
             self.misses += 1
             return None
-        if not self._is_our_shape(rows[0][0]):
+        self.hits += 1
+        return parsed
+
+    def get_many(self, lecture_id: str, pages: Iterable[int]) -> dict[int, BaseModel]:
+        """``{page: stored parse}`` for every one of ``pages`` already read.
+
+        A page missing from the answer has to be read again, for any of the
+        reasons ``get`` would give. Counted exactly as that many ``get`` calls
+        would count, so a run's stats do not depend on which one it used.
+        """
+        wanted = sorted({int(p) for p in pages})
+        if not wanted or not self._available:
+            return {}
+        rows = self._run(_SELECT_MANY, (lecture_id, wanted, self._model,
+                                        self._prompt_version), fetch=True)
+        if not self._available:
+            return {}
+        found: dict[int, BaseModel] = {}
+        for page, raw in rows or []:
+            parsed = self._validated(lecture_id, int(page), raw)
+            if parsed is not None:
+                found[int(page)] = parsed
+        self.hits += len(found)
+        self.misses += len(wanted) - len(found)
+        return found
+
+    def _validated(self, lecture_id: str, page: int, stored: object) -> Optional[BaseModel]:
+        """``stored`` read back as this cache's shape, or ``None`` if it cannot be."""
+        if not self._is_our_shape(stored):
             # Every field of a transcription has a default, so a layout parse
             # validates into one with no words at all — and a page indexed as
             # empty looks exactly like a page that was genuinely blank. The two
@@ -98,19 +135,15 @@ class PageCache:
             logger.warning("a cached page of another kind was ignored",
                            extra={"lecture_id": lecture_id, "page": page,
                                   "shape": self._shape.__name__})
-            self.misses += 1
             return None
         try:
-            parsed = self._shape.model_validate(rows[0][0])
+            return self._shape.model_validate(stored)
         except Exception:
             # A stored parse that no longer fits the schema is stale, not fatal:
             # the shape changed under it. Read the page again and overwrite.
             logger.warning("cached page no longer fits the schema; re-reading",
                            extra={"lecture_id": lecture_id, "page": page})
-            self.misses += 1
             return None
-        self.hits += 1
-        return parsed
 
     def put(
         self,
