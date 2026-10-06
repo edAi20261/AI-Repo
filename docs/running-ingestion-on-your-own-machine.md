@@ -21,6 +21,12 @@ our shared database, not to your hard drive.
 **A book of 300 to 400 pages takes about half an hour.** You can run two or three
 books at the same time.
 
+> To run books without using this computer at all, see
+> [Ingesting a book on GitHub's machines](ingesting-on-github-actions.md).
+> On this computer too, each page is now rendered once on every core and both
+> of its model calls are made from that one image, before the rest of the
+> pipeline runs.
+
 ---
 
 ## Step 1 — Install Docker Desktop

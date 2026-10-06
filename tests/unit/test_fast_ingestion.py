@@ -1,0 +1,541 @@
+"""Reading a book once, on every core, and from several machines.
+
+A 306-page scanned textbook was read twice per page — once for its layout, once
+for its words — in two passes, each rendering every page again on the one thread
+that owns the document: 0.83 s a page at 300 dpi on a 2-vCPU machine, twice per
+page. A re-run of a book already read rendered all of it again to learn that
+nothing needed reading.
+
+And embedding — 2.5 s a chunk on 2 vCPUs, twenty-five minutes for a 600-chunk
+book — had no way to use a second machine.
+"""
+
+from __future__ import annotations
+
+import importlib
+import threading
+
+import pytest
+
+from ingestion.layout.blocks import Block, PageMeta, ParsedPage
+from ingestion.schemas import PageTranscription
+
+extract = importlib.import_module("ingestion.stages.extract")
+read_ahead_module = importlib.import_module("ingestion.read_ahead")
+
+LECTURE = "11111111-1111-1111-1111-111111111111"
+PARAGRAPH = ("The moon pulls the sea towards it, and the water on the far side of the "
+             "Earth is left behind, so most coasts see two high tides and two low tides "
+             "every day. When the sun and the moon line up, their pulls add together and "
+             "the tides are larger; these are called spring tides. When they pull at right "
+             "angles, the tides are smaller, and these are called neap tides.")
+
+
+# --- doubles -------------------------------------------------------------------
+
+class MemoryCache:
+    """``PageCache`` with a dict for a table: the same keys, the same contract."""
+
+    def __init__(self, shape):
+        self.shape = shape
+        self.rows: dict[tuple[str, int], object] = {}
+        self.enabled = True
+        self.puts = 0
+        self.hits = 0
+        self.misses = 0
+        self._lock = threading.Lock()
+
+    def get(self, lecture_id, page):
+        found = self.get_many(lecture_id, [page])
+        return found.get(page)
+
+    def get_many(self, lecture_id, pages):
+        found = {p: self.rows[(lecture_id, p)] for p in pages if (lecture_id, p) in self.rows}
+        self.hits += len(found)
+        self.misses += len(set(pages)) - len(found)
+        return found
+
+    def put(self, lecture_id, page, parsed, **_):
+        assert isinstance(parsed, self.shape), "a page stored under the wrong shape"
+        with self._lock:
+            self.rows[(lecture_id, page)] = parsed
+            self.puts += 1
+
+    def report(self):
+        return {"cache_hits": self.hits, "cache_misses": self.misses,
+                "cache_enabled": self.enabled}
+
+
+class Calls:
+    def __init__(self):
+        self.renders = 0
+        self.layout = 0
+        self.words = 0
+        self._lock = threading.Lock()
+
+    def bump(self, name):
+        with self._lock:
+            setattr(self, name, getattr(self, name) + 1)
+
+
+class Vision:
+    is_stub = False
+
+    def __init__(self, calls, *, figures=False):
+        self.calls = calls
+        self.figures = figures
+
+    def transcribe_page(self, png, *, language_hint=None, math=False):
+        self.calls.bump("words")
+        boxes = [{"bbox": (0.1, 0.1, 0.5, 0.5)}] if self.figures else []
+        return PageTranscription(text="Tides rise and fall twice a day.", figures=boxes)
+
+    def caption_figure(self, image, *, language_hint=None):
+        return None
+
+
+@pytest.fixture
+def scanned_book(tmp_path):
+    """A PDF of pages with an image and no text layer, as a scanned book is."""
+    import pymupdf
+
+    from PIL import Image
+
+    picture = tmp_path / "scan.png"
+    Image.new("RGB", (60, 80), (200, 190, 180)).save(picture)
+
+    def make(pages: int) -> str:
+        doc = pymupdf.open()
+        for _ in range(pages):
+            page = doc.new_page(width=300, height=400)
+            page.insert_image(page.rect, filename=str(picture))
+        path = tmp_path / f"book-{pages}.pdf"
+        doc.save(path)
+        doc.close()
+        return str(path)
+
+    return make
+
+
+@pytest.fixture
+def wired(monkeypatch):
+    """The extract stage and the read-ahead, with caches, models and renders counted."""
+    from shared.config import Config
+
+    calls = Calls()
+    layout_cache = MemoryCache(ParsedPage)
+    word_caches = {False: MemoryCache(PageTranscription), True: MemoryCache(PageTranscription)}
+
+    real_render = extract.pdf.render_page_png
+
+    def render(page, dpi=300):
+        calls.bump("renders")
+        return real_render(page, dpi=36)
+
+    def parse(png, meta, **_):
+        calls.bump("layout")
+        return ParsedPage(meta=meta.model_copy(update={"source_tier": 3}), blocks=[
+            Block(text=f"Tides, page {meta.page}. " + PARAGRAPH,
+                  bbox=(30, 120, 270, 300), source_tier=3)])
+
+    monkeypatch.setattr(extract.pdf, "render_page_png", render)
+    monkeypatch.setattr(extract.tier3, "parse_page", parse)
+    monkeypatch.setattr(extract, "_page_cache", lambda cfg, layout_cfg: layout_cache)
+    monkeypatch.setattr(extract, "_transcription_cache", lambda cfg, math: word_caches[math])
+
+    config = Config.load()
+    ctx = type("Ctx", (), {"config": config, "vision": Vision(calls)})()
+    return type("Wired", (), {"calls": calls, "ctx": ctx, "config": config,
+                              "layout_cache": layout_cache, "word_caches": word_caches})
+
+
+def _state(**extra):
+    return {"lecture_id": LECTURE, "language_hint": "en", "subject_is_math": False,
+            "stats": {}, "errors": [], **extra}
+
+
+# --- reading ahead ---------------------------------------------------------------
+
+def test_a_page_is_rendered_once_for_both_of_its_model_calls(scanned_book, wired):
+    """Each pass rendered the page again: two renders per page, on one thread."""
+    book = scanned_book(5)
+
+    report = read_ahead_module.read_ahead(book, _state(), wired.ctx, processes=1, workers=4)
+
+    assert wired.calls.renders == 5
+    assert wired.calls.layout == 5
+    assert wired.calls.words == 5
+    assert report["layout_read"] == 5 and report["transcribed"] == 5
+    assert len(wired.layout_cache.rows) == 5
+    assert len(wired.word_caches[False].rows) == 5
+
+
+def test_after_reading_ahead_the_extract_stage_renders_nothing_and_buys_nothing(
+        scanned_book, wired):
+    """The read-ahead is only worth anything if the stage after it finds every
+    page under the keys it looks up. A run that found every page cached still
+    rendered all of them, twice, to learn that nothing needed reading."""
+    book = scanned_book(6)
+    read_ahead_module.read_ahead(book, _state(), wired.ctx, processes=1, workers=3)
+    before = (wired.calls.renders, wired.calls.layout, wired.calls.words)
+
+    doc = extract.pdf.open_document(book)
+    try:
+        counts = {"figures": 0}
+        layout = extract._prefetch_layout_reads(
+            doc, _state(), layout_cfg=wired.config.ingestion["layout"],
+            cache=wired.layout_cache, min_chars=40, render_dpi=300,
+            config=wired.config, workers=4, counts=counts)
+        words = extract._prefetch_transcriptions(
+            doc, _state(), wired.ctx, min_chars=40, render_dpi=300, is_math=False,
+            garbage_cfg={}, default_lang="en", workers=4, counts=counts)
+    finally:
+        doc.close()
+
+    assert (wired.calls.renders, wired.calls.layout, wired.calls.words) == before
+    assert all(parsed is not None for _, _, _, parsed, _ in layout.values())
+    assert counts["layout_read_by_vision"] == 6
+    assert {no: result.text for no, (result, _, _) in words.items()} == dict.fromkeys(
+        range(1, 7), "Tides rise and fall twice a day.")
+
+
+def test_a_cached_page_with_figures_is_still_rendered_to_cut_them(scanned_book, wired):
+    """The transcription is cached and the figure crops are not. A page whose
+    figures were skipped because its words were cached would lose them."""
+    book = scanned_book(2)
+    wired.ctx.vision = Vision(wired.calls, figures=True)
+    read_ahead_module.read_ahead(book, _state(), wired.ctx, processes=1, workers=2)
+    renders = wired.calls.renders
+
+    cut = []
+    original = extract._figures_from_boxes
+
+    def figures(state, ctx, png, page_no, boxes, lang, counts=None):
+        assert png, "a figure cut from no image"
+        cut.append(page_no)
+        return []
+
+    extract._figures_from_boxes = figures
+    try:
+        doc = extract.pdf.open_document(book)
+        try:
+            extract._prefetch_transcriptions(
+                doc, _state(), wired.ctx, min_chars=40, render_dpi=300, is_math=False,
+                garbage_cfg={}, default_lang="en", workers=2, counts={"figures": 0})
+        finally:
+            doc.close()
+    finally:
+        extract._figures_from_boxes = original
+
+    assert sorted(cut) == [1, 2]
+    assert wired.calls.renders == renders + 2
+    assert wired.calls.words == 2, "a page already read was paid for again"
+
+
+def test_a_book_read_by_several_machines_is_read_exactly_once(scanned_book, wired):
+    book = scanned_book(23)
+    for shard in range(4):
+        pages = read_ahead_module.pages_of_shard(23, shard, 4)
+        read_ahead_module.read_ahead(book, _state(), wired.ctx, pages=pages,
+                                     processes=1, workers=3)
+
+    assert wired.calls.words == 23
+    assert wired.calls.layout == 23
+    assert sorted(p for _, p in wired.word_caches[False].rows) == list(range(1, 24))
+
+
+def test_the_shares_of_a_book_cover_every_page_once():
+    shares = [read_ahead_module.pages_of_shard(306, i, 6) for i in range(6)]
+    every = [p for share in shares for p in share]
+    assert sorted(every) == list(range(1, 307))
+    assert max(map(len, shares)) - min(map(len, shares)) <= 1
+    with pytest.raises(ValueError):
+        read_ahead_module.pages_of_shard(306, 6, 6)
+
+
+def test_a_page_outside_the_book_is_refused_not_skipped(scanned_book, wired):
+    with pytest.raises(ValueError):
+        read_ahead_module.read_ahead(scanned_book(3), _state(), wired.ctx, pages=[4],
+                                     processes=1)
+
+
+def test_reading_ahead_with_no_vision_key_refuses_rather_than_caching_stub_output(
+        scanned_book, wired):
+    """The stub reader returns placeholder text. Cached, it would be served to
+    every later run as the page's words."""
+    wired.ctx.vision.is_stub = True
+    with pytest.raises(read_ahead_module.ReadAheadUnavailable):
+        read_ahead_module.read_ahead(scanned_book(2), _state(), wired.ctx, processes=1)
+    assert wired.calls.words == 0
+
+
+def test_reading_ahead_into_a_cache_nobody_can_reach_is_refused(scanned_book, wired):
+    """Every page read would be thrown away and bought again by the pipeline."""
+    wired.layout_cache.enabled = False
+    with pytest.raises(read_ahead_module.ReadAheadUnavailable):
+        read_ahead_module.read_ahead(scanned_book(2), _state(), wired.ctx, processes=1)
+    assert wired.calls.words == 0 and wired.calls.layout == 0
+
+
+def test_a_page_that_fails_costs_that_page_not_the_book(scanned_book, wired, caplog):
+    import logging
+
+    def flaky(png, *, language_hint=None, math=False):
+        raise RuntimeError("connection reset")
+
+    wired.ctx.vision.transcribe_page = flaky
+    with caplog.at_level(logging.ERROR):
+        report = read_ahead_module.read_ahead(scanned_book(3), _state(), wired.ctx,
+                                              processes=1, workers=2)
+
+    assert report["failed"] == 3
+    assert report["layout_read"] == 3
+    assert any("could not be read ahead" in r.message for r in caplog.records)
+
+
+def test_the_render_pool_draws_the_same_pixels_as_the_pipeline(scanned_book):
+    """Two processes rendering one book must produce the image a single thread
+    would — the cache keys say nothing about who drew the page."""
+    from ingestion.utils import pdf
+    from ingestion.utils.render_pool import PageRenderer
+
+    book = scanned_book(3)
+    doc = pdf.open_document(book)
+    try:
+        expected = [pdf.render_page_png(doc[i], dpi=50) for i in range(3)]
+    finally:
+        doc.close()
+
+    with PageRenderer(book, dpi=50, processes=2) as renderer:
+        got = [renderer.render(n) for n in (1, 2, 3)]
+
+    assert got == expected
+
+
+# --- the page cache, a book at a time ---------------------------------------------
+
+def test_a_whole_book_is_looked_up_in_one_round_trip(fake_postgres):
+    from ingestion.layout.page_cache import PageCache
+    from shared.config import Config
+
+    meta = PageMeta(doc_id="d", page=4, width=300, height=400)
+    stored = ParsedPage(meta=meta, blocks=[Block(text="Tides", bbox=(0, 0, 10, 10))])
+    db = fake_postgres(rows=[(4, stored.model_dump(mode="json")),
+                             (5, {"text": "a transcription", "figures": []})])
+
+    cache = PageCache(Config.load(), model="m", prompt_version="v")
+    found = cache.get_many(LECTURE, [4, 5, 6])
+
+    assert list(found) == [4]
+    assert found[4].blocks[0].text == "Tides"
+    assert cache.report() == {"cache_hits": 1, "cache_misses": 2, "cache_enabled": True}
+    assert len(db.statements) == 1
+
+
+def test_an_unreachable_cache_answers_a_book_lookup_with_nothing(fake_postgres):
+    from ingestion.layout.page_cache import PageCache
+    from shared.config import Config
+
+    fake_postgres(explode=True)
+    cache = PageCache(Config.load(), model="m", prompt_version="v")
+
+    assert cache.get_many(LECTURE, [1, 2]) == {}
+    assert cache.enabled is False
+    assert cache.report()["cache_misses"] == 0
+
+
+# --- embedding on several machines -------------------------------------------------
+
+def _chunks(n):
+    from ingestion.state import Chunk
+
+    return [Chunk(lecture_id=LECTURE, text=f"The moon pulls the sea, part {i}.",
+                  heading_path="Tides", page_from=i + 1, page_to=i + 1, language="en",
+                  order_index=i) for i in range(n)]
+
+
+def _hash_config():
+    from shared.config import Config
+
+    config = Config.load()
+    config._data["embeddings"]["provider"] = "hash"
+    return config
+
+
+def test_a_book_embedded_on_several_machines_is_indexed_as_on_one():
+    """Shares are attached by position. One off by one and every chunk after it
+    is searched by its neighbour's vector, which nothing would ever notice."""
+    from ingestion.distributed import FORMAT, collect, shard_bounds, texts_digest
+    from shared.embeddings import get_embedder
+
+    embed = importlib.import_module("ingestion.stages.embed")
+
+    config = _hash_config()
+    embedder = get_embedder(config)
+    alone = embed.run({"chunks": _chunks(17), "stats": {}},
+                      type("Ctx", (), {"config": config, "embedder": embedder})())
+
+    texts = embed.embedding_texts(_chunks(17), config)
+    prepared = {"texts": texts, "digest": texts_digest(texts)}
+    shares = []
+    for shard in reversed(range(5)):
+        lo, hi = shard_bounds(len(texts), shard, 5)
+        shares.append({"format": FORMAT, "digest": prepared["digest"], "lo": lo, "hi": hi,
+                       "dense": embedder.embed(texts[lo:hi]),
+                       "sparse": embedder.embed_sparse(texts[lo:hi]),
+                       "dimension": embedder.dimension,
+                       "model": config.get("embeddings.model")})
+
+    dense, sparse, dimension = collect(prepared, shares, model=config.get("embeddings.model"),
+                                       hybrid=True)
+    split = embed.attach({"chunks": _chunks(17), "stats": {}}, config, dense, sparse,
+                         dimension=dimension)
+
+    assert [c.embedding for c in split["chunks"]] == [c.embedding for c in alone["chunks"]]
+    assert [c.sparse for c in split["chunks"]] == [c.sparse for c in alone["chunks"]]
+    assert split["stats"]["embed"] == alone["stats"]["embed"]
+
+
+def _shares(texts, digest, cuts, model="BAAI/bge-m3"):
+    from ingestion.distributed import FORMAT
+
+    return [{"format": FORMAT, "digest": digest, "lo": lo, "hi": hi,
+             "dense": [[0.0]] * (hi - lo), "sparse": [{}] * (hi - lo),
+             "dimension": 1, "model": model} for lo, hi in cuts]
+
+
+@pytest.mark.parametrize("cuts, problem", [
+    ([(0, 4), (5, 10)], "have no vectors"),
+    ([(0, 6), (5, 10)], "embedded twice"),
+    ([(0, 4)], "have no vectors"),
+])
+def test_vectors_that_leave_a_chunk_out_or_twice_are_refused(cuts, problem):
+    from ingestion.distributed import collect, texts_digest
+
+    texts = [f"t{i}" for i in range(10)]
+    prepared = {"texts": texts, "digest": texts_digest(texts)}
+    with pytest.raises(ValueError, match=problem):
+        collect(prepared, _shares(texts, prepared["digest"], cuts),
+                model="BAAI/bge-m3", hybrid=True)
+
+
+def test_vectors_made_from_other_chunks_are_refused():
+    """A share from another run of the same book — chunked before a config
+    change — has the right count and the wrong text."""
+    from ingestion.distributed import collect, texts_digest
+
+    texts = [f"t{i}" for i in range(4)]
+    prepared = {"texts": texts, "digest": texts_digest(texts)}
+    stale = _shares(texts, texts_digest(["other"] * 4), [(0, 4)])
+    with pytest.raises(ValueError, match="different chunks"):
+        collect(prepared, stale, model="BAAI/bge-m3", hybrid=True)
+
+
+def test_vectors_from_another_model_are_refused():
+    from ingestion.distributed import collect, texts_digest
+
+    texts = ["a", "b"]
+    prepared = {"texts": texts, "digest": texts_digest(texts)}
+    with pytest.raises(ValueError, match="this run embeds with"):
+        collect(prepared, _shares(texts, prepared["digest"], [(0, 2)], model="other"),
+                model="BAAI/bge-m3", hybrid=True)
+
+
+def test_the_shares_of_the_chunks_tile_them_exactly():
+    from ingestion.distributed import shard_bounds
+
+    for total in (0, 1, 7, 600):
+        for of in (1, 5, 12):
+            bounds = [shard_bounds(total, i, of) for i in range(of)]
+            assert bounds[0][0] == 0 and bounds[-1][1] == total
+            assert all(a[1] == b[0] for a, b in zip(bounds, bounds[1:]))
+
+
+def test_a_small_book_is_not_split_across_more_readers_than_it_can_use():
+    from ingestion.distributed import plan
+
+    assert len(plan(25, readers=6, embedders=12)["read"]["include"]) == 3
+    assert len(plan(306, readers=6, embedders=12)["read"]["include"]) == 6
+    assert len(plan(306, readers=6, embedders=12)["embed"]["include"]) == 12
+
+
+def test_stages_cannot_be_run_out_of_order():
+    """``topics`` before ``embed`` tags chunks that have no vectors and reports
+    success."""
+    from ingestion.graph import run_stages
+
+    with pytest.raises(ValueError):
+        run_stages({}, None, ("topics", "embed"))
+
+
+# --- the whole run, split across machines ------------------------------------------
+
+def test_a_book_run_across_machines_ends_in_the_index_one_machine_would_build(
+        scanned_book, wired, monkeypatch, tmp_path):
+    """Every command the workflow runs, in the order it runs them, each building
+    its own context from scratch as a fresh machine would — against the same
+    book run through the ordinary pipeline. The index must not be able to tell
+    which one built it."""
+    import ingestion.context as context
+    import ingestion.distributed as distributed
+    import ingestion.lesson as lesson
+    from ingestion import new_state, run_ingestion
+    from ingestion.context import PipelineContext
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost")
+    monkeypatch.setenv("QDRANT_URL", "dryrun")
+    for key in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+                "GOOGLE_API_KEY", "MOONSHOT_API_KEY", "S3_BUCKET"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("LOCAL_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+
+    config = wired.config
+    config._data["embeddings"]["provider"] = "hash"
+    monkeypatch.setattr(distributed, "get_config", lambda: config)
+    monkeypatch.setattr(context, "get_vision_client", lambda cfg: wired.ctx.vision)
+
+    class _Backend:
+        def get_subject(self, subject_id):
+            return {"name": "English", "language": "en"}
+
+    monkeypatch.setattr(lesson, "get_backend_client", lambda cfg, **k: _Backend())
+
+    book = scanned_book(11)
+    lesson_args = ["--lecture-id", LECTURE, "--subject-id", "s1",
+                   "--lesson-title", "Tides and the Moon"]
+
+    for shard in range(3):
+        assert distributed.main(["read", book, *lesson_args,
+                                 "--shard", str(shard), "--of", "3", "--workers", "2"]) == 0
+    calls_after_reading = (wired.calls.layout, wired.calls.words)
+
+    state_file = tmp_path / "state" / "state.pkl"
+    assert distributed.main(["prepare", book, *lesson_args, "--out", str(state_file)]) == 0
+    assert (wired.calls.layout, wired.calls.words) == calls_after_reading, \
+        "prepare paid for a page the readers had already read"
+
+    for shard in range(4):
+        assert distributed.main(["embed", "--state", str(state_file), "--shard", str(shard),
+                                 "--of", "4", "--out",
+                                 str(tmp_path / "vectors" / f"vectors-{shard}.pkl")]) == 0
+
+    finished = {}
+    monkeypatch.setattr(distributed, "report", lambda lecture_id, state: finished.update(state))
+    assert distributed.main(["finish", "--state", str(state_file),
+                             "--vectors", str(tmp_path / "vectors")]) == 0
+
+    alone = run_ingestion(
+        new_state(lecture_id=LECTURE, subject_id="s1", source_uri=book,
+                  subject_name="English", lesson_title="Tides and the Moon",
+                  language_hint="en"),
+        ctx=PipelineContext.build(config), config=config)
+
+    def index(state):
+        return [(c.text, c.page_from, c.embedding, c.sparse, c.topic_ids)
+                for c in state["chunks"]]
+
+    assert len(finished["chunks"]) >= 11, "a page went missing between machines"
+    assert index(finished) == index(alone)
+    assert finished["stats"]["embed"] == alone["stats"]["embed"]
+    assert finished["stats"]["index"] == alone["stats"]["index"]
+    assert finished["ingestion_status"] == alone["ingestion_status"] == "ready"

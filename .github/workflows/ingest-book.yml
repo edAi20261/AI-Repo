@@ -1,0 +1,237 @@
+# Ingest one book on GitHub's machines instead of a laptop or a Fargate task.
+#
+# A scanned book is two kinds of slow work, and both split across machines:
+#
+#   plan ──► read × N ──► prepare ──► embed × M ──► finish
+#   warm-model ──────────────────────────┘
+#
+#   plan     N and M, from the inputs
+#   read     each machine checks every credential, fetches the book and reads
+#            its share of the pages into the page cache
+#   prepare  extract + chunk with every page already read; cuts the figures
+#   embed    each machine embeds its share of the chunks
+#   finish   topics, prerequisites and the index — the only writes to Qdrant
+#
+# Nothing is written to the index until `finish`. A page a reader could not
+# read is read by `prepare` itself, and a re-run of the same book pays only for
+# pages that were never read — the page cache keeps every one that was.
+#
+# Secrets (Settings → Secrets and variables → Actions → Secrets): the same
+# values as .env.ingest — DATABASE_URL, QDRANT_URL, QDRANT_API_KEY, S3_BUCKET,
+# S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# GOOGLE_APPLICATION_CREDENTIALS (the JSON itself, on one line), and optionally
+# BACKEND_API_BASE_URL and AI_WEBHOOK_SHARED_SECRET.
+# docs/ingesting-on-github-actions.md has the rest.
+
+name: Ingest a book
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "The PDF: a Google Drive link shared as 'Anyone with the link', an https URL, or an s3:// URI"
+        required: true
+      lecture_id:
+        description: "Lecture ID (content.lessons.id)"
+        required: true
+      subject_id:
+        description: "Subject ID"
+        required: true
+      lesson_title:
+        description: "The book's title, as students should see it cited"
+        required: true
+      language:
+        description: "The book's language"
+        type: choice
+        options: ["ask the backend", "ar", "en", "fr", "de"]
+        default: "ask the backend"
+      grade:
+        description: "Grade (optional)"
+        default: ""
+      subject_is_math:
+        description: "Maths: read every page with the maths prompt"
+        type: boolean
+        default: false
+      read_machines:
+        description: "Machines reading pages. Each holds 8 model calls in flight"
+        default: "6"
+      embed_machines:
+        description: "Machines embedding chunks"
+        default: "8"
+
+run-name: "Ingest: ${{ inputs.lesson_title }}"
+
+# One run per book at a time: two runs of one book would each replace the
+# other's chunks in the index.
+concurrency:
+  group: ingest-${{ inputs.lecture_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_ENV: ${{ vars.INGEST_APP_ENV || 'production' }}
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  QDRANT_URL: ${{ secrets.QDRANT_URL }}
+  QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+  S3_BUCKET: ${{ secrets.S3_BUCKET }}
+  S3_REGION: ${{ secrets.S3_REGION }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+  BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
+  AI_WEBHOOK_SHARED_SECRET: ${{ secrets.AI_WEBHOOK_SHARED_SECRET }}
+  # The inputs, as variables: a title is text a person typed, and text pasted
+  # into a script is a script.
+  SOURCE: ${{ inputs.source }}
+  LECTURE_ID: ${{ inputs.lecture_id }}
+  SUBJECT_ID: ${{ inputs.subject_id }}
+  LESSON_TITLE: ${{ inputs.lesson_title }}
+  LANGUAGE: ${{ inputs.language }}
+  GRADE: ${{ inputs.grade }}
+  SUBJECT_IS_MATH: ${{ inputs.subject_is_math }}
+  PYTHONUNBUFFERED: "1"
+  TOKENIZERS_PARALLELISM: "false"
+
+jobs:
+  # Seconds, not minutes: only the matrices, from the inputs. The book is
+  # fetched by the machines that read it, in parallel, rather than by a job
+  # every other job would wait for.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      read_matrix: ${{ steps.plan.outputs.read_matrix }}
+      embed_matrix: ${{ steps.plan.outputs.embed_matrix }}
+    steps:
+      - id: plan
+        env:
+          READ_MACHINES: ${{ inputs.read_machines }}
+          EMBED_MACHINES: ${{ inputs.embed_machines }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          def machines(name, most):
+              value = os.environ[name].strip()
+              if not value.isdigit() or not 1 <= int(value) <= most:
+                  raise SystemExit(f"{name} must be a whole number from 1 to {most}, not {value!r}")
+              n = int(value)
+              return json.dumps({"include": [{"shard": i, "of": n} for i in range(n)]})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"read_matrix={machines('READ_MACHINES', 12)}\n")
+              out.write(f"embed_matrix={machines('EMBED_MACHINES', 16)}\n")
+          PY
+
+  warm-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ingest
+        with:
+          model: "true"
+
+  read:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # One machine that cannot reach the database is every machine that
+      # cannot: stop them all rather than pay for six failures.
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.plan.outputs.read_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ingest
+
+      - name: Check every credential before anything is paid for
+        run: python -m scripts.preflight_ingest --skip embedder
+
+      - name: Fetch the book
+        run: python -m scripts.fetch_book "$SOURCE" book.pdf
+
+      - name: Read pages ${{ matrix.shard }} of every ${{ matrix.of }}
+        env:
+          SHARD: ${{ matrix.shard }}
+          OF: ${{ matrix.of }}
+        run: |
+          source scripts/ci_lesson_args.sh
+          python -m ingestion.distributed read book.pdf "${LESSON_ARGS[@]}" \
+            --shard "$SHARD" --of "$OF" --workers 8
+
+  prepare:
+    needs: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ingest
+
+      - name: Fetch the book
+        run: python -m scripts.fetch_book "$SOURCE" book.pdf
+
+      - name: Extract and chunk
+        run: |
+          source scripts/ci_lesson_args.sh
+          python -m ingestion.distributed prepare book.pdf "${LESSON_ARGS[@]}" \
+            --out state/state.pkl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: state
+          path: state/state.pkl
+          retention-days: 1
+
+  embed:
+    needs: [plan, prepare, warm-model]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.plan.outputs.embed_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ingest
+        with:
+          model: "true"
+      - uses: actions/download-artifact@v4
+        with:
+          name: state
+          path: state
+
+      - name: Embed chunks, share ${{ matrix.shard }} of ${{ matrix.of }}
+        env:
+          SHARD: ${{ matrix.shard }}
+          OF: ${{ matrix.of }}
+        run: |
+          python -m ingestion.distributed embed --state state/state.pkl \
+            --shard "$SHARD" --of "$OF" --out "vectors/vectors-$SHARD.pkl"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vectors-${{ matrix.shard }}
+          path: vectors/vectors-${{ matrix.shard }}.pkl
+          retention-days: 1
+
+  finish:
+    needs: [prepare, embed]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ingest
+        with:
+          model: "true"
+      - uses: actions/download-artifact@v4
+        with:
+          name: state
+          path: state
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vectors-*
+          path: vectors
+          merge-multiple: true
+
+      - name: Topics, prerequisites and the index
+        run: python -m ingestion.distributed finish --state state/state.pkl --vectors vectors
