@@ -735,3 +735,15 @@ def test_the_storage_preflight_writes_and_clears_a_probe(monkeypatch, tmp_path):
 
     assert "wrote and removed" in result
     assert not any(p.is_file() for p in tmp_path.rglob("*"))
+
+
+def test_a_file_named_book_is_not_titled_book(scanned_book):
+    """A book fetched from a link whose own name is book.pdf was cited to
+    students as "book"."""
+    from pathlib import Path
+
+    book = Path(scanned_book(2))
+    fetched = book.with_name("book.pdf")
+    book.rename(fetched)
+    Path(str(fetched) + ".name").write_text("book.pdf", encoding="utf-8")
+    assert _lesson_args(str(fetched)).lesson_title == "Untitled book"

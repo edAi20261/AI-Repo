@@ -30,6 +30,8 @@ ID_NAMESPACE = uuid.UUID("5b1f6c0e-2a7d-5e43-9c1b-7d0a4e8f2c61")
 # from, since the download itself is saved under a fixed name.
 NAME_SUFFIX = ".name"
 UNTITLED = "Untitled book"
+# The names a download is saved under, which say nothing about the book.
+_NOT_A_TITLE = {"book", "lesson", "document", "download", "file", "untitled"}
 
 
 def to_uri(source: str) -> str:
@@ -116,12 +118,11 @@ def _title_of(source: str) -> str:
         except Exception:      # noqa: BLE001 — a title is a nicety, not a reason to fail
             logger.warning("could not read the PDF's own title", exc_info=True)
         sidecar = Path(str(path) + NAME_SUFFIX)
-        if sidecar.is_file():
-            title = _clean(Path(sidecar.read_text(encoding="utf-8")).stem.replace("_", " "))
-            if title:
+        names = [Path(sidecar.read_text(encoding="utf-8")).stem] if sidecar.is_file() else []
+        for name in [*names, path.stem]:
+            title = _clean(name.replace("_", " "))
+            if title and title.casefold() not in _NOT_A_TITLE:
                 return title
-        if path.stem.lower() not in ("book", "lesson", "document"):
-            return _clean(path.stem.replace("_", " ")) or UNTITLED
     return UNTITLED
 
 
