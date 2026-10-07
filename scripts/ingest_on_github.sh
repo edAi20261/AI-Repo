@@ -4,10 +4,10 @@
 #
 #   scripts/ingest_on_github.sh books.txt
 #
-# books.txt is one link per line: a Google Drive link shared as "Anyone with the
-# link", an https URL or an s3:// URI. Blank lines and lines starting with # are
-# skipped. Everything else about a book — its ids, title and language — is
-# worked out from the book itself.
+# books.txt is one book per line: its link (a Google Drive link shared as
+# "Anyone with the link", an https URL or an s3:// URI), a space, and the id of
+# the lesson it belongs to. Blank lines and lines starting with # are skipped.
+# The subject, title, grade and language come from the lesson.
 #
 # Needs the GitHub CLI (https://cli.github.com), logged in once with
 # `gh auth login` as someone who can run workflows in this repository.
@@ -22,11 +22,17 @@ command -v gh >/dev/null 2>&1 || { echo "the GitHub CLI (gh) is not installed" >
 gh auth status >/dev/null 2>&1 || { echo "run 'gh auth login' first" >&2; exit 2; }
 
 started=0
-while IFS= read -r link || [ -n "${link:-}" ]; do
-  link="$(printf '%s' "$link" | tr -d '\r' | xargs)"
-  case "$link" in ""|\#*) continue;; esac
-  gh workflow run ingest-book.yml --ref "${INGEST_REF:-main}" -f source="$link"
-  echo "started  $link"
+while IFS= read -r line || [ -n "${line:-}" ]; do
+  line="$(printf '%s' "$line" | tr -d '\r' | xargs)"
+  case "$line" in ""|\#*) continue;; esac
+  link="${line%% *}"
+  lesson="${line##* }"
+  if [ "$link" = "$lesson" ]; then
+    echo "skipped  $link (no lesson id after the link)" >&2
+    continue
+  fi
+  gh workflow run ingest-book.yml --ref "${INGEST_REF:-main}" -f source="$link" -f lesson_id="$lesson"
+  echo "started  $link -> lesson $lesson"
   started=$((started + 1))
 done < "$list"
 

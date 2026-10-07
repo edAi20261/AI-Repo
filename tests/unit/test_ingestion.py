@@ -1388,7 +1388,7 @@ def test_a_direct_run_labels_its_chunks_like_a_resolved_one(monkeypatch):
     monkeypatch.setattr(lesson, "get_backend_client", lambda config, **k: _Backend())
     monkeypatch.setattr(cli, "run_ingestion",
                         lambda state, **k: captured.update(state) or {"stats": {}})
-    cli.main(["lesson.pdf", "--lecture-id", "l1", "--subject-id", "s1",
+    cli.main(["lesson.pdf", "--lecture-id", "00000000-0000-4000-8000-000000000001", "--subject-id", "s1",
               "--lesson-title", "The Water Cycle", "--lesson-order", "4",
               "--no-read-ahead"])
     assert captured["subject_name"] == "Biology"

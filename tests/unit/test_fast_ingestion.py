@@ -594,6 +594,52 @@ def test_ids_that_were_typed_are_kept(scanned_book):
     assert (args.lecture_id, args.subject_id, args.lesson_title) == ("L1", "S1", "Tides")
 
 
+def _lesson_state(*argv):
+    import argparse
+
+    from ingestion.lesson import add_lesson_arguments, lesson_state
+    from shared.config import get_config
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source")
+    add_lesson_arguments(parser)
+    return lesson_state(parser.parse_args(list(argv)), get_config())
+
+
+def test_a_book_takes_its_subject_title_and_language_from_its_lesson(
+        scanned_book, fake_postgres):
+    db = fake_postgres(fetchone=[("8c2f0a10-0001-4a00-9000-00000000000a", "Gem — English", "English", "en", "Grade 7")])
+    state = _lesson_state(scanned_book(2), "--lecture-id", "9d3f1b20-0003-4a00-9000-000000000007")
+    assert db.last_args == ("9d3f1b20-0003-4a00-9000-000000000007",)
+    assert (state["lecture_id"], state["subject_id"]) == ("9d3f1b20-0003-4a00-9000-000000000007", "8c2f0a10-0001-4a00-9000-00000000000a")
+    assert state["lesson_title"] == "Gem — English"
+    assert (state["subject_name"], state["language_hint"]) == ("English", "en")
+
+
+def test_a_book_with_no_lesson_is_refused_before_any_page_is_read(
+        scanned_book, fake_postgres):
+    from ingestion.lesson import LessonNotFound
+
+    fake_postgres(fetchone=[None])
+    with pytest.raises(LessonNotFound):
+        _lesson_state(scanned_book(2))
+
+
+def test_a_lesson_lookup_nobody_can_reach_falls_back_to_the_typed_ids(
+        scanned_book, fake_postgres):
+    fake_postgres(explode=True)
+    state = _lesson_state(scanned_book(2), "--lecture-id", "9d3f1b20-0003-4a00-9000-000000000007", "--subject-id", "S1")
+    assert (state["lecture_id"], state["subject_id"]) == ("9d3f1b20-0003-4a00-9000-000000000007", "S1")
+
+
+def test_a_lesson_id_that_is_not_an_id_is_refused(scanned_book, fake_postgres):
+    from ingestion.lesson import LessonNotFound
+
+    fake_postgres()
+    with pytest.raises(LessonNotFound):
+        _lesson_state(scanned_book(2), "--lecture-id", "the gem book")
+
+
 def test_an_untitled_book_is_named_after_the_file_it_came_from(scanned_book):
     """A Drive download is saved as book.pdf; its real name travels beside it.
     Drive's right-to-left names carry invisible direction marks, which must

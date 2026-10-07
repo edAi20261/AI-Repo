@@ -31,8 +31,11 @@ on:
       source:
         description: "Link to the book (Google Drive link shared as 'Anyone with the link')"
         required: true
+      lesson_id:
+        description: "Lesson ID the book belongs to (content.lessons.id)"
+        required: true
 
-run-name: "Ingest: ${{ inputs.source }}"
+run-name: "Ingest: ${{ inputs.lesson_id }} ${{ inputs.source }}"
 
 # One run per book at a time: two runs of one book would each replace the
 # other's chunks in the index.
@@ -56,9 +59,10 @@ env:
   BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
   AI_WEBHOOK_SHARED_SECRET: ${{ secrets.AI_WEBHOOK_SHARED_SECRET }}
   # The link, as a variable: it is text a person pasted, and text pasted into a
-  # script is a script. Everything else about the book — its ids, title and
-  # language — is worked out from the book itself.
+  # script is a script. The subject, title, grade and language come from the
+  # lesson.
   SOURCE: ${{ inputs.source }}
+  LECTURE_ID: ${{ inputs.lesson_id }}
   PYTHONUNBUFFERED: "1"
   TOKENIZERS_PARALLELISM: "false"
 

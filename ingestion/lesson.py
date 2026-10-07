@@ -64,6 +64,48 @@ def _subject_of(config, subject_id: str) -> dict:
         return {}
 
 
+_LESSON_SQL = """
+SELECT l.subject_id::text, l.title, s.name, s.language, s.grade_level
+FROM content.lessons l
+JOIN academics.subjects s ON s.id = l.subject_id
+WHERE l.id = %s
+"""
+
+
+class LessonNotFound(LookupError):
+    pass
+
+
+def _lesson_of(config, lecture_id: str) -> dict | None:
+    from shared.postgres import connect
+
+    try:
+        uuid.UUID(str(lecture_id).strip())
+    except ValueError:
+        raise LessonNotFound(f"{lecture_id!r} is not a lesson id (content.lessons.id is a UUID)")
+    try:
+        with connect(config) as conn, conn.cursor() as cur:
+            cur.execute(_LESSON_SQL, (lecture_id,))
+            row = cur.fetchone()
+    except Exception:
+        logger.warning("lesson lookup unavailable", extra={"lecture_id": lecture_id},
+                       exc_info=True)
+        return None
+    if row is None:
+        raise LessonNotFound(
+            f"No lesson {lecture_id} in content.lessons. Every ingested book belongs to a "
+            "lesson: pass the lesson's id (--lecture-id, or lesson_id in the workflow).")
+    subject_id, title, name, language, grade = row
+    return {"subject_id": subject_id, "title": title, "name": name,
+            "language": language, "grade_level": grade}
+
+
+def _adopt_lesson(args, lesson: dict) -> None:
+    args.subject_id = args.subject_id or lesson["subject_id"]
+    args.lesson_title = args.lesson_title or lesson["title"]
+    args.grade = args.grade or lesson["grade_level"]
+
+
 def fill_in_identity(args) -> None:
     """Give a book the ids and title nobody typed, the same way on every machine.
 
@@ -144,11 +186,16 @@ def lesson_state(args, config):
     part of this state, and two machines that disagreed about it would read the
     same book two ways.
     """
+    if not args.lecture_id:
+        fill_in_identity(args)
+    lesson = _lesson_of(config, args.lecture_id)
+    if lesson:
+        _adopt_lesson(args, lesson)
     fill_in_identity(args)
     logger.info("book identity", extra={"lecture_id": args.lecture_id,
                                         "subject_id": args.subject_id,
                                         "lesson_title": args.lesson_title})
-    subject = _subject_of(config, args.subject_id)
+    subject = lesson or _subject_of(config, args.subject_id)
     if not args.lesson_title:
         logger.warning("no --lesson-title: citations from this lecture will be labelled "
                        "by section headings only", extra={"lecture_id": args.lecture_id})
@@ -170,7 +217,8 @@ def lesson_state(args, config):
 def add_lesson_arguments(parser: argparse.ArgumentParser) -> None:
     """The arguments that describe one lesson, for every command that takes one."""
     parser.add_argument("--lecture-id",
-                        help="content.lessons.id; derived from the book's bytes when left out")
+                        help="content.lessons.id; the subject, title, grade and language "
+                             "are read from the lesson")
     parser.add_argument("--subject-id",
                         help="the subject; derived from --subject-name (or the title) when "
                              "left out. In backfill mode, a filter")
