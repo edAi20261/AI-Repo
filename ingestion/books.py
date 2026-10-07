@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 TASK = "split_lessons"
 OPENING_PAGES = 12
 OPENING_PAGE_CHARS = 2500
-OUTLINE_LINE_CHARS = 220
+OUTLINE_LINE_CHARS = 420
+OUTLINE_BODY_BLOCKS = 2
 HEADING_TYPES = frozenset({"heading", "subheading"})
 STALE_SEARCH = 400
 
@@ -45,8 +46,13 @@ class Lesson:
     ordinal: int
     title: str
     unit_number: Optional[int]
+    unit_title: str
     page_from: int
     page_to: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.unit_title} — {self.title}" if self.unit_title else self.title
 
 
 def lesson_id_for(book_id: str, ordinal: int) -> str:
@@ -60,8 +66,8 @@ def _page_text(page: ParsedPage) -> str:
 def _outline_line(page: ParsedPage) -> str:
     content = [b for b in page.blocks if not b.is_furniture]
     headings = [b.text for b in content if b.type in HEADING_TYPES]
-    opening = next((b.text for b in content if b.type not in HEADING_TYPES), "")
-    line = " | ".join([*headings, opening] if opening else headings)
+    opening = [b.text for b in content if b.type not in HEADING_TYPES][:OUTLINE_BODY_BLOCKS]
+    line = " | ".join([*headings, *opening])
     return f"[{page.meta.page}] {line[:OUTLINE_LINE_CHARS]}"
 
 
@@ -75,18 +81,32 @@ def book_outline(pages: Sequence[ParsedPage]) -> tuple[str, str]:
 
 def _validator(first_page: int, last_page: int):
     def check(breakdown: LessonBreakdown) -> None:
-        if not breakdown.lessons:
+        items = [item for unit in breakdown.units for item in unit.lessons]
+        if not items:
             raise ValueError("a book teaches at least one lesson; none were listed")
-        starts = [item.start_page for item in breakdown.lessons]
+        empty = [unit.title for unit in breakdown.units if not unit.lessons]
+        if empty:
+            raise ValueError(f"these units list no lessons: {empty}. List the lessons "
+                             "inside every unit")
+        posing = [unit.title for unit in breakdown.units
+                  if unit.title and any(_same(item.title, unit.title) for item in unit.lessons)]
+        if posing:
+            raise ValueError(f"a unit is not a lesson, but these units are listed as their "
+                             f"own lesson: {posing}. List the lessons inside them")
+        starts = [item.start_page for item in items]
         outside = [s for s in starts if not first_page <= s <= last_page]
         if outside:
             raise ValueError(f"start pages {outside} are outside the book "
                              f"(pages {first_page}-{last_page})")
         if any(b <= a for a, b in zip(starts, starts[1:])):
             raise ValueError(f"start pages must rise in book order; got {starts}")
-        if any(not item.title for item in breakdown.lessons):
+        if any(not item.title for item in items):
             raise ValueError("every lesson needs its title as printed in the book")
     return check
+
+
+def _same(a: str, b: str) -> bool:
+    return " ".join(a.casefold().split()) == " ".join(b.casefold().split())
 
 
 def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Lesson]:
@@ -117,14 +137,15 @@ def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Le
 
 def lessons_from(breakdown: LessonBreakdown, *, book_id: str,
                  first_page: int, last_page: int) -> list[Lesson]:
-    items = breakdown.lessons
+    items = [(unit, item) for unit in breakdown.units for item in unit.lessons]
     lessons: list[Lesson] = []
-    for ordinal, item in enumerate(items):
+    for ordinal, (unit, item) in enumerate(items):
         page_from = first_page if ordinal == 0 else item.start_page
-        page_to = items[ordinal + 1].start_page - 1 if ordinal + 1 < len(items) else last_page
+        page_to = items[ordinal + 1][1].start_page - 1 if ordinal + 1 < len(items) else last_page
         lessons.append(Lesson(
             lesson_id=lesson_id_for(book_id, ordinal), ordinal=ordinal, title=item.title,
-            unit_number=item.unit_number, page_from=page_from, page_to=page_to))
+            unit_number=unit.unit_number, unit_title=unit.title,
+            page_from=page_from, page_to=page_to))
     return lessons
 
 
@@ -141,11 +162,11 @@ def file_under_lessons(state: IngestionState, lessons: Sequence[Lesson]) -> Inge
     for chunk in state.get("chunks", []):
         lesson = lesson_at(lessons, chunk.page_from)
         chunk.lecture_id = lesson.lesson_id
-        chunk.lesson_title = lesson.title
+        chunk.lesson_title = lesson.label
         chunk.lesson_order = lesson.ordinal
     for figure in state.get("figures", []):
         figure.lecture_id = lesson_at(lessons, figure.page).lesson_id
-    state["lessons"] = [asdict(lesson) for lesson in lessons]
+    state["lessons"] = [{**asdict(lesson), "label": lesson.label} for lesson in lessons]
     return state
 
 
@@ -161,7 +182,7 @@ def lesson_states(state: IngestionState) -> list[IngestionState]:
         states.append({
             **shared_fields,
             "lecture_id": lesson_id,
-            "lesson_title": lesson["title"],
+            "lesson_title": lesson["label"],
             "lesson_order": lesson["ordinal"],
             "chunks": [c for c in state.get("chunks", []) if c.lecture_id == lesson_id],
             "figures": [f for f in state.get("figures", []) if f.lecture_id == lesson_id],

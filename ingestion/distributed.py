@@ -314,7 +314,7 @@ def _summarise_lessons(state: dict) -> None:
              f"{len(lessons)} lessons found", "",
              "| # | Lesson | Unit | Pages | Chunks | Lesson ID |",
              "|---|---|---|---|---|---|"]
-    lines += [f"| {n} | {lsn['title']} | {lsn['unit_number'] or ''} | "
+    lines += [f"| {n} | {lsn['title']} | {lsn['unit_title'] or lsn['unit_number'] or ''} | "
               f"{lsn['page_from']}-{lsn['page_to']} | {counts.get(lsn['lesson_id'], 0)} | "
               f"`{lsn['lesson_id']}` |" for n, lsn in enumerate(lessons, 1)]
     if not lessons:

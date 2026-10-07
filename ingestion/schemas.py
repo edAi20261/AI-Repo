@@ -107,16 +107,33 @@ class TopicList(BaseModel):
 
 # --- lessons -----------------------------------------------------------------
 
+def _one_line(v) -> str:
+    return " ".join(str(v or "").split())[:255]
+
+
 class LessonItem(BaseModel):
-    title: str = Field(description="The lesson's title as printed in the book.")
-    unit_number: Optional[int] = Field(
-        default=None, description="The unit it belongs to, when the book numbers units.")
-    start_page: int = Field(description="The outline page number where the lesson starts.")
+    title: str = Field(description="The lesson's own title as printed in the book.")
+    start_page: int = Field(
+        description="The outline page number where this lesson's own content starts.")
 
     @field_validator("title", mode="before")
     @classmethod
     def _clamp_title(cls, v):
-        return " ".join(str(v or "").split())[:255]
+        return _one_line(v)
+
+
+class UnitItem(BaseModel):
+    title: str = Field(default="", description="The unit's title as printed; empty when "
+                                                "the book has no units.")
+    unit_number: Optional[int] = Field(
+        default=None, description="The unit's number, when the book numbers units.")
+    lessons: list[LessonItem] = Field(
+        default_factory=list, description="Every lesson inside this unit, in book order.")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _clamp_title(cls, v):
+        return _one_line(v)
 
     @field_validator("unit_number", mode="before")
     @classmethod
@@ -128,7 +145,7 @@ class LessonItem(BaseModel):
 
 
 class LessonBreakdown(BaseModel):
-    lessons: list[LessonItem] = Field(default_factory=list)
+    units: list[UnitItem] = Field(default_factory=list)
 
 
 # --- dependencies ----------------------------------------------------------

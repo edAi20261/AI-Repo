@@ -547,7 +547,7 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
     import ingestion.distributed as distributed
     import ingestion.lesson as lesson
     from ingestion.books import lessons_from
-    from ingestion.schemas import LessonBreakdown, LessonItem
+    from ingestion.schemas import LessonBreakdown, LessonItem, UnitItem
 
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost")
     monkeypatch.setenv("QDRANT_URL", "dryrun")
@@ -566,9 +566,9 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
         "grade_level": "Grade 7"})
 
     def split(state, cfg):
-        breakdown = LessonBreakdown(lessons=[
-            LessonItem(title="Unit 1 Lesson 1", unit_number=1, start_page=1),
-            LessonItem(title="Unit 1 Lesson 2", unit_number=1, start_page=6)])
+        breakdown = LessonBreakdown(units=[UnitItem(title="Unit 1", unit_number=1, lessons=[
+            LessonItem(title="Lesson 1", start_page=1),
+            LessonItem(title="Lesson 2", start_page=6)])])
         return lessons_from(breakdown, book_id=state["lecture_id"], first_page=1,
                             last_page=11)
 
@@ -611,7 +611,7 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
                              "--vectors", str(tmp_path / "vectors")]) == 0
 
     lessons = finished["lessons"]
-    assert _Catalog.registered == [(subject, ["Unit 1 Lesson 1", "Unit 1 Lesson 2"])]
+    assert _Catalog.registered == [(subject, ["Lesson 1", "Lesson 2"])]
     assert _Catalog.settled == [(lsn["lesson_id"], "ready") for lsn in lessons]
     for chunk in finished["chunks"]:
         owner = lessons[0] if chunk.page_from < 6 else lessons[1]

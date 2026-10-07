@@ -12,7 +12,7 @@ from ingestion.books import (
     lessons_from,
 )
 from ingestion.layout.blocks import Block, PageMeta, ParsedPage
-from ingestion.schemas import LessonBreakdown, LessonItem
+from ingestion.schemas import LessonBreakdown, LessonItem, UnitItem
 from ingestion.state import Chunk, Figure
 
 BOOK = "0743ec4c-b00d-5e17-b573-9b60b5593a26"
@@ -20,9 +20,8 @@ SUBJECT = "8c2f0a10-0001-4a00-9000-00000000000a"
 
 
 def _breakdown(*starts: int) -> LessonBreakdown:
-    return LessonBreakdown(lessons=[
-        LessonItem(title=f"Lesson {n}", unit_number=1, start_page=s)
-        for n, s in enumerate(starts, 1)])
+    return LessonBreakdown(units=[UnitItem(title="Unit 1", unit_number=1, lessons=[
+        LessonItem(title=f"Lesson {n}", start_page=s) for n, s in enumerate(starts, 1)])])
 
 
 def _chunk(page: int) -> Chunk:
@@ -59,7 +58,7 @@ def test_chunks_and_figures_are_filed_under_the_lesson_their_page_is_in():
     file_under_lessons(state, lessons)
     owners = [c.lecture_id for c in state["chunks"]]
     assert owners == [lessons[0].lesson_id, lessons[1].lesson_id, lessons[1].lesson_id]
-    assert state["chunks"][1].lesson_title == "Lesson 2"
+    assert state["chunks"][1].lesson_title == "Unit 1 — Lesson 2"
     assert figure.lecture_id == lessons[1].lesson_id
 
     parts = lesson_states(state)
@@ -76,6 +75,35 @@ def test_a_breakdown_that_does_not_fit_the_book_is_sent_back():
     for bad in (_breakdown(), _breakdown(10, 5), _breakdown(1, 70), _breakdown(3, 3)):
         with pytest.raises(ValueError):
             check(bad)
+
+
+def test_a_unit_listed_as_its_own_lesson_is_sent_back():
+    check = _validator(1, 50)
+    unit_as_lesson = LessonBreakdown(units=[
+        UnitItem(title="Unit 1 Our Environment", unit_number=1,
+                 lessons=[LessonItem(title="Unit 1  our environment", start_page=1)]),
+        UnitItem(title="Unit 2 Water", unit_number=2,
+                 lessons=[LessonItem(title="Lesson 1: Saving Water", start_page=20)])])
+    with pytest.raises(ValueError, match="not a lesson"):
+        check(unit_as_lesson)
+    with pytest.raises(ValueError, match="no lessons"):
+        check(LessonBreakdown(units=[
+            UnitItem(title="Unit 1", lessons=[LessonItem(title="Lesson 1", start_page=1)]),
+            UnitItem(title="Unit 2", lessons=[])]))
+
+
+def test_lessons_run_on_across_units_in_book_order():
+    breakdown = LessonBreakdown(units=[
+        UnitItem(title="Unit 1", unit_number=1, lessons=[
+            LessonItem(title="Lesson 1", start_page=3),
+            LessonItem(title="Lesson 2", start_page=8)]),
+        UnitItem(title="Unit 2", unit_number=2, lessons=[
+            LessonItem(title="Lesson 1", start_page=15)])])
+    lessons = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=30)
+    assert [(lsn.unit_number, lsn.title, lsn.page_from, lsn.page_to) for lsn in lessons] == [
+        (1, "Lesson 1", 1, 7), (1, "Lesson 2", 8, 14), (2, "Lesson 1", 15, 30)]
+    assert lessons[2].label == "Unit 2 — Lesson 1"
+    assert len({lsn.lesson_id for lsn in lessons}) == 3
 
 
 class _Model:
@@ -97,12 +125,12 @@ def test_the_lessons_are_read_from_the_book_by_the_model():
 
     pages = [_page(n, f"Unit 1 Lesson {1 + n // 4}", f"text on page {n}") for n in range(1, 9)]
     state = {"lecture_id": BOOK, "parsed_pages": pages}
-    model = _Model('{"lessons": [{"title": "Unit 1 Lesson 1", "unit_number": 1, '
-                   '"start_page": 1}, {"title": "Unit 1 Lesson 2", "unit_number": 1, '
-                   '"start_page": 4}]}')
+    model = _Model('{"units": [{"title": "Unit 1", "unit_number": 1, "lessons": ['
+                   '{"title": "Lesson 1", "start_page": 1}, '
+                   '{"title": "Lesson 2", "start_page": 4}]}]}')
     lessons = detect_lessons(state, get_config(), llm=model)
     assert [(lsn.title, lsn.page_from, lsn.page_to) for lsn in lessons] == [
-        ("Unit 1 Lesson 1", 1, 3), ("Unit 1 Lesson 2", 4, 8)]
+        ("Lesson 1", 1, 3), ("Lesson 2", 4, 8)]
     assert "[4] Unit 1 Lesson 2" in model.prompts[0]
 
 
