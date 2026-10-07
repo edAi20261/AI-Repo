@@ -11,12 +11,12 @@ import logging
 from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import Response
 
-from agent.voice.service import audio_type
+from agent.voice.service import Capabilities, audio_type
 from shared.errors import UnprocessableError
 
 from ..dependencies import Authenticated, RequestId, RuntimeDep
 from ..schemas.common import PAID_RESPONSES, Language
-from ..schemas.voice import SpeakRequest, TranscriptResponse
+from ..schemas.voice import CapabilitiesResponse, SpeakRequest, TranscriptResponse
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,15 @@ router = APIRouter(
 ACCEPTED = ("audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "audio/mp3", "audio/wav",
             "audio/x-wav", "audio/wave", "audio/m4a", "audio/x-m4a", "audio/aac", "audio/flac",
             "video/webm")
+
+
+@router.get(
+    "/capabilities",
+    response_model=CapabilitiesResponse,
+    summary="Which voice features this service offers, for showing the mic and speaker buttons",
+)
+async def capabilities(runtime: RuntimeDep, request_id: RequestId) -> CapabilitiesResponse:
+    return CapabilitiesResponse.of(Capabilities.of(runtime.config), request_id)
 
 
 @router.post(

@@ -305,7 +305,8 @@ A student can ask by voice and hear the reply (`agent/voice/`, `shared/speech.py
 ElevenLabs Scribe, which detects Arabic and English, including both mixed in one
 sentence. The text then goes through `/ai/chat` like anything typed.
 `POST /ai/voice/speak` reads a reply aloud with ElevenLabs, which uses the same
-key, in the reply's language. Markdown, citations and the sources block are
+key, in the reply's language. It is off by default (`voice.speak.enabled`), and
+`GET /ai/voice/capabilities` tells the frontend which buttons to show. Markdown, citations and the sources block are
 removed first, and LaTeX is read as words in the reply's language. The contract is in
 `docs/BACKEND_INTEGRATION.md` §7.
 

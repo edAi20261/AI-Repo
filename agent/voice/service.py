@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage
 
 from shared import speech
 from shared.config import Config
-from shared.errors import UnprocessableError
+from shared.errors import ServiceError, UnprocessableError
 from shared.llm import maybe_llm
 
 from ..prompts import SPEECH_SCRIPT_PROMPT
@@ -34,6 +34,28 @@ GENERIC_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream"
 
 _LANGUAGES = {"ar": "ar", "ara": "ar", "arz": "ar", "en": "en", "eng": "en",
               "fr": "fr", "fra": "fr", "fre": "fr", "de": "de", "deu": "de", "ger": "de"}
+
+
+class SpeakingDisabled(ServiceError):
+    """Replies are not read aloud on this deployment."""
+
+    status_code = 503
+    code = "speaking_disabled"
+
+
+@dataclass(frozen=True)
+class Capabilities:
+    transcribe: bool
+    speak: bool
+
+    @classmethod
+    def of(cls, config: Config) -> Capabilities:
+        return cls(transcribe=True, speak=bool(config.get("voice.speak.enabled")))
+
+
+def ensure_speaking(config: Config) -> None:
+    if not Capabilities.of(config).speak:
+        raise SpeakingDisabled("Reading replies aloud is turned off on this service.")
 
 
 @dataclass(frozen=True)
@@ -72,6 +94,7 @@ def hear(audio: bytes, content_type: str, *, config: Config,
 
 def speak(text: str, language: str, *, config: Config, llm: Any = None) -> Spoken:
     """A tutor reply read aloud, in the voice configured for its language."""
+    ensure_speaking(config)
     clean = cap(readable(text), config.get("voice.speak.max_chars"))
     if not clean:
         raise UnprocessableError("There is nothing in this reply to read aloud.")

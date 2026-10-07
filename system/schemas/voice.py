@@ -6,10 +6,21 @@ from typing import Optional
 
 from pydantic import Field
 
-from agent.voice.service import Heard
+from agent.voice.service import Capabilities, Heard
 from shared.metering import Meter
 
 from .common import Language, Schema, Usage
+
+
+class CapabilitiesResponse(Schema):
+    request_id: str
+    transcribe: bool = Field(description="The mic can be shown: recordings are turned into text.")
+    speak: bool = Field(description="The speaker button can be shown: replies can be read aloud.")
+
+    @classmethod
+    def of(cls, capabilities: Capabilities, request_id: str) -> CapabilitiesResponse:
+        return cls(request_id=request_id, transcribe=capabilities.transcribe,
+                   speak=capabilities.speak)
 
 
 class TranscriptResponse(Schema):
