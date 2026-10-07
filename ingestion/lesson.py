@@ -82,7 +82,8 @@ def _lesson_of(config, lecture_id: str) -> dict | None:
     try:
         uuid.UUID(str(lecture_id).strip())
     except ValueError:
-        raise LessonNotFound(f"{lecture_id!r} is not a lesson id (content.lessons.id is a UUID)")
+        raise LessonNotFound(
+            f"{lecture_id!r} is not a lesson id (content.lessons.id is a UUID)") from None
     try:
         with connect(config) as conn, conn.cursor() as cur:
             cur.execute(_LESSON_SQL, (lecture_id,))
