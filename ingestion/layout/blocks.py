@@ -21,6 +21,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from ..utils.normalise import collapse_repeated_marks
+
 BlockType = Literal[
     "heading", "subheading", "body", "caption", "sidebar",
     "question", "answer_key", "table", "figure", "list",
@@ -57,7 +59,7 @@ class Block(BaseModel):
     @field_validator("text", mode="before")
     @classmethod
     def _collapse_whitespace(cls, v):
-        return " ".join(str(v or "").split())
+        return " ".join(collapse_repeated_marks(str(v or "")).split())
 
     @property
     def is_furniture(self) -> bool:

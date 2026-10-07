@@ -144,7 +144,8 @@ embeddings:
   provider: huggingface          # huggingface | openai | cohere | voyage | hash
   model: BAAI/bge-m3
   dimensions: 1024
-  batch_size: 64
+  batch_size: 8
+  max_seq_length: 2048
   normalize: true
   warm_on_start: true
 

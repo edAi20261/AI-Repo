@@ -15,6 +15,14 @@ import unicodedata
 _TATWEEL = "ـ"                        # Arabic kashida; decorative, no meaning
 _MULTISPACE = re.compile(r"[ \t ]+")
 _MULTINEWLINE = re.compile(r"\n{3,}")
+_MARK_RUN = 5
+_REPEATED_MARK = re.compile(rf"([^\w\s]|_)\1{{{_MARK_RUN},}}")
+
+
+def collapse_repeated_marks(text: str) -> str:
+    if not text:
+        return ""
+    return _REPEATED_MARK.sub(lambda m: m.group(1) * _MARK_RUN, text)
 
 
 def normalise_text(
@@ -33,6 +41,7 @@ def normalise_text(
         text = unicodedata.normalize("NFKC", text)
     if strip_tatweel:
         text = text.replace(_TATWEEL, "")
+    text = collapse_repeated_marks(text)
     if collapse_whitespace:
         text = _MULTISPACE.sub(" ", text)
         text = _MULTINEWLINE.sub("\n\n", text)

@@ -89,10 +89,13 @@ class LocalSentenceTransformerEmbedder(Embedder):
         normalize: bool = True,
         batch_size: int = 64,
         device: str | None = None,
+        max_seq_length: int | None = None,
     ) -> None:
         from sentence_transformers import SentenceTransformer  # lazy, heavy
 
         self._model = SentenceTransformer(model_name, device=device)
+        if max_seq_length:
+            self._model.max_seq_length = max_seq_length
         self._tokenizer = self._model.tokenizer
         # The fast tokenizer refuses a second thread while one is inside it
         # ("Already borrowed"), and encode() goes through the same tokenizer.
@@ -166,6 +169,7 @@ def _build_embedder(provider: str, emb: dict) -> Embedder:
             emb.get("model") or "BAAI/bge-m3",
             normalize=emb.get("normalize", True),
             batch_size=emb.get("batch_size", 64),
+            max_seq_length=emb.get("max_seq_length"),
         )
     raise NotImplementedError(
         f"Embedding provider {provider!r} not wired yet; use huggingface or hash."
@@ -176,7 +180,7 @@ def _cache_key(config: Config) -> tuple:
     emb = config.embeddings
     return ((emb.get("provider") or "huggingface").lower(), emb.get("model"),
             bool(emb.get("normalize", True)), emb.get("batch_size", 64),
-            emb.get("dimensions") or 1024)
+            emb.get("max_seq_length"), emb.get("dimensions") or 1024)
 
 
 def loaded_embedder(config: Config) -> Embedder | None:
