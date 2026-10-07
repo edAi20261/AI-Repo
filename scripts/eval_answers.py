@@ -62,7 +62,9 @@ class Judgement(BaseModel):
         description="True if a student who asked this would consider it answered.")
     supported_by_sources: bool = Field(
         description="True if every factual claim is supported by the passages given. "
-                    "True when no passages were given AND the reply makes no "
+                    "A part the reply itself says goes beyond the lesson is not held "
+                    "to the passages, but it must be correct and about the same "
+                    "subject. True when no passages were given AND the reply makes no "
                     "syllabus claims (a greeting, or a refusal to answer).")
     declines: bool = Field(
         description="True if the reply says it cannot answer from the syllabus.")

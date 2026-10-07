@@ -160,6 +160,11 @@ def _allowed_tasks(config, pathway: str) -> list[str]:
     return config.get(f"agent.pathways.{pathway}.tasks") or default_tasks
 
 
+def capabilities(config, pathway: Optional[str]) -> str:
+    """What the tutor can do for this user, for a reply that offers or invites help."""
+    return _allowed_descriptions(_allowed_tasks(config, pathway or "student"))
+
+
 def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
                    pending: Optional[PendingAssessment] = None) -> str:
     lines = []
@@ -191,6 +196,9 @@ def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
                                  f"use only {', '.join(allowed)}")
             if not (task.query or "").strip():
                 raise ValueError(f"the {task.type} task needs a query that names what it is about")
+        if reading.continues_previous and reading.scope_fit == "outside":
+            raise ValueError("a message that continues the tutor's last answer is about what "
+                             "that answer taught, so scope_fit cannot be outside")
         words = " ".join(reading.student_words.split())
         if not words or words not in " ".join(message.split()):
             raise ValueError("student_words must be the student's own words, copied exactly "
@@ -295,6 +303,7 @@ def build_understand(config, llm, subjects: SubjectDirectory):
             "turn_kind": kind, "tasks": [t.type for t in reading.tasks],
             "continues_previous": reading.continues_previous,
             "changes_subject": reading.changes_subject,
+            "approach": reading.approach, "scope_fit": reading.scope_fit,
             "language_request": reading.language_request.action,
             **decision.log_fields()})
         return {
@@ -324,12 +333,11 @@ def build_converse(config, llm, voices: Voices):
         language = state.get("language", "en")
         if llm is None:
             return {"response": NOTHING_PRODUCED, "reply_body": NOTHING_PRODUCED}
-        allowed = _allowed_tasks(config, state["pathway"])
         prompt = CONVERSE_PROMPT.render(
             language=language,
             role=state["pathway"],
             tone=(state.get("style") or Style()).tone,
-            capabilities="\n" + _allowed_descriptions(allowed),
+            capabilities="\n" + capabilities(config, state["pathway"]),
             history=state.get("history") or "",
             message=state.get("message", ""),
             voice=voices.render(state.get("style"), state.get("message", "")),
@@ -568,6 +576,8 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
                 "length": t["length"],
                 "topic_ids": [r.topic_id for r in resolved],
                 "topic_labels": [r.label for r in resolved],
+                "approach": reading.approach,
+                "scope_fit": reading.scope_fit,
             }
             # Honour a user-requested count/types on an assessment; else assessment_sg
             # uses the config default type_mix. A requested count is capped to the
@@ -1069,6 +1079,7 @@ def build_persist(config, store: ConversationStore, window: HistoryWindow, summa
             "subject_id": state.get("subject_id"),
             "tasks": [t.get("type") for t in (state.get("tasks") or [])],
             "grounded": any(a.get("grounded", False) for a in answers),
+            "basis": [a.get("basis") for a in answers if a.get("basis")],
             "citations": len(state.get("published_citations") or []),
             "cited": [
                 f"{c.lesson_title or c.lecture_id}" for c in

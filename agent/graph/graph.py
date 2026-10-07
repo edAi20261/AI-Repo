@@ -76,6 +76,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
     scope_ratio = config.get("agent.scope.relevance_ratio", retrieval.DEFAULT_SCOPE_RATIO)
     with_figure = config.get("agent.explain_figures", False)
     expand = config.get("agent.expand") or {}
+    beyond_lessons = bool(config.get("agent.beyond_lessons", True))
 
     def adapter(payload) -> dict:                    # payload = {task, ...shared context}
         task = payload["task"]
@@ -111,6 +112,11 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
             "expand_anchors": expand.get("anchors", 0),
             "expand_window": expand.get("window", 0),
             "context_limit": expand.get("context_limit", k),
+            "approach": params.get("approach", "direct"),
+            "scope_fit": params.get("scope_fit", "topic"),
+            "subject_name": facts.name,
+            "capabilities": nodes.capabilities(config, payload.get("pathway")),
+            "beyond_lessons": beyond_lessons,
         })
         # (2) the subgraph ran; `result` is its private output. (3) TRANSLATE OUT below.
         # Tag citations with their task so compose can renumber [n] globally across a
@@ -127,6 +133,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
                 "text": result.get("explanation", ""),
                 "topic_labels": params.get("topic_labels", []),
                 "grounded": result.get("grounded", True),
+                "basis": result.get("basis", "lesson"),
             }],
             "citations": citations,
             "prereq_topics": result.get("prereq_topics", []),

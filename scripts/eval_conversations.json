@@ -6,7 +6,8 @@
     "",
     "expect: answers   -> grounded, cites the syllabus, and stays on `about`",
     "        remembers -> still knows something only an earlier turn established",
-    "        refuses   -> no citations; the syllabus does not cover it",
+    "        teaches   -> taught inside the subject, from the lessons or beyond them",
+    "        refuses   -> declined; the question is outside the subject",
     "        chats     -> answered without searching at all",
     "        any       -> any non-empty reply; only its language is checked",
     "about:  a word the answer must contain, which is how continuity is checked",
@@ -44,6 +45,40 @@
           "say": "I feel that I still don't understand. Would you explain to me in layman's language, in a simpler way, maybe using bullets or making it easier for me to understand?",
           "expect": "answers",
           "about": "evaporat",
+          "language": "en"
+        }
+      ]
+    },
+    {
+      "name": "a student who needs it from the very beginning",
+      "turns": [
+        {
+          "say": "What is a watershed?",
+          "expect": "answers",
+          "about": "watershed",
+          "language": "en"
+        },
+        {
+          "say": "I didn't get that at all.",
+          "expect": "teaches",
+          "about": "water",
+          "language": "en"
+        },
+        {
+          "say": "Je n'ai toujours pas compris, tu peux m'expliquer plus simplement ?",
+          "expect": "teaches",
+          "about": "water",
+          "language": "en"
+        },
+        {
+          "say": "Can you start from the very beginning, step by step? Where does the water even come from?",
+          "expect": "teaches",
+          "about": "water",
+          "language": "en"
+        },
+        {
+          "say": "Who won the World Cup in 2022?",
+          "expect": "refuses",
           "language": "en"
         }
       ]
@@ -143,7 +178,8 @@
       "turns": [
         {
           "say": "What is photosynthesis?",
-          "expect": "refuses",
+          "expect": "teaches",
+          "about": "photosynth",
           "language": "en"
         },
         {

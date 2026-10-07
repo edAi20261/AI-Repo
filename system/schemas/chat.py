@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from pydantic import Field
 
+from agent.models import AnswerBasis
 from agent.scope import StudyScope
 from shared.metering import Meter
 
@@ -123,6 +124,12 @@ class ChatResponse(Schema):
         default_factory=list,
         description="Sources the reply cites, numbered to match its [n] markers.",
     )
+    answer_basis: list[AnswerBasis] = Field(
+        default_factory=list,
+        description=("Where each explanation or summary in the reply came from: lesson "
+                     "(it cites the student's lessons), beyond (it teaches, inside the "
+                     "subject, what the lessons leave out) or declined."),
+    )
     persona_version: Optional[int] = Field(
         default=None,
         description="The version of the teacher's persona the reply was written in, if any.")
@@ -143,6 +150,7 @@ class ChatResponse(Schema):
             prereq_topics=[_as_dict(topic) for topic in state.get("prereq_topics") or []],
             citations=[SourceRef.from_citation(c)
                        for c in state.get("published_citations") or []],
+            answer_basis=[a["basis"] for a in state.get("answers") or [] if a.get("basis")],
             persona_version=_persona_version(state.get("style")),
         )
 

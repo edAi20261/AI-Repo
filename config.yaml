@@ -412,6 +412,15 @@ agent:
                                # recover what the dense stage never returned
     rrf_k: 60                  # Cormack et al.'s published constant
 
+  # Whether an explanation may teach what the lessons leave out, when the turn
+  # reading places the question inside the subject: the basics a lesson assumes,
+  # an earlier step, a fuller worked example. The tutor says that part goes
+  # beyond the lesson and cites nothing for it; a question outside the subject is
+  # still declined, and a summary never leaves the material. false restores the
+  # lesson-only tutor, which told a maths student asking for subtraction "from the
+  # very beginning" that their lessons had nothing on it.
+  beyond_lessons: true
+
   scope:
     # When the student has selected one lesson, the turn answers from that lesson
     # or refuses by name. The similarity floor cannot make that call: filtered to

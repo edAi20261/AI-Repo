@@ -24,6 +24,14 @@ GradeKind = Literal["quiz", "homework"]
 VisualKind = Literal["chart", "mindmap", "math", "geometry", "flashcards", "pdf",
                      "image", "slides", "figure"]
 VISUAL_KINDS = get_args(VisualKind)
+# How a student wants this answer taught, and how the question sits against the
+# subject in force. The model reads both from meaning, in any language; the
+# teaching strategy each one triggers lives in prompts.TEACHING_APPROACHES.
+TeachingApproach = Literal["direct", "simpler", "deeper", "example", "step_by_step",
+                           "another_way"]
+ScopeFit = Literal["topic", "foundation", "outside"]
+AnswerBasis = Literal["lesson", "beyond", "declined"]
+TEACHING_APPROACHES = get_args(TeachingApproach)
 
 QUESTION_TYPES = get_args(QuestionType)   # design Q2 request/question types
 DIFFICULTIES = get_args(Difficulty)
@@ -376,6 +384,14 @@ class TurnUnderstanding(_ReadsNullWords):
     changes_subject: bool = Field(
         default=False,
         description="true when the message moves to a different school subject.")
+    approach: TeachingApproach = Field(
+        default="direct",
+        description="How the student wants this answer taught. another_way: they did not "
+                    "follow the last explanation and named no particular form.")
+    scope_fit: ScopeFit = Field(
+        default="topic",
+        description="topic: about the subject in force; foundation: the basics or "
+                    "prerequisites needed to follow it; outside: about neither.")
     message_language: Optional[str] = Field(
         default=None, description="The language the student's own words are written in.")
     language_request: LanguageRequest = Field(default_factory=LanguageRequest)
