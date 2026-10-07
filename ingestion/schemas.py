@@ -105,6 +105,32 @@ class TopicList(BaseModel):
     topics: list[TopicItem] = Field(default_factory=list)
 
 
+# --- lessons -----------------------------------------------------------------
+
+class LessonItem(BaseModel):
+    title: str = Field(description="The lesson's title as printed in the book.")
+    unit_number: Optional[int] = Field(
+        default=None, description="The unit it belongs to, when the book numbers units.")
+    start_page: int = Field(description="The outline page number where the lesson starts.")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _clamp_title(cls, v):
+        return " ".join(str(v or "").split())[:255]
+
+    @field_validator("unit_number", mode="before")
+    @classmethod
+    def _unit_or_none(cls, v):
+        try:
+            return int(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+
+class LessonBreakdown(BaseModel):
+    lessons: list[LessonItem] = Field(default_factory=list)
+
+
 # --- dependencies ----------------------------------------------------------
 
 class DependencyItem(BaseModel):

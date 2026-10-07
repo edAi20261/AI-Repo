@@ -41,6 +41,7 @@ from shared.logging import setup_logging
 from shared.metering import start_meter
 
 from . import get_config
+from .books import LessonCatalog, detect_lessons, file_under_lessons, lesson_states
 from .context import PipelineContext
 from .graph import run_stages
 from .lesson import add_lesson_arguments, apply_lesson_overrides, lesson_state, report
@@ -141,6 +142,9 @@ def _cmd_prepare(args, config) -> int:
     ctx = PipelineContext.build(config)
     meter = start_meter()
     state = run_stages(state, ctx, ("extract", "chunk"))
+    if state.get("book_id"):
+        state = file_under_lessons(state, detect_lessons(state, config))
+        _summarise_lessons(state)
     texts = embedding_texts(state.get("chunks", []), config)
     _dump(args.out, {
         "format": FORMAT,
@@ -240,13 +244,83 @@ def _cmd_finish(args, config) -> int:
     else:
         state.setdefault("stats", {})["embed"] = {"embedded": 0}
     ctx = PipelineContext.build(config)
-    state = run_stages(state, ctx, ("topics", "dependencies", "index"))
+    if state.get("lessons"):
+        state = _finish_book(state, ctx, config)
+    else:
+        state = run_stages(state, ctx, ("topics", "dependencies", "index"))
     cost = meter.as_dict()
     state.setdefault("stats", {})["cost"] = cost
     state["stats"]["cost_of_prepare"] = prepared.get("cost")
     report(state["lecture_id"], state)
     _summarise(state)
-    return 0
+    return 1 if any(r["status"] == "failed" for r in state.get("lesson_results", [])) else 0
+
+
+_STAGES = ("topics", "dependencies", "index")
+
+
+def _finish_book(state: dict, ctx: PipelineContext, config) -> dict:
+    catalog = LessonCatalog(config)
+    catalog.register(subject_id=state["subject_id"], book_title=state.get("lesson_title"),
+                     lessons=state["lessons"])
+    results: list[dict] = []
+    totals = {"chunks_written": 0, "figures_written": 0, "points_upserted": 0}
+    topics = edges = 0
+    for part in lesson_states(state):
+        try:
+            done = run_stages(part, ctx, _STAGES)
+            status = done.get("ingestion_status") or "ready"
+            errors = done.get("errors", [])
+        except Exception as error:
+            logger.exception("lesson failed", extra={"lecture_id": part["lecture_id"]})
+            done, status, errors = part, "failed", [f"{type(error).__name__}: {error}"]
+        catalog.finished(part["lecture_id"], status=status, errors=errors,
+                         version=part.get("version", 1))
+        stats = done.get("stats", {})
+        for key in totals:
+            totals[key] += stats.get("index", {}).get(key, 0)
+        topics += stats.get("topics", {}).get("extracted", 0)
+        edges += stats.get("dependencies", {}).get("edges", 0)
+        results.append({"lesson_id": part["lecture_id"], "title": part["lesson_title"],
+                        "status": status, "errors": errors,
+                        "chunks": stats.get("index", {}).get("chunks_written", 0),
+                        "topics": stats.get("topics", {}).get("extracted", 0)})
+    stale = catalog.stale(state["book_id"], len(state["lessons"]))
+    for lesson_id in stale:
+        ctx.chunk_store.delete_lecture(lesson_id)
+        ctx.vector_store.delete_lecture(lesson_id)
+    catalog.archive(stale)
+    stats = state.setdefault("stats", {})
+    stats["index"] = totals
+    stats["topics"] = {"extracted": topics}
+    stats["dependencies"] = {"edges": edges}
+    stats["lessons"] = {"lessons": len(results), "archived": len(stale)}
+    state["lesson_results"] = results
+    state["ingestion_status"] = (
+        "failed" if any(r["status"] == "failed" for r in results) else "ready")
+    return state
+
+
+def _summarise_lessons(state: dict) -> None:
+    lessons = state.get("lessons", [])
+    target = os.environ.get("GITHUB_STEP_SUMMARY")
+    print(json.dumps({"lessons": lessons}, ensure_ascii=False))
+    if not target:
+        return
+    counts: dict[str, int] = {}
+    for chunk in state.get("chunks", []):
+        counts[chunk.lecture_id] = counts.get(chunk.lecture_id, 0) + 1
+    lines = [f"## {state.get('lesson_title') or state['lecture_id']}: "
+             f"{len(lessons)} lessons found", "",
+             "| # | Lesson | Unit | Pages | Chunks | Lesson ID |",
+             "|---|---|---|---|---|---|"]
+    lines += [f"| {n} | {lsn['title']} | {lsn['unit_number'] or ''} | "
+              f"{lsn['page_from']}-{lsn['page_to']} | {counts.get(lsn['lesson_id'], 0)} | "
+              f"`{lsn['lesson_id']}` |" for n, lsn in enumerate(lessons, 1)]
+    if not lessons:
+        lines.append("No lessons were found; the book would be indexed as one.")
+    with open(target, "a", encoding="utf-8") as sink:
+        sink.write("\n".join(lines) + "\n")
 
 
 def _summarise(state: dict) -> None:
@@ -265,7 +339,7 @@ def _summarise(state: dict) -> None:
         "",
         "| | |",
         "|---|---|",
-        f"| Lecture ID | `{state['lecture_id']}` |",
+        f"| {'Book ID' if state.get('book_id') else 'Lecture ID'} | `{state['lecture_id']}` |",
         f"| Subject ID | `{state.get('subject_id')}` |",
         f"| Pages | {extract.get('pages', 0)} |",
         f"| Unreadable pages | {extract.get('unreadable', 0)} |",
@@ -274,6 +348,13 @@ def _summarise(state: dict) -> None:
         f"| Topics | {stats.get('topics', {}).get('extracted', 0)} |",
         f"| Prerequisite edges | {stats.get('dependencies', {}).get('edges', 0)} |",
     ]
+    results = state.get("lesson_results", [])
+    if results:
+        lines += ["", f"### {len(results)} lessons", "",
+                  "| # | Lesson | Lesson ID | Chunks | Topics | Status |",
+                  "|---|---|---|---|---|---|"]
+        lines += [f"| {n} | {r['title']} | `{r['lesson_id']}` | {r['chunks']} | "
+                  f"{r['topics']} | `{r['status']}` |" for n, r in enumerate(results, 1)]
     for error in state.get("errors", []):
         lines.append(f"\n> {error}")
     with open(target, "a", encoding="utf-8") as sink:

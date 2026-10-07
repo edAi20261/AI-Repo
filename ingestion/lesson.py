@@ -72,33 +72,49 @@ WHERE l.id = %s
 """
 
 
+_SUBJECT_SQL = """
+SELECT id::text, NULL, name, language, grade_level
+FROM academics.subjects
+WHERE id = %s
+"""
+
+
 class LessonNotFound(LookupError):
     pass
 
 
-def _lesson_of(config, lecture_id: str) -> dict | None:
+class SubjectNotFound(LookupError):
+    pass
+
+
+def _row_of(config, sql: str, key: str, kind: str, missing: type[LookupError]):
     from shared.postgres import connect
 
     try:
-        uuid.UUID(str(lecture_id).strip())
+        uuid.UUID(str(key).strip())
     except ValueError:
-        raise LessonNotFound(
-            f"{lecture_id!r} is not a lesson id (content.lessons.id is a UUID)") from None
+        raise missing(f"{key!r} is not a {kind} id (a UUID)") from None
     try:
         with connect(config) as conn, conn.cursor() as cur:
-            cur.execute(_LESSON_SQL, (lecture_id,))
+            cur.execute(sql, (key,))
             row = cur.fetchone()
     except Exception:
-        logger.warning("lesson lookup unavailable", extra={"lecture_id": lecture_id},
+        logger.warning("%s lookup unavailable", kind, extra={"lookup_id": key},
                        exc_info=True)
         return None
     if row is None:
-        raise LessonNotFound(
-            f"No lesson {lecture_id} in content.lessons. Every ingested book belongs to a "
-            "lesson: pass the lesson's id (--lecture-id, or lesson_id in the workflow).")
+        raise missing(f"No {kind} {key} in the database.")
     subject_id, title, name, language, grade = row
     return {"subject_id": subject_id, "title": title, "name": name,
             "language": language, "grade_level": grade}
+
+
+def _lesson_of(config, lecture_id: str) -> dict | None:
+    return _row_of(config, _LESSON_SQL, lecture_id, "lesson", LessonNotFound)
+
+
+def _subject_row(config, subject_id: str) -> dict | None:
+    return _row_of(config, _SUBJECT_SQL, subject_id, "subject", SubjectNotFound)
 
 
 def _adopt_lesson(args, lesson: dict) -> None:
@@ -187,20 +203,25 @@ def lesson_state(args, config):
     part of this state, and two machines that disagreed about it would read the
     same book two ways.
     """
-    if not args.lecture_id:
+    book = not args.lecture_id
+    if book:
         fill_in_identity(args)
-    lesson = _lesson_of(config, args.lecture_id)
-    if lesson:
-        _adopt_lesson(args, lesson)
-    fill_in_identity(args)
+        facts = _subject_row(config, args.subject_id)
+        if facts:
+            args.grade = args.grade or facts["grade_level"]
+    else:
+        facts = _lesson_of(config, args.lecture_id)
+        if facts:
+            _adopt_lesson(args, facts)
+        fill_in_identity(args)
     logger.info("book identity", extra={"lecture_id": args.lecture_id,
                                         "subject_id": args.subject_id,
                                         "lesson_title": args.lesson_title})
-    subject = lesson or _subject_of(config, args.subject_id)
+    subject = facts or _subject_of(config, args.subject_id)
     if not args.lesson_title:
         logger.warning("no --lesson-title: citations from this lecture will be labelled "
                        "by section headings only", extra={"lecture_id": args.lecture_id})
-    return new_state(
+    state = new_state(
         lecture_id=args.lecture_id,
         subject_id=args.subject_id,
         source_uri=to_uri(args.source),
@@ -213,16 +234,19 @@ def lesson_state(args, config):
         language_hint=args.language or subject.get("language"),
         subject_is_math=args.subject_is_math,
     )
+    if book:
+        state["book_id"] = args.lecture_id
+    return state
 
 
 def add_lesson_arguments(parser: argparse.ArgumentParser) -> None:
     """The arguments that describe one lesson, for every command that takes one."""
     parser.add_argument("--lecture-id",
-                        help="content.lessons.id; the subject, title, grade and language "
-                             "are read from the lesson")
+                        help="content.lessons.id, to ingest one lesson; leave it out for a "
+                             "book, which is split into its lessons under --subject-id")
     parser.add_argument("--subject-id",
-                        help="the subject; derived from --subject-name (or the title) when "
-                             "left out. In backfill mode, a filter")
+                        help="academics.subjects.id the book belongs to. In backfill mode, "
+                             "a filter")
     parser.add_argument("--grade", default=None, help="grade level of the subject")
     parser.add_argument("--lesson-title", default=None,
                         help="the book's title; from the PDF or its file name when left out")

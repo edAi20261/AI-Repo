@@ -541,6 +541,89 @@ def test_a_book_run_across_machines_ends_in_the_index_one_machine_would_build(
     assert finished["ingestion_status"] == alone["ingestion_status"] == "ready"
 
 
+def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
+        scanned_book, wired, monkeypatch, tmp_path):
+    import ingestion.context as context
+    import ingestion.distributed as distributed
+    import ingestion.lesson as lesson
+    from ingestion.books import lessons_from
+    from ingestion.schemas import LessonBreakdown, LessonItem
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost")
+    monkeypatch.setenv("QDRANT_URL", "dryrun")
+    for key in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+                "GOOGLE_API_KEY", "MOONSHOT_API_KEY", "S3_BUCKET"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("LOCAL_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+
+    config = wired.config
+    config._data["embeddings"]["provider"] = "hash"
+    monkeypatch.setattr(distributed, "get_config", lambda: config)
+    monkeypatch.setattr(context, "get_vision_client", lambda cfg: wired.ctx.vision)
+    subject = "8c2f0a10-0001-4a00-9000-00000000000a"
+    monkeypatch.setattr(lesson, "_subject_row", lambda cfg, sid: {
+        "subject_id": sid, "title": None, "name": "English", "language": "en",
+        "grade_level": "Grade 7"})
+
+    def split(state, cfg):
+        breakdown = LessonBreakdown(lessons=[
+            LessonItem(title="Unit 1 Lesson 1", unit_number=1, start_page=1),
+            LessonItem(title="Unit 1 Lesson 2", unit_number=1, start_page=6)])
+        return lessons_from(breakdown, book_id=state["lecture_id"], first_page=1,
+                            last_page=11)
+
+    monkeypatch.setattr(distributed, "detect_lessons", split)
+
+    class _Catalog:
+        registered: list = []
+        settled: list = []
+
+        def __init__(self, cfg):
+            pass
+
+        def register(self, *, subject_id, book_title, lessons):
+            _Catalog.registered.append((subject_id, [lsn["title"] for lsn in lessons]))
+
+        def finished(self, lesson_id, *, status, errors, version):
+            _Catalog.settled.append((lesson_id, status))
+
+        def stale(self, book_id, kept):
+            return []
+
+        def archive(self, lesson_ids):
+            pass
+
+    monkeypatch.setattr(distributed, "LessonCatalog", _Catalog)
+
+    book = scanned_book(11)
+    args = ["--subject-id", subject]
+    assert distributed.main(["read", book, *args, "--shard", "0", "--of", "1",
+                             "--workers", "2"]) == 0
+    state_file = tmp_path / "state" / "state.pkl"
+    assert distributed.main(["prepare", book, *args, "--out", str(state_file)]) == 0
+    for shard in range(2):
+        assert distributed.main(["embed", "--state", str(state_file), "--shard", str(shard),
+                                 "--of", "2", "--out",
+                                 str(tmp_path / "vectors" / f"vectors-{shard}.pkl")]) == 0
+    finished = {}
+    monkeypatch.setattr(distributed, "report", lambda lecture_id, state: finished.update(state))
+    assert distributed.main(["finish", "--state", str(state_file),
+                             "--vectors", str(tmp_path / "vectors")]) == 0
+
+    lessons = finished["lessons"]
+    assert _Catalog.registered == [(subject, ["Unit 1 Lesson 1", "Unit 1 Lesson 2"])]
+    assert _Catalog.settled == [(lsn["lesson_id"], "ready") for lsn in lessons]
+    for chunk in finished["chunks"]:
+        owner = lessons[0] if chunk.page_from < 6 else lessons[1]
+        assert chunk.lecture_id == owner["lesson_id"]
+        assert chunk.chunk_id
+    results = finished["lesson_results"]
+    assert [r["lesson_id"] for r in results] == [lsn["lesson_id"] for lsn in lessons]
+    assert all(r["chunks"] for r in results)
+    assert sum(r["chunks"] for r in results) == len(finished["chunks"])
+    assert finished["book_id"] not in {lsn["lesson_id"] for lsn in lessons}
+
+
 # --- a book with nothing typed about it -----------------------------------------------
 
 def _lesson_args(*argv):
@@ -616,13 +699,22 @@ def test_a_book_takes_its_subject_title_and_language_from_its_lesson(
     assert (state["subject_name"], state["language_hint"]) == ("English", "en")
 
 
-def test_a_book_with_no_lesson_is_refused_before_any_page_is_read(
+def test_a_book_under_a_subject_that_does_not_exist_is_refused_before_any_page_is_read(
         scanned_book, fake_postgres):
-    from ingestion.lesson import LessonNotFound
+    from ingestion.lesson import SubjectNotFound
 
     fake_postgres(fetchone=[None])
-    with pytest.raises(LessonNotFound):
-        _lesson_state(scanned_book(2))
+    with pytest.raises(SubjectNotFound):
+        _lesson_state(scanned_book(2), "--subject-id", "8c2f0a10-0001-4a00-9000-00000000000a")
+
+
+def test_a_book_takes_its_grade_and_language_from_its_subject(scanned_book, fake_postgres):
+    subject = "8c2f0a10-0001-4a00-9000-00000000000a"
+    fake_postgres(fetchone=[(subject, None, "English", "en", "Grade 7")])
+    state = _lesson_state(scanned_book(2), "--subject-id", subject)
+    assert state["subject_id"] == subject
+    assert state["book_id"] == state["lecture_id"]
+    assert (state["subject_name"], state["language_hint"]) == ("English", "en")
 
 
 def test_a_lesson_lookup_nobody_can_reach_falls_back_to_the_typed_ids(

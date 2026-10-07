@@ -192,6 +192,8 @@ class IngestionState(TypedDict, total=False):
     dependencies: list[dict[str, Any]]
     stats: dict[str, Any]
     errors: list[str]
+    book_id: str
+    lessons: list[dict[str, Any]]
 
 
 def new_state(

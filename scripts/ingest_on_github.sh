@@ -6,8 +6,8 @@
 #
 # books.txt is one book per line: its link (a Google Drive link shared as
 # "Anyone with the link", an https URL or an s3:// URI), a space, and the id of
-# the lesson it belongs to. Blank lines and lines starting with # are skipped.
-# The subject, title, grade and language come from the lesson.
+# the subject it belongs to. Blank lines and lines starting with # are skipped.
+# Each book is split into its lessons, created under that subject.
 #
 # Needs the GitHub CLI (https://cli.github.com), logged in once with
 # `gh auth login` as someone who can run workflows in this repository.
@@ -26,13 +26,13 @@ while IFS= read -r line || [ -n "${line:-}" ]; do
   line="$(printf '%s' "$line" | tr -d '\r' | xargs)"
   case "$line" in ""|\#*) continue;; esac
   link="${line%% *}"
-  lesson="${line##* }"
-  if [ "$link" = "$lesson" ]; then
-    echo "skipped  $link (no lesson id after the link)" >&2
+  subject="${line##* }"
+  if [ "$link" = "$subject" ]; then
+    echo "skipped  $link (no subject id after the link)" >&2
     continue
   fi
-  gh workflow run ingest-book.yml --ref "${INGEST_REF:-main}" -f source="$link" -f lesson_id="$lesson"
-  echo "started  $link -> lesson $lesson"
+  gh workflow run ingest-book.yml --ref "${INGEST_REF:-main}" -f source="$link" -f subject_id="$subject"
+  echo "started  $link -> subject $subject"
   started=$((started + 1))
 done < "$list"
 

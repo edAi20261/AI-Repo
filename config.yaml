@@ -40,6 +40,7 @@ llm:
     # answers students and stays on OpenRouter.
     extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0 }
     derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0 }
+    split_lessons:   { provider: vertex, model: google/gemini-2.5-pro, temperature: 0.0, max_tokens: 8000 }
     understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
     converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }
     conversation_summary: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 1200 }
@@ -190,6 +191,8 @@ vector_store:
     ef_construct: 128
 
 ingestion:
+  books:
+    lesson_source: ministry_official
   source:
     timeout_seconds: 120
     max_bytes: 209715200

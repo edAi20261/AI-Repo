@@ -81,18 +81,28 @@ password, over SSL), or run the workflow on a machine you control (a GitHub
    with the link**. Copy the link.
 2. In the repository: **Actions** → **Ingest a book** (left side) → **Run
    workflow**.
-3. Paste the link, and the ID of the lesson the book belongs to
-   (`content.lessons.id`). Every ingested book belongs to a lesson; a run whose
-   lesson does not exist stops on its first step and says so.
+3. Paste the link, and the ID of the subject the book belongs to
+   (`academics.subjects.id`). A run whose subject does not exist stops on its
+   first step and says so. Tick **Preview only** to see the lessons the book
+   will be split into, on the run's summary page, without writing anything;
+   run it again unticked to ingest. The second run reuses every page the first
+   one read.
 4. **Run workflow**. It appears in the list within a few seconds.
 
-Everything else comes from the lesson or the book:
+Everything else comes from the subject or the book:
 
 - **Language** — from the words on its pages, once they are read. A book is
   Arabic when most of its letters are, so an English workbook with Arabic
   glosses stays English.
-- **Title, subject and grade** — from the lesson. Ingesting a book into the
-  same lesson again replaces its old copy rather than adding a second one.
+- **Lessons** — the book is split into the lessons it teaches, from its table
+  of contents and the headings on its pages. Each lesson becomes its own row in
+  `content.lessons` under the subject (as a draft), and every chunk, figure and
+  topic is filed under the lesson its page belongs to. The run's summary lists
+  each lesson with its ID.
+- **Grade** — from the subject.
+- **Book ID** — from the file's bytes. Uploading the same PDF again updates the
+  same lessons rather than adding a second set; lessons a new split no longer
+  has are archived.
 
 When it finishes, the summary at the top of the run shows the status, the IDs
 it used, pages, unreadable pages, figures, chunks, topics and prerequisite
@@ -101,7 +111,7 @@ links.
 ### Several books at once
 
 With the GitHub CLI installed and logged in (`gh auth login`), put one book per
-line in `books.txt` — its link, a space, and its lesson ID — and run:
+line in `books.txt` — its link, a space, and its subject ID — and run:
 
 ```
 scripts/ingest_on_github.sh books.txt

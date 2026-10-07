@@ -31,11 +31,15 @@ on:
       source:
         description: "Link to the book (Google Drive link shared as 'Anyone with the link')"
         required: true
-      lesson_id:
-        description: "Lesson ID the book belongs to (content.lessons.id)"
+      subject_id:
+        description: "Subject ID the book belongs to (academics.subjects.id). Its lessons are created under it."
         required: true
+      preview:
+        description: "Preview only: read the book and list its lessons, write nothing"
+        type: boolean
+        default: false
 
-run-name: "Ingest: ${{ inputs.lesson_id }} ${{ inputs.source }}"
+run-name: "Ingest: ${{ inputs.subject_id }} ${{ inputs.source }}"
 
 # One run per book at a time: two runs of one book would each replace the
 # other's chunks in the index.
@@ -59,10 +63,10 @@ env:
   BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
   AI_WEBHOOK_SHARED_SECRET: ${{ secrets.AI_WEBHOOK_SHARED_SECRET }}
   # The link, as a variable: it is text a person pasted, and text pasted into a
-  # script is a script. The subject, title, grade and language come from the
-  # lesson.
+  # script is a script. The grade and language come from the subject; the
+  # lessons are found in the book.
   SOURCE: ${{ inputs.source }}
-  LECTURE_ID: ${{ inputs.lesson_id }}
+  SUBJECT_ID: ${{ inputs.subject_id }}
   PYTHONUNBUFFERED: "1"
   TOKENIZERS_PARALLELISM: "false"
 
@@ -159,6 +163,7 @@ jobs:
 
   embed:
     needs: [plan, prepare, warm-model]
+    if: ${{ !inputs.preview }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -191,7 +196,7 @@ jobs:
   finish:
     needs: [prepare, embed]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-ingest
