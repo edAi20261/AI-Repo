@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Optional, Sequence
 
 from shared.llm import get_llm, llm_key_available
@@ -98,8 +98,8 @@ def _validator(first_page: int, last_page: int):
         if outside:
             raise ValueError(f"start pages {outside} are outside the book "
                              f"(pages {first_page}-{last_page})")
-        if any(b <= a for a, b in zip(starts, starts[1:])):
-            raise ValueError(f"start pages must rise in book order; got {starts}")
+        if any(b < a for a, b in zip(starts, starts[1:])):
+            raise ValueError(f"start pages must not go back in book order; got {starts}")
         if any(not item.title for item in items):
             raise ValueError("every lesson needs its title as printed in the book")
     return check
@@ -138,10 +138,13 @@ def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Le
 def lessons_from(breakdown: LessonBreakdown, *, book_id: str,
                  first_page: int, last_page: int) -> list[Lesson]:
     items = [(unit, item) for unit in breakdown.units for item in unit.lessons]
+    opening = items[0][1].start_page if items else first_page
     lessons: list[Lesson] = []
     for ordinal, (unit, item) in enumerate(items):
-        page_from = first_page if ordinal == 0 else item.start_page
-        page_to = items[ordinal + 1][1].start_page - 1 if ordinal + 1 < len(items) else last_page
+        start = item.start_page
+        page_from = first_page if start == opening else start
+        later = [other.start_page for _, other in items[ordinal + 1:] if other.start_page > start]
+        page_to = later[0] - 1 if later else last_page
         lessons.append(Lesson(
             lesson_id=lesson_id_for(book_id, ordinal), ordinal=ordinal, title=item.title,
             unit_number=unit.unit_number, unit_title=unit.title,
@@ -149,23 +152,29 @@ def lessons_from(breakdown: LessonBreakdown, *, book_id: str,
     return lessons
 
 
-def lesson_at(lessons: Sequence[Lesson], page: int) -> Lesson:
-    for lesson in lessons:
-        if lesson.page_from <= page <= lesson.page_to:
-            return lesson
-    return lessons[0] if page < lessons[0].page_from else lessons[-1]
+def lessons_at(lessons: Sequence[Lesson], page: int) -> list[Lesson]:
+    owners = [lesson for lesson in lessons if lesson.page_from <= page <= lesson.page_to]
+    if owners:
+        return owners
+    return [lessons[0] if page < lessons[0].page_from else lessons[-1]]
+
+
+def _chunk_for(chunk, lesson: Lesson):
+    return replace(chunk, lecture_id=lesson.lesson_id, lesson_title=lesson.label,
+                   lesson_order=lesson.ordinal, chunk_id=None,
+                   topic_ids=list(chunk.topic_ids))
 
 
 def file_under_lessons(state: IngestionState, lessons: Sequence[Lesson]) -> IngestionState:
     if not lessons:
         return state
-    for chunk in state.get("chunks", []):
-        lesson = lesson_at(lessons, chunk.page_from)
-        chunk.lecture_id = lesson.lesson_id
-        chunk.lesson_title = lesson.label
-        chunk.lesson_order = lesson.ordinal
-    for figure in state.get("figures", []):
-        figure.lecture_id = lesson_at(lessons, figure.page).lesson_id
+    state["chunks"] = [_chunk_for(chunk, lesson)
+                       for chunk in state.get("chunks", [])
+                       for lesson in lessons_at(lessons, chunk.page_from)]
+    state["figures"] = [replace(figure, lecture_id=lesson.lesson_id, chunk_id=None,
+                                topic_ids=list(figure.topic_ids))
+                        for figure in state.get("figures", [])
+                        for lesson in lessons_at(lessons, figure.page)]
     state["lessons"] = [{**asdict(lesson), "label": lesson.label} for lesson in lessons]
     return state
 

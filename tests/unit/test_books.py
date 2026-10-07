@@ -59,12 +59,12 @@ def test_chunks_and_figures_are_filed_under_the_lesson_their_page_is_in():
     owners = [c.lecture_id for c in state["chunks"]]
     assert owners == [lessons[0].lesson_id, lessons[1].lesson_id, lessons[1].lesson_id]
     assert state["chunks"][1].lesson_title == "Unit 1 — Lesson 2"
-    assert figure.lecture_id == lessons[1].lesson_id
+    assert [f.lecture_id for f in state["figures"]] == [lessons[1].lesson_id]
 
     parts = lesson_states(state)
     assert [p["lecture_id"] for p in parts] == [lsn.lesson_id for lsn in lessons]
     assert [len(p["chunks"]) for p in parts] == [1, 2]
-    assert parts[1]["figures"] == [figure]
+    assert parts[1]["figures"] == state["figures"]
     assert parts[1]["subject_id"] == SUBJECT
     assert "lessons" not in parts[0]
 
@@ -72,9 +72,29 @@ def test_chunks_and_figures_are_filed_under_the_lesson_their_page_is_in():
 def test_a_breakdown_that_does_not_fit_the_book_is_sent_back():
     check = _validator(1, 50)
     check(_breakdown(1, 10, 30))
-    for bad in (_breakdown(), _breakdown(10, 5), _breakdown(1, 70), _breakdown(3, 3)):
+    check(_breakdown(1, 10, 10))
+    for bad in (_breakdown(), _breakdown(10, 5), _breakdown(1, 70)):
         with pytest.raises(ValueError):
             check(bad)
+
+
+def test_two_lessons_taught_on_the_same_pages_each_get_those_pages():
+    lessons = lessons_from(_breakdown(1, 10, 20, 20), book_id=BOOK, first_page=1,
+                           last_page=30)
+    assert [(lsn.page_from, lsn.page_to) for lsn in lessons] == [
+        (1, 9), (10, 19), (20, 30), (20, 30)]
+    figure = Figure(lecture_id=BOOK, page=25, s3_uri="s3://b/f.png", bbox=(0, 0, 1, 1))
+    state = {"lecture_id": BOOK, "book_id": BOOK, "subject_id": SUBJECT,
+             "chunks": [_chunk(5), _chunk(22)], "figures": [figure]}
+    file_under_lessons(state, lessons)
+    owners = [c.lecture_id for c in state["chunks"]]
+    assert owners == [lessons[0].lesson_id, lessons[2].lesson_id, lessons[3].lesson_id]
+    assert state["chunks"][1] is not state["chunks"][2]
+    assert [f.lecture_id for f in state["figures"]] == [lessons[2].lesson_id,
+                                                         lessons[3].lesson_id]
+    parts = lesson_states(state)
+    assert [len(p["chunks"]) for p in parts] == [1, 0, 1, 1]
+    assert [len(p["figures"]) for p in parts] == [0, 0, 1, 1]
 
 
 def test_a_unit_listed_as_its_own_lesson_is_sent_back():

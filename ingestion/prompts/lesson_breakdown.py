@@ -37,8 +37,9 @@ lesson.
 Use the page numbers of the outline, not the numbers printed in the table of
 contents: the two can differ by the pages before the first lesson. When a page
 introduces two lessons at once, a lesson starts where its own content does,
-which is usually the next page for the second one. Pages before the first
-lesson belong to it.
+which is usually the next page for the second one. When the book teaches two
+lessons together on the same pages, give both the same start page. Pages
+before the first lesson belong to it.
 
 The book has {page_count} pages. Return JSON only, no prose. Fields:
 {schema}
