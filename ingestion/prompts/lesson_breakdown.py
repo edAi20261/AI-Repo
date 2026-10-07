@@ -35,11 +35,14 @@ When the book has no units, return one unit with an empty title holding every
 lesson.
 
 Use the page numbers of the outline, not the numbers printed in the table of
-contents: the two can differ by the pages before the first lesson. When a page
-introduces two lessons at once, a lesson starts where its own content does,
-which is usually the next page for the second one. When the book teaches two
-lessons together on the same pages, give both the same start page. Pages
-before the first lesson belong to it.
+contents: the two can differ by the pages before the first lesson.
+
+Some books teach lessons in groups: one part or section introduces two or more
+lessons at once, and its pages, exercises and tests are headed with all of them
+together ("Lessons 1 and 2"). Lessons taught together like that share their
+pages: give every lesson of the group the same start page, the page where the
+group starts. Only give a lesson a start page of its own when the book really
+teaches it on pages of its own. Pages before the first lesson belong to it.
 
 The book has {page_count} pages. Return JSON only, no prose. Fields:
 {schema}
