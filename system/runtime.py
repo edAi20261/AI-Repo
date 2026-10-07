@@ -33,7 +33,7 @@ from agent.persona.models import Exemplar, Persona
 from agent.persona.store import PersonaStore
 from agent.persona.voice import PersonaDirectory
 from agent.tagging import suggest_topics
-from agent.voice.service import Heard, hear, speak
+from agent.voice.service import Heard, ensure_speaking, hear, speak
 from agent.tools import get_latest_report
 from shared.config import Config
 from shared.metering import Meter, start_meter
@@ -157,6 +157,7 @@ class AgentRuntime:
                                   failed=_unheard)
 
     async def speak(self, text: str, language: str, *, billed_user_id: str) -> Metered:
+        ensure_speaking(self._config)
         return await self._billed(billed_user_id, Action.VOICE_SPEAK,
                                   partial(speak, text, language, config=self._config))
 

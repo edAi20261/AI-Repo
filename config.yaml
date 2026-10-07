@@ -608,13 +608,14 @@ voice:
     timeout_seconds: 60
     max_upload_bytes: 10000000
   speak:
+    enabled: false
     url: https://api.elevenlabs.io/v1/text-to-speech
     model: eleven_flash_v2_5
     api_key_env: ELEVENLABS_API_KEY
     provider_logging: true
     output_format: mp3_44100_128
     content_type: audio/mpeg
-    usd_per_million_chars: 50
+    usd_per_million_chars: 40
     max_chars: 3000
     script_max_growth: 4
     timeout_seconds: 30

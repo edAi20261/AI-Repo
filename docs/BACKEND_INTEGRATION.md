@@ -397,6 +397,12 @@ one answers anything itself:
 2. **Reply → speech.** A speaker button on a tutor reply sends that reply's text
    to `POST /ai/voice/speak` and plays the audio that comes back.
 
+**Reading aloud is off for now** (`voice.speak.enabled: false`), because it is most
+of the voice cost. `POST /ai/voice/speak` answers `503` with code
+`speaking_disabled`. Ask `GET /ai/voice/capabilities`, which returns
+`{ "transcribe": true, "speak": false }`, and show the speaker button only when
+`speak` is true. Turning it back on is a config change.
+
 **Key this service needs:** `ELEVENLABS_API_KEY`. One key covers both
 directions. Without it, both endpoints answer `503` with `details.missing`
 naming the variable.

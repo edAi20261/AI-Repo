@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from agent.credits import CreditCatalog, Credits, InMemoryCreditStore
-from agent.voice.service import cap, hear, script, speak
+from agent.voice.service import SpeakingDisabled, cap, hear, script, speak
 from agent.voice.spoken import has_notation, readable
 from shared import speech
 from shared.config import get_config
@@ -51,6 +51,12 @@ def config(monkeypatch):
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
     return get_config(reload=True)
+
+
+@pytest.fixture
+def speaking(config):
+    config._data["voice"]["speak"]["enabled"] = True
+    return config
 
 
 def _provider(monkeypatch, reply: Reply) -> Provider:
@@ -177,12 +183,12 @@ def test_voice_without_keys_says_what_is_missing(config, monkeypatch):
 
 # --- speaking -------------------------------------------------------------------
 
-def test_a_reply_is_spoken_in_its_own_language(config, monkeypatch):
+def test_a_reply_is_spoken_in_its_own_language(speaking, monkeypatch):
     """A multilingual voice left to guess reads an Arabic reply with English
     vowels; the reply's language is passed so it never has to guess."""
     provider = _provider(monkeypatch, Reply(content=b"ID3mp3"))
     writer = Writer("الناتج x أصغر من خمسة و صحيح")
-    spoken = speak("الناتج $x < 5$ و **صحيح** [1]", "ar", config=config, llm=writer)
+    spoken = speak("الناتج $x < 5$ و **صحيح** [1]", "ar", config=speaking, llm=writer)
     sent = provider.calls[0]
     assert spoken.audio == b"ID3mp3" and spoken.content_type == "audio/mpeg"
     assert sent["url"] == f"https://api.elevenlabs.io/v1/text-to-speech/{spoken.voice}"
@@ -192,10 +198,20 @@ def test_a_reply_is_spoken_in_its_own_language(config, monkeypatch):
     assert "**" not in writer.prompts[0] and "[1]" not in writer.prompts[0]
 
 
-def test_a_reply_with_nothing_to_say_is_refused(config, monkeypatch):
+def test_a_reply_with_nothing_to_say_is_refused(speaking, monkeypatch):
     _provider(monkeypatch, Reply(content=b"x"))
     with pytest.raises(UnprocessableError):
-        speak("📚\n[1] Lesson 4", "en", config=config)
+        speak("📚\n[1] Lesson 4", "en", config=speaking)
+
+
+def test_speaking_is_off_unless_a_deployment_turns_it_on(config, monkeypatch):
+    """Reading aloud is most of the voice bill, so it ships off. Off means no
+    provider call can happen, whoever calls."""
+    provider = _provider(monkeypatch, Reply(content=b"ID3mp3"))
+    with pytest.raises(SpeakingDisabled) as refused:
+        speak("Plants make food.", "en", config=config)
+    assert refused.value.status_code == 503 and refused.value.code == "speaking_disabled"
+    assert provider.calls == []
 
 
 # --- the endpoints ----------------------------------------------------------------
@@ -271,16 +287,44 @@ def test_an_unknown_file_relabelled_as_generic_is_still_refused(config, monkeypa
     assert response.status_code == 422 and provider.calls == []
 
 
-def test_the_speak_endpoint_returns_audio(config, monkeypatch):
+def test_the_speak_endpoint_returns_audio(speaking, monkeypatch):
     monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", "token")
     _provider(monkeypatch, Reply(content=b"ID3mp3"))
-    with _client(get_config(reload=True)) as client:
+    with _client(speaking) as client:
         response = client.post("/ai/voice/speak", headers=HEADERS, json={
             "text": "Plants make food [1].", "language": "en", "billed_user_id": "s-1"})
     assert response.status_code == 200, response.text
     assert response.content == b"ID3mp3"
     assert response.headers["content-type"] == "audio/mpeg"
-    assert response.headers["x-voice"] == get_config().get("voice.speak.voices.en")
+    assert response.headers["x-voice"] == speaking.get("voice.speak.voices.en")
+
+
+def test_the_frontend_can_ask_which_buttons_to_show(config, monkeypatch):
+    monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", "token")
+    with _client(config) as client:
+        response = client.get("/ai/voice/capabilities", headers=HEADERS)
+    assert response.status_code == 200
+    assert {k: response.json()[k] for k in ("transcribe", "speak")} == {
+        "transcribe": True, "speak": False}
+
+
+def test_a_refused_reply_is_never_charged(config, monkeypatch):
+    """With speaking off, a request must be refused before a credit is taken,
+    not charged and refunded: the ledger would fill with entries for nothing."""
+    from system.billing import Billing
+    from system.runtime import AgentRuntime
+
+    credits = Credits(InMemoryCreditStore(), CreditCatalog.from_config(config))
+    runtime = AgentRuntime(config, None, None, billing=Billing(credits),
+                           max_concurrency=1, timeout=5)
+
+    async def run():
+        await runtime.speak("Plants make food.", "en", billed_user_id="s-1")
+
+    with pytest.raises(SpeakingDisabled):
+        anyio.run(run)
+    entries, _ = credits.history("s-1", page=1, page_size=10)
+    assert [e.kind.value for e in entries if e.action] == []
 
 
 def test_a_recording_with_no_speech_costs_nothing(config, monkeypatch):
