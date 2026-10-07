@@ -1,8 +1,10 @@
 """explain_sg / summarize_sg — structurally identical RAG subgraphs.
 
-    retrieve -> answer -> resolve_prereqs
+    retrieve -> answer | answer_beyond | decline -> resolve_prereqs
 
-RAG is hard-wired: no branch goes around ``retrieve``. Both modes
+RAG is hard-wired: no branch goes around ``retrieve``. What happens after it is
+decided in one place, ``_route_grounding``: the lessons answer, or the question
+belongs to the subject and the tutor teaches it beyond them, or it is declined. Both modes
 share this builder; ``mode`` picks the prompt and the artifact label. The subgraph
 has private state (``ExplainSummarizeState``) and never sees the pathway — it is handed concrete
 namespaces/style/language by the parent's adapter node. Retrieval itself lives in
@@ -25,8 +27,18 @@ from ... import render, retrieval
 from ...citations import cited_numbers, has_citation, keep_cited
 from ...errors import TutorUnavailable
 from ...learner import NOTHING_RECORDED
-from ...models import Citation, MathFigureSpec, PrereqTopic, RetrievedChunk, Style
-from ...prompts import EXPLAIN_PROMPT, FORMATTING_CONTRACT, NO_MATERIAL_PROMPT, SUMMARIZE_PROMPT
+from ...models import AnswerBasis, Citation, MathFigureSpec, PrereqTopic, RetrievedChunk, Style
+from ...prompts import (
+    BEYOND_LESSON_PROMPT,
+    EXPLAIN_LESSON_ONLY,
+    EXPLAIN_PROMPT,
+    EXPLAIN_WITHIN_SUBJECT,
+    FORMATTING_CONTRACT,
+    NEXT_STEP,
+    NO_MATERIAL_PROMPT,
+    SUMMARIZE_PROMPT,
+    TEACHING_APPROACHES,
+)
 from ...retrieval import DEFAULT_MIN_SCORE, DEFAULT_SCOPE_RATIO
 from ...scope import StudyScope, lecture_filter, scope_of
 from ...tools import get_chunks_by_id
@@ -65,11 +77,17 @@ class ExplainSummarizeState(TypedDict, total=False):
     expand_anchors: int
     expand_window: int
     context_limit: int
+    approach: str                   # models.TeachingApproach, from the turn reading
+    scope_fit: str                  # models.ScopeFit: topic | foundation | outside
+    subject_name: str | None
+    capabilities: str               # the tasks this user can run, for the next-step offer
+    beyond_lessons: bool            # config agent.beyond_lessons
     # produced
     chunks: list[RetrievedChunk]
     prereq_topics: list[PrereqTopic]
     explanation: str
     grounded: bool                  # answer used the context (inline [n] or a math figure); a decline is False
+    basis: AnswerBasis              # lesson | beyond | declined
     citations: list[Citation]
     visual_spec: dict[str, Any]     # a figure request the parent's visual_sg renders
 
@@ -88,17 +106,20 @@ def _retrieve(state: ExplainSummarizeState, config) -> dict:
     subject_id = scope.subject_id or state.get("subject_id")
     query = state.get("query") or state.get("message") or ""
     k = state.get("k", 8)
+    # The basics of a lesson are usually taught in an earlier one, so a question
+    # about them searches the whole subject rather than the lesson selected.
+    foundation = state.get("scope_fit") == "foundation"
     found = retrieval.retrieve(
         query,
         state["namespaces"],
         k=k,
         subject_id=subject_id,
         topic_ids=state.get("topic_ids") or None,
-        lecture_ids=lecture_filter(state),
+        lecture_ids=None if foundation else lecture_filter(state),
         min_score=state.get("min_score", DEFAULT_MIN_SCORE),
         topic_filter=state.get("topic_filter", "hard"),
     )
-    if found and scope.is_narrow:
+    if found and scope.is_narrow and not foundation:
         ratio = state.get("scope_relevance_ratio") or DEFAULT_SCOPE_RATIO
         if not retrieval.answers_within_scope(
             query, state["namespaces"], found[0].score,
@@ -161,21 +182,120 @@ def _resolve_prereqs(state: ExplainSummarizeState) -> dict:
     return {"prereq_topics": prereq_topics}
 
 
+def _within_subject(mode: str, state: ExplainSummarizeState) -> bool:
+    """Whether this answer may teach what the lessons leave out.
+
+    Only an explanation, only when the deployment allows it, only for a question
+    the turn reading placed inside the subject, and only once a subject is known
+    to stay inside. A summary is of the material, so it never goes beyond it.
+    Inside a selected lesson only that lesson's foundations may: another topic
+    of the subject is still refused by the lesson's name.
+    """
+    scope = scope_of(state)
+    fit = state.get("scope_fit", "topic")
+    if scope.is_narrow and fit != "foundation":
+        return False
+    return (mode == "explain"
+            and bool(state.get("beyond_lessons"))
+            and fit != "outside"
+            and bool(scope.subject_id or state.get("subject_id")))
+
+
+def _route_grounding(mode: str):
+    def route(state: ExplainSummarizeState) -> str:
+        if state.get("chunks"):
+            return "answer"
+        if _within_subject(mode, state):
+            return "answer_beyond"
+        return "decline"
+    return route
+
+
+def _style(state: ExplainSummarizeState) -> str:
+    st = state.get("style")
+    return st.tone if st else "neutral"
+
+
+def _subject(state: ExplainSummarizeState) -> str:
+    return state.get("subject_name") or "the school subject this conversation is about"
+
+
+def _teaching(state: ExplainSummarizeState) -> dict:
+    """The slots both explanation prompts share: how to teach it and what to offer next."""
+    capabilities = state.get("capabilities") or ""
+    return {
+        "approach": TEACHING_APPROACHES[state.get("approach") or "direct"],
+        "next_step": NEXT_STEP.format(capabilities=capabilities) if capabilities else "",
+    }
+
+
+def _build_decline(llm):
+    def decline(state: ExplainSummarizeState) -> dict:
+        scope = scope_of(state)
+        logger.info("answer declined (no grounding)", extra={
+            "mode": state.get("mode"), "chunks": 0, "lecture_id": scope.lecture_id,
+            "scope_fit": state.get("scope_fit")})
+        return {"explanation": _declined(scope, state, llm, _style(state)),
+                "citations": [], "grounded": False, "basis": "declined"}
+    return decline
+
+
+def _build_answer_beyond(mode: str, llm, config):
+    """Teach a question about the subject that the lessons hold nothing on.
+
+    A follow-up never lands here: it carries the passages the last answer rested
+    on, so it is answered from them, filling only the steps they leave out.
+    """
+    def answer_beyond(state: ExplainSummarizeState) -> dict:
+        logger.info("answer beyond the lessons", extra={
+            "mode": mode, "scope_fit": state.get("scope_fit"),
+            "approach": state.get("approach")})
+        if llm is None:
+            return {"explanation": "[Explanation pending chat model] beyond the lessons",
+                    "citations": [], "grounded": False, "basis": "beyond"}
+        grade = state.get("grade")
+        prompt_text = BEYOND_LESSON_PROMPT.render(
+            language=state.get("language", "en"),
+            subject=_subject(state),
+            grade=f", grade {grade}" if grade else "",
+            level=state.get("level", "intermediate"),
+            length=state.get("length", "medium"),
+            style=_style(state),
+            instructions=state.get("instructions", ""),
+            formatting=FORMATTING_CONTRACT,
+            voice=state.get("voice") or "",
+            history=state.get("history") or "",
+            learner=state.get("learner") or NOTHING_RECORDED,
+            message=state.get("message") or state.get("query", ""),
+            query=state.get("query", ""),
+            **_teaching(state),
+        )
+        started = time.perf_counter()
+        try:
+            content = llm.invoke([HumanMessage(content=prompt_text)]).content
+        except Exception as error:
+            logger.error("answer LLM call failed", exc_info=True)
+            raise TutorUnavailable() from error
+        if not (content or "").strip():
+            raise TutorUnavailable()
+        logger.info("answer finished", extra={
+            "mode": mode, "basis": "beyond",
+            "duration_s": round(time.perf_counter() - started, 3)})
+        clean, math_spec = _math_figure_from_answer(content, config)
+        out = {"explanation": clean, "citations": [], "grounded": False, "basis": "beyond"}
+        if math_spec:
+            out["visual_spec"] = math_spec
+        return out
+    return answer_beyond
+
+
 def _build_answer(mode: str, llm, config):
     prompt = EXPLAIN_PROMPT if mode == "explain" else SUMMARIZE_PROMPT
 
     def _answer(state: ExplainSummarizeState) -> dict:
         chunks = state.get("chunks", [])
         primary_ctx, citations = retrieval.render_context(chunks, start=1)
-        st = state.get("style")
-        style = st.tone if st else "neutral"
-
-        if not chunks:
-            scope = scope_of(state)
-            logger.info("answer declined (no grounding)", extra={
-                "mode": mode, "chunks": 0, "lecture_id": scope.lecture_id})
-            return {"explanation": _declined(scope, state, llm, style),
-                    "citations": [], "grounded": False}
+        style = _style(state)
 
         if llm is None:  # no chat key: deterministic grounded stub
             text = _stub_answer(mode, chunks, state.get("language", "en"))
@@ -185,7 +305,11 @@ def _build_answer(mode: str, llm, config):
         started = time.perf_counter()
 
         instructions = state.get("instructions", "")
+        grounding = (EXPLAIN_WITHIN_SUBJECT.format(subject=_subject(state))
+                     if _within_subject(mode, state) else EXPLAIN_LESSON_ONLY)
         prompt_text = prompt.render(language=state.get("language", "en"),
+            grounding=grounding,
+            **_teaching(state),
             level=state.get("level", "intermediate"),
             length=state.get("length", "medium"),
             style=style,
@@ -236,7 +360,9 @@ def _finalize(text, citations, mode, state, chunks, config) -> dict:
     # Retrieval hands over every chunk it found; the answer usually leans on two or
     # three. Publishing the rest lists lessons the student was never pointed at.
     cited = keep_cited(citations, cited_numbers(clean)) if grounded else []
-    out = {"explanation": clean, "grounded": grounded, "citations": cited}
+    basis = ("lesson" if grounded
+             else "beyond" if _within_subject(mode, state) else "declined")
+    out = {"explanation": clean, "grounded": grounded, "citations": cited, "basis": basis}
     if grounded:
         spec = math_spec or _figure_spec(mode, state, chunks, config)
         if spec:
@@ -338,9 +464,13 @@ def _build(mode: str, *, config, llm=None):
     graph.add_node("retrieve", lambda state: _retrieve(state, config))
     graph.add_node("resolve_prereqs", _resolve_prereqs)
     graph.add_node("answer", _build_answer(mode, llm, config))
+    graph.add_node("answer_beyond", _build_answer_beyond(mode, llm, config))
+    graph.add_node("decline", _build_decline(llm))
     graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "answer")
-    graph.add_edge("answer", "resolve_prereqs")
+    graph.add_conditional_edges("retrieve", _route_grounding(mode),
+                                ["answer", "answer_beyond", "decline"])
+    for node in ("answer", "answer_beyond", "decline"):
+        graph.add_edge(node, "resolve_prereqs")
     graph.add_edge("resolve_prereqs", END)
     return graph.compile()
 

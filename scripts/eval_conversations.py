@@ -14,6 +14,8 @@ Each turn is scored on what a student would notice:
     on subject   the answer still concerns what the conversation is about
     right book   the sources come from the lesson in play, not another corpus
     refused      it declined what the syllabus cannot answer
+    taught       it taught something inside the subject, from the lessons or
+                 beyond them, instead of declining it
     no search    it chatted back instead of searching for "hello"
 
 Run against a live service so it measures the product, not a stand-in:
@@ -133,6 +135,11 @@ def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
     wanted = (turn.get("about") or "").lower()
 
     grounded = bool(citations)
+    # A reply that teaches beyond the lessons cites nothing, like a refusal; only
+    # the basis the service reports tells them apart. A service from before that
+    # field reports none, so an uncited reply from it counts as a refusal.
+    basis = reply.get("answer_basis") or []
+    taught = grounded or "beyond" in basis
     on_subject = wanted in answer if wanted else True
     # A citation from another lecture is the failure that looks like nothing:
     # a fluent English answer with sources from an Arabic lesson.
@@ -160,7 +167,9 @@ def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
     elif expect == "remembers":
         passed = bool(answer) and on_subject
     elif expect == "refuses":
-        passed = not grounded
+        passed = not taught
+    elif expect == "teaches":
+        passed = taught and on_subject and right_book
     elif expect == "chats":
         passed = not grounded and bool(answer)
     else:
@@ -168,6 +177,7 @@ def _score(turn: dict, reply: dict, lecture_id: str) -> dict:
     passed = passed and right_language
 
     return {"expect": expect, "passed": passed, "greeted": greeted, "grounded": grounded,
+            "basis": basis,
             "remembers": remembers,
             "on_subject": on_subject, "right_book": right_book,
             "language": language, "right_language": right_language,
@@ -235,7 +245,7 @@ def report(result: dict) -> None:
     print(f"    opening turns   {rate(first):.3f}  ({len(first)} turns)")
     print(f"    later turns     {rate(later):.3f}  ({len(later)} turns)   "
           f"<- the number this eval exists for")
-    for expect in ("answers", "remembers", "refuses", "chats", "any"):
+    for expect in ("answers", "teaches", "remembers", "refuses", "chats", "any"):
         rows = [t for t in turns if t["expect"] == expect]
         if rows:
             print(f"    {expect:8}        {rate(rows):.3f}  ({len(rows)} turns)")
