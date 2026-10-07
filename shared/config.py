@@ -28,6 +28,24 @@ _DEFAULT_CONFIG = _REPO_ROOT / "config.yaml"
 _DEFAULT_ENV = _REPO_ROOT / ".env"
 
 
+def _as_pasted(name: str, value: str) -> str:
+    """A secret's value, from the ways a person pastes one.
+
+    The whole line of a .env file or a table — ``NAME=value``, ``NAME   value`` —
+    and quotes around the value are the mistakes that reached the repository's
+    secrets. Each one signed every S3 request with the wrong key and failed the
+    ingest run with SignatureDoesNotMatch, an error that names nothing.
+    """
+    text = value.strip()
+    if text.startswith(name):
+        rest = text[len(name):]
+        if rest[:1] in ("=", " ", "\t", ":"):
+            text = rest.lstrip(" \t=:")
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    return text
+
+
 def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
     """Recursively merge ``overlay`` onto ``base`` without mutating either."""
     out: dict[str, Any] = copy.deepcopy(dict(base))
@@ -133,7 +151,7 @@ class Config:
         workflow with "Host ' https' contains invalid character".
         """
         value = os.environ.get(name)
-        return default if value is None else value.strip()
+        return default if value is None else _as_pasted(name, value)
 
     # -- convenience accessors -----------------------------------------------
 

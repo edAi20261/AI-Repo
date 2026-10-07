@@ -774,3 +774,28 @@ def test_without_keys_in_the_environment_boto3_keeps_its_own_chain(monkeypatch):
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
     assert storage._aws_keys() == {}
+
+
+@pytest.mark.parametrize("pasted", [
+    'AWS_SECRET_ACCESS_KEY=k7Ej/abc+def',
+    'AWS_SECRET_ACCESS_KEY     k7Ej/abc+def\n',
+    '"k7Ej/abc+def"',
+    "'k7Ej/abc+def'",
+    ' k7Ej/abc+def\n',
+])
+def test_a_secret_pasted_with_its_name_or_quotes_is_read_as_its_value(monkeypatch, pasted):
+    """The third ingest run failed every machine with S3's SignatureDoesNotMatch:
+    the access key was right and the secret beside it was not what was typed
+    into the form. A line copied whole from .env or from a table carries the
+    name with it, and nothing downstream can tell."""
+    from shared.config import Config
+
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", pasted)
+    assert Config.secret("AWS_SECRET_ACCESS_KEY") == "k7Ej/abc+def"
+
+
+def test_a_value_that_merely_starts_like_its_name_is_left_alone(monkeypatch):
+    from shared.config import Config
+
+    monkeypatch.setenv("S3_BUCKET", "S3_BUCKETS-archive")
+    assert Config.secret("S3_BUCKET") == "S3_BUCKETS-archive"
