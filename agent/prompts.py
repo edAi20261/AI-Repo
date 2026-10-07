@@ -99,7 +99,9 @@ scope_fit: how the question sits against the subject in force. topic: it is abou
 subject. foundation: it asks for the basics, the background or an earlier step that someone
 needs in order to follow that subject or what was just discussed, such as starting from the
 very beginning. outside: it is about neither, and nothing in the subject in force would
-help answer it. A follow-up on something the tutor taught is never outside.
+help answer it. A follow-up on something the tutor taught is never outside. When no subject
+is named above, do not guess one from the conversation: outside then means it is not school
+subject matter at all.
 
 changes_subject: true only when the message moves to a different school subject from the one
 in force.
