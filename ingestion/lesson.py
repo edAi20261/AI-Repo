@@ -88,14 +88,14 @@ class SubjectNotFound(LookupError):
 
 
 def _row_of(config, sql: str, key: str, kind: str, missing: type[LookupError]):
-    from shared.postgres import connect
+    from shared.postgres import connect_once
 
     try:
         uuid.UUID(str(key).strip())
     except ValueError:
         raise missing(f"{key!r} is not a {kind} id (a UUID)") from None
     try:
-        with connect(config) as conn, conn.cursor() as cur:
+        with connect_once(config) as conn, conn.cursor() as cur:
             cur.execute(sql, (key,))
             row = cur.fetchone()
     except Exception:

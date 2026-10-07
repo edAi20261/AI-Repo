@@ -144,6 +144,7 @@ def fake_postgres(monkeypatch):
         # pooled now, so nothing on a turn calls psycopg.connect any more and a
         # double installed there would never be reached.
         monkeypatch.setattr(postgres, "_pool_for", lambda *a, **k: _Pool())
+        monkeypatch.setattr(postgres, "_open_once", lambda *a, **k: db)
         return db
 
     return install

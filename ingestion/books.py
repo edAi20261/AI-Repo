@@ -241,9 +241,9 @@ class LessonCatalog:
         self._source = config.get("ingestion.books.lesson_source", "ministry_official")
 
     def _connect(self):
-        from shared.postgres import connect
+        from shared.postgres import connect_once
 
-        return connect(self._config)
+        return connect_once(self._config)
 
     def register(self, *, subject_id: str, book_title: Optional[str],
                  lessons: Sequence[dict]) -> None:

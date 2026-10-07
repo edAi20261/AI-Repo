@@ -708,6 +708,20 @@ def test_a_book_under_a_subject_that_does_not_exist_is_refused_before_any_page_i
         _lesson_state(scanned_book(2), "--subject-id", "8c2f0a10-0001-4a00-9000-00000000000a")
 
 
+def test_looking_up_a_subject_opens_one_connection_not_a_pool(
+        scanned_book, fake_postgres, monkeypatch):
+    from shared import postgres
+
+    subject = "8c2f0a10-0001-4a00-9000-00000000000a"
+    fake_postgres(fetchone=[(subject, None, "English", "en", "Grade 7")])
+
+    def no_pool(*args, **kwargs):
+        raise AssertionError("a one-off lookup opened a connection pool")
+
+    monkeypatch.setattr(postgres, "_pool_for", no_pool)
+    assert _lesson_state(scanned_book(2), "--subject-id", subject)["subject_id"] == subject
+
+
 def test_a_book_takes_its_grade_and_language_from_its_subject(scanned_book, fake_postgres):
     subject = "8c2f0a10-0001-4a00-9000-00000000000a"
     fake_postgres(fetchone=[(subject, None, "English", "en", "Grade 7")])

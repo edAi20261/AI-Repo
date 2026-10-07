@@ -119,6 +119,23 @@ def connect(
         yield conn
 
 
+def _open_once(url: str, connect_timeout: int) -> object:
+    import psycopg
+
+    return psycopg.connect(url, connect_timeout=connect_timeout)
+
+
+@contextmanager
+def connect_once(config: Config | None = None) -> Iterator[object]:
+    config = config or Config.load()
+    conn = _open_once(pg_url(config.secret("DATABASE_URL")),
+                      config.get("database.connect_timeout_seconds"))
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def close_pools() -> None:
     """Close every pool. Registered at exit so a script does not hang on one."""
     with _lock:
