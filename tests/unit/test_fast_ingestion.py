@@ -747,3 +747,30 @@ def test_a_file_named_book_is_not_titled_book(scanned_book):
     book.rename(fetched)
     Path(str(fetched) + ".name").write_text("book.pdf", encoding="utf-8")
     assert _lesson_args(str(fetched)).lesson_title == "Untitled book"
+
+
+def test_aws_keys_saved_with_a_newline_still_sign_requests(monkeypatch):
+    """AWS_ACCESS_KEY_ID was saved in the repository's secrets with a newline at
+    its end. boto3 read it from the environment itself, past Config.secret, and
+    put it in the signature header as "Credential=AKIA…\\n/…", which the HTTP
+    client refused: the second ingest run failed its storage check on every
+    machine."""
+    from shared import storage
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE\n")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", " secret\n")
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+    credentials = storage._s3_client("eu-central-1", None)._request_signer._credentials
+
+    assert credentials.access_key == "AKIAEXAMPLE"
+    assert credentials.secret_key == "secret"
+
+
+def test_without_keys_in_the_environment_boto3_keeps_its_own_chain(monkeypatch):
+    """The service on ECS has no keys in its environment: it signs with its task
+    role, found by boto3's own chain, which explicit empty keys would break."""
+    from shared import storage
+
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    assert storage._aws_keys() == {}

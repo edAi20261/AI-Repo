@@ -149,7 +149,31 @@ def s3_client(config: Config) -> Any:
     return _s3_client(config.secret("S3_REGION"), config.secret("S3_ENDPOINT_URL"))
 
 
+# The keys boto3 would otherwise read from the environment itself, past
+# Config.secret and its whitespace stripping. An AWS_ACCESS_KEY_ID saved in the
+# repository's secrets with a newline at its end went into the signature as
+# "Credential=AKIA…\n/20261006/…", which no HTTP client will send: the ingest
+# workflow failed its storage check on every machine.
+_AWS_KEYS = (("aws_access_key_id", "AWS_ACCESS_KEY_ID"),
+             ("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+             ("aws_session_token", "AWS_SESSION_TOKEN"))
+
+
+def _aws_keys() -> dict[str, str]:
+    """Explicit keys when the environment holds a pair, else none.
+
+    None leaves boto3 its own chain — the task role on ECS, a profile on a
+    laptop — which is what every deployment without keys in its environment
+    relies on.
+    """
+    keys = {arg: Config.secret(env) for arg, env in _AWS_KEYS}
+    if not (keys["aws_access_key_id"] and keys["aws_secret_access_key"]):
+        return {}
+    return {arg: value for arg, value in keys.items() if value}
+
+
 def _s3_client(region: str | None, endpoint_url: str | None) -> Any:
     import boto3
 
-    return boto3.client("s3", region_name=region, endpoint_url=endpoint_url or None)
+    return boto3.client("s3", region_name=region, endpoint_url=endpoint_url or None,
+                        **_aws_keys())
