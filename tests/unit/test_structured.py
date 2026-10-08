@@ -358,6 +358,32 @@ def test_a_truncated_reply_is_retried_with_more_room_not_more_words(monkeypatch)
     assert llm.budgets[-1] > Config.load().llm_for("extract_topics")["max_tokens"]
 
 
+class _CutOffBySdk(_Truncated):
+    def invoke(self, _messages):
+        from openai import LengthFinishReasonError
+
+        self.calls += 1
+        if self.calls == 1:
+            error = LengthFinishReasonError.__new__(LengthFinishReasonError)
+            Exception.__init__(error, "Could not parse response content as the length "
+                                      "limit was reached")
+            raise error
+        return self._then
+
+
+def test_a_reply_the_sdk_cut_off_at_its_length_limit_is_retried_with_more_room():
+    from shared import structured
+
+    llm = _CutOffBySdk(then=Batch(items=[]))
+    out = structured.call_structured(
+        Batch, "list the topics", task="extract_topics",
+        config=Config.load(), llm=llm, attempts=2)
+
+    assert out.items == []
+    assert llm.calls == 2
+    assert llm.budgets and llm.budgets[-1] > 0
+
+
 # --- the provider, not the model --------------------------------------------
 
 class _Choiceless(BaseModel):

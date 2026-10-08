@@ -38,8 +38,8 @@ llm:
     # Ingestion's two chat calls, one per book each. They follow vision onto
     # Vertex so the whole ingestion path bills to one account; everything below
     # answers students and stays on OpenRouter.
-    extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0 }
-    derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0 }
+    extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192 }
+    derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192 }
     split_lessons:   { provider: vertex, model: google/gemini-2.5-pro, temperature: 0.0, max_tokens: 32000, timeout_seconds: 600, max_retries: 1, fallback_models: [google/gemini-2.5-flash] }
     understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
     converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }

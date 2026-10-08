@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Optional, TypeVar
 
 from langchain_core.messages import HumanMessage
+from openai import LengthFinishReasonError
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError, ValidationError
 
@@ -271,7 +272,8 @@ def align_by_id(
 
 # A reply the provider's own parser rejected. Raised from inside `invoke`, so it
 # has to be caught rather than read off the result.
-PARSE_ERRORS = (PydanticValidationError, json.JSONDecodeError, ValueError)
+PARSE_ERRORS = (PydanticValidationError, json.JSONDecodeError, ValueError,
+                LengthFinishReasonError)
 
 
 class _ProviderFailure(Exception):
@@ -290,6 +292,8 @@ ENVELOPE_FIELDS = frozenset({"choices", "object", "created", "model", "usage", "
 
 def _ran_out_of_room(exc: BaseException) -> bool:
     """Whether the reply was cut off mid-object rather than written wrongly."""
+    if isinstance(exc, LengthFinishReasonError):
+        return True
     return isinstance(exc, PydanticValidationError) and any(
         error.get("type") == "json_invalid" for error in exc.errors())
 
