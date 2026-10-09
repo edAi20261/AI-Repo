@@ -7,10 +7,13 @@ in ``state.py`` and the subgraphs, which own their private state.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, get_args
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 # The closed vocabularies, as Literal types (one source of truth). In a pydantic model a
 # Literal becomes an enum in the JSON schema, so structured output is constrained to valid
@@ -213,30 +216,50 @@ class AssessmentSpec(_ReadsNullWords):
     bound on ``count`` is a per-role cap applied in the plan node (config
     ``assessment.max_count``), not here — a validator can't see config."""
     count: Optional[int] = None
-    types: Optional[list[str]] = None
-    difficulty: Optional[str] = None
-    focus: Optional[str] = None
+    types: Optional[list[QuestionType]] = None
+    difficulty: Optional[Difficulty] = None
+    focus: Optional[Literal["weak"]] = None
 
     @field_validator("count")
     @classmethod
     def _count_positive(cls, v: Optional[int]) -> Optional[int]:
         return v if isinstance(v, int) and v >= 1 else None
 
-    @field_validator("types")
+    @field_validator("types", mode="before")
     @classmethod
-    def _types_subset(cls, v: Optional[list[str]]) -> Optional[list[str]]:
-        kept = [t for t in (v or []) if t in QUESTION_TYPES]
+    def _types_subset(cls, v: Any) -> Optional[list[str]]:
+        asked = v if isinstance(v, list) else [v] if v else []
+        kept = [t for t in asked if t in QUESTION_TYPES]
+        _say_dropped("types", [t for t in asked if t not in QUESTION_TYPES])
         return kept or None
 
-    @field_validator("difficulty")
+    @field_validator("difficulty", mode="before")
     @classmethod
-    def _difficulty_allowed(cls, v: Optional[str]) -> Optional[str]:
-        return v if v in DIFFICULTIES else None
+    def _difficulty_allowed(cls, v: Any) -> Optional[str]:
+        if v in DIFFICULTIES or v is None:
+            return v
+        _say_dropped("difficulty", [v])
+        return None
 
-    @field_validator("focus")
+    @field_validator("focus", mode="before")
     @classmethod
-    def _focus_allowed(cls, v: Optional[str]) -> Optional[str]:
-        return v if v == "weak" else None
+    def _focus_allowed(cls, v: Any) -> Optional[str]:
+        if v in ("weak", None):
+            return v
+        _say_dropped("focus", [v])
+        return None
+
+
+def _say_dropped(field_name: str, values: list) -> None:
+    """A requested shape the planner wrote outside the vocabulary.
+
+    "Three multiple-choice questions" came back as an MCQ, a true/false and a
+    short answer: the type was written in words the list did not hold, dropped
+    without a trace, and the default mix used in its place.
+    """
+    if values:
+        logger.warning("an assessment request named values outside the vocabulary; "
+                       "they are ignored", extra={"field": field_name, "values": values})
 
 
 class AssessmentOption(BaseModel):
