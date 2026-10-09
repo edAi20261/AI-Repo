@@ -310,6 +310,32 @@ def test_the_postgres_store_retires_before_it_activates(fake_postgres, monkeypat
     assert persona.status is PersonaStatus.ACTIVE and db.committed
 
 
+@pytest.mark.parametrize("call", [
+    lambda store: store.versions("t-1"),
+    lambda store: store.get("t-1", 1),
+    lambda store: store.active("t-1"),
+    lambda store: store.exemplars("p-1"),
+    lambda store: store.update_card("t-1", 1, PersonaCard.model_validate(_card())),
+    lambda store: store.activate("t-1", 1),
+    lambda store: store.deactivate("t-1"),
+    lambda store: store.delete("t-1"),
+    lambda store: store.create(
+        NewPersona(teacher_id="t-1", teacher_name="Ms Mona",
+                   card=PersonaCard.model_validate(_card()), consented_at=NOW), []),
+])
+def test_a_persona_database_that_cannot_be_read_is_reported_as_unavailable(
+        call, fake_postgres, monkeypatch):
+    """With personas switched on before the tables were migrated, every persona
+    request answered 500 "An unexpected error occurred", where credits in the same
+    state answer 503 and say what is unavailable."""
+    from agent.persona.store import PostgresPersonaStore
+    from shared.errors import ServiceUnavailableError
+
+    fake_postgres(explode=True)
+    with pytest.raises(ServiceUnavailableError, match="Teaching personas"):
+        call(PostgresPersonaStore(_config(monkeypatch)))
+
+
 # --- the voice on a student's turn ---------------------------------------------
 
 def _voices(store) -> Voices:
