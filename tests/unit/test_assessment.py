@@ -402,3 +402,39 @@ def test_the_planner_can_ask_for_weak_spot_practice():
 
     assert _validate_assessment_spec({"focus": "weak"}).focus == "weak"
     assert _validate_assessment_spec({"focus": "everything"}) is None
+
+
+def test_a_topic_no_passage_is_tagged_with_is_found_by_its_name(monkeypatch):
+    """Three Arabic multiple-choice questions on entrepreneurship came back as one.
+
+    Two of the three topics the request resolved to were carried by no passage's
+    tags, so neither the tagged search nor the tag lookup found anything for
+    them, their slots were dropped, and the student got a third of the quiz."""
+    from agent.models import ResolvedTopic
+
+    topics = [ResolvedTopic("t1", "Understand entrepreneurship", 0.9, "sub1"),
+              ResolvedTopic("t2", "Traits of an entrepreneur", 0.8, "sub1"),
+              ResolvedTopic("t3", "Entrepreneurs serve society", 0.7, "sub1")]
+    monkeypatch.setattr(qmod, "resolve_topics", lambda query, subject_id=None, **k: topics)
+    monkeypatch.setattr(qmod, "get_topic_chunks",
+                        lambda ids, *a, **k: [_chunk("t1")] if ids == ["t1"] else [])
+    monkeypatch.setattr(qmod, "get_topic_labels",
+                        lambda ids, **k: {t.topic_id: t.label for t in topics}, raising=False)
+
+    def search(query, namespaces, *, topic_ids=None, **k):
+        if topic_ids:
+            return []
+        named = {"Traits of an entrepreneur": "t2", "Entrepreneurs serve society": "t3"}
+        if query in named:
+            chunk = _chunk(named[query])
+            return [RetrievedChunk(**{**chunk.__dict__, "chunk_id": f"c-{named[query]}"})]
+        return []
+
+    monkeypatch.setattr(qmod.retrieval, "retrieve", search)
+    graph = build_assessment_sg(config=get_config(), llm=None)
+    out = graph.invoke({
+        "query": "3 multiple choice questions on entrepreneurship", "subject_id": "sub1",
+        "namespaces": ["syllabus"], "language": "ar", "item_source": "generated",
+        "type_mix": {"mcq": 3}, "k_per_topic": 2, "adaptive": False,
+    })
+    assert sorted(i["topic_id"] for i in out["assessment"]["items"]) == ["t1", "t2", "t3"]
