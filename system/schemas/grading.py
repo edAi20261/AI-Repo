@@ -11,6 +11,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import Field, model_validator
 
+from agent.models import ReviewedGrade
 from shared.metering import Meter
 
 from .common import Language, Schema, Usage
@@ -85,3 +86,24 @@ class GradeResponse(Schema):
     def from_result(cls, result: dict[str, Any], request_id: str, meter: Meter) -> GradeResponse:
         known = {k: v for k, v in result.items() if k in cls.model_fields}
         return cls(request_id=request_id, usage=Usage.from_meter(meter), **known)
+
+
+class ReviewedRequest(Schema):
+    """The teacher's decision on grades that came back with ``needs_review``."""
+
+    user_id: str = Field(description="Whose mastery these grades move.")
+    source: Literal["practice", "quiz", "homework", "uploaded"] = Field(
+        description="The source the held grade came from: the grade response's source.")
+    grades: list[ReviewedGrade] = Field(
+        min_length=1, max_length=200,
+        description=("One per decided grade. ai_score is the held grade's partial_score, "
+                     "score the teacher's; topic_id, lecture_id, question_id, difficulty, "
+                     "bloom and mistake_tag_ids are copied from the held grade."))
+
+
+class ReviewedResponse(Schema):
+    request_id: str
+    mastery_events: int
+    topics_updated: int
+    mastery_recorded: bool = Field(
+        description="False when the evidence could not be stored. Retry; nothing was written.")

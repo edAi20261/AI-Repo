@@ -150,6 +150,8 @@ def test_with_credits_disabled_the_credits_api_says_so(monkeypatch):
     ("post", "/ai/classes/report", {"json": {"class_id": "c1", "user_ids": ["s1"]}}),
     ("get", "/ai/reports/s-1", {}),
     ("post", "/ai/homework/capture", {"files": {"image": ("p.png", b"\x89PNG", "image/png")}}),
+    ("post", "/ai/homework/mark", {"params": {"user_id": "s-1"},
+                                   "files": {"image": ("p.png", b"\x89PNG", "image/png")}}),
 ])
 def test_a_paid_endpoint_refuses_a_request_that_names_nobody_to_pay(client, method, path, kwargs):
     """Without the paying account the only choices are charging the wrong user or

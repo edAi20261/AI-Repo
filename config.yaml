@@ -568,6 +568,11 @@ grade:
   # mastery_event. `source` maps the grading context to the mastery_event_source enum.
   source: practice             # practice | quiz | homework — default for a chat grade turn
   pass_threshold: 0.5          # partial_score >= this counts as 'correct' for mastery
+  # A model grade below this confidence is held for a teacher and moves no mastery
+  # until one decides it. Not yet swept: there is no labelled set of marked work to
+  # sweep it on. scripts/eval_homework.py prints, per threshold, how many grades are
+  # held and how many of the ones let through were wrong; set it from that table.
+  review_below: 0.7
   # Grounding priority: a key/rubric is used FIRST; RAG grounds ONLY a keyless answer (fallback).
 
 tagging:
@@ -768,6 +773,9 @@ credits:
     student_report:   { credits: 1, per: 1 }
     class_report:     { credits: 2, per: 1 }
     homework_capture: { credits: 1, per: 1 }
+    # Reading the page plus grading up to twenty answers on it: capture's credit and
+    # grade_answers' one per ten, for a full page.
+    homework_mark:    { credits: 3, per: 1 }
     persona_build:    { credits: 5, per: 1 }
     voice_transcribe: { credits: 1, per: 1 }
     voice_speak:      { credits: 1, per: 1 }

@@ -811,6 +811,11 @@ return null.
 
 Copy. Do not answer, correct, complete or tidy anything.
 
+Set "unclear": true on a question when you had to guess at any word, digit or
+symbol in it or in the student's answer: a smudge, a crossed-out word, a letter
+that could be another. A mark given to an answer you half-read is checked by
+the teacher, so say so rather than settle on a reading.
+
 If the photograph is too blurred, dark or cropped to read with confidence, set
 "unreadable": true and return no questions. A misread question produces a
 confident answer to something the student never asked, which is worse than
