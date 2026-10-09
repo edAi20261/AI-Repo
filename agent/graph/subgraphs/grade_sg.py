@@ -6,10 +6,13 @@ Private state (``GradeState``); the parent adapter (chat) or ``run_grade`` (endp
 hands it a normalized ``submissions`` list. The student's answers arrive in the request
 and are never read from the DB (invariant 4); ``fetch_rubric`` reads only the *correct*
 answers. Every mastery event carries ``topic_id`` + ``lecture_id`` (invariant 12);
-``resolve_topics`` fills a missing topic (invariant 8). AI-final: mastery moves on grade
-with no teacher-approval gate — a later teacher edit is a correction appended as a new
-event. ``grade`` is ONE LLM call (score + feedback + mistake labels together);
-mistake labels are canonicalized to tag ids deterministically.
+``resolve_topics`` fills a missing topic (invariant 8). A grade the model is sure of
+moves mastery at once. One it is unsure of, or one marked on an answer that could not be
+read clearly, is held for a teacher: it is returned with its ``review`` reasons and moves
+nothing until ``record_reviewed`` writes the teacher's decision. A wrong mark the model
+doubted would otherwise become a student's weak topic with nobody having looked at it.
+``grade`` is ONE LLM call (score + feedback + mistake labels together); mistake labels
+are canonicalized to tag ids deterministically.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from langchain_core.messages import HumanMessage
 from shared.structured import align_by_id, call_structured, schema_hint
 
 from ...mastery import Mastery, MasteryParams, observation, update_aggregate
-from ...models import GradeBatch, GradedItem, SubmissionItem
+from ...models import GradeBatch, GradedItem, ReviewedGrade, ReviewReason, SubmissionItem
 from ...prompts import GRADE_BATCH_PROMPT
 from ...retrieval import DEFAULT_MIN_SCORE
 from ...tools import (
@@ -232,6 +235,18 @@ def _scored(item: SubmissionItem, pass_threshold: float) -> GradedItem:
     )
 
 
+def _review(item: SubmissionItem, confidence: float | None,
+            review_below: float) -> list[ReviewReason]:
+    """Why a model's grade needs a teacher before it counts. A missing confidence is
+    no evidence of certainty, so it is held like a low one."""
+    reasons: list[ReviewReason] = []
+    if confidence is None or confidence < review_below:
+        reasons.append("low_confidence")
+    if item.unclear_reading:
+        reasons.append("unclear_reading")
+    return reasons
+
+
 def _gradable(item: SubmissionItem) -> bool:
     """An answer can be graded only against a reference key or retrieved syllabus context —
     never the model's own knowledge."""
@@ -294,7 +309,7 @@ def _event_from(g: GradedItem, user_id: str, source: str) -> dict | None:
     """A mastery_event dict for one graded answer, or None when it lacks the invariant-12
     spine (topic_id + lecture_id) and so cannot be recorded. ``original_score`` = the AI's
     score now, preserved for a later teacher correction."""
-    if not g.graded or not g.topic_id or not g.lecture_id:
+    if not g.graded or g.needs_review or not g.topic_id or not g.lecture_id:
         return None
     score = g.partial_score if g.partial_score is not None else (1.0 if g.correct else 0.0)
     return {
@@ -342,7 +357,8 @@ def _summary(graded: list[GradedItem]) -> dict:
                   else (1.0 if g.correct else 0.0)) for g in scored)
     return {"count": n, "score": round(earned, 3), "max_score": float(n),
             "correct": sum(1 for g in scored if g.correct),
-            "declined": sum(1 for g in graded if not g.graded)}
+            "declined": sum(1 for g in graded if not g.graded),
+            "needs_review": sum(1 for g in scored if g.needs_review)}
 
 
 # --- nodes ------------------------------------------------------------------
@@ -376,6 +392,8 @@ def _build_fetch_rubric(config):
 
 
 def _build_grade(llm, config):
+    review_below = config.get("grade.review_below")
+
     def _node(state: GradeState) -> dict:
         items = state.get("items", [])
         if not items:
@@ -407,13 +425,16 @@ def _build_grade(llm, config):
             elif degraded:
                 graded.append(_not_graded(it))
             else:
-                graded.append(_build_graded(it, drafts[gi], threshold))
+                g = _build_graded(it, drafts[gi], threshold)
+                g.review = _review(it, g.confidence, review_below)
+                graded.append(g)
                 gi += 1
         _canonicalize(graded, state.get("subject_id"), config)
         logger.info("grade", extra={
             "graded": sum(1 for g in graded if g.graded),
             "declined": sum(1 for g in graded if not g.graded),
             "wrong": sum(1 for g in graded if g.graded and not g.correct),
+            "needs_review": sum(1 for g in graded if g.needs_review),
             "scored_upstream": sum(1 for it in items if it.known_score is not None),
             "degraded": degraded, "calls": 0 if llm is None or not gradable else 1})
         return {"graded": graded, "degraded": degraded}
@@ -488,6 +509,33 @@ def _build_write_mastery(config):
         return {"result": result}
 
     return _node
+
+
+def record_reviewed(user_id: str, reviewed: list[ReviewedGrade], *, source: str,
+                    pass_threshold: float, config) -> dict:
+    """Move mastery on grades a teacher has decided.
+
+    Each event keeps the model's score as ``original_score`` beside the teacher's, so
+    how often teachers overturn held grades stays readable from the evidence."""
+    events = [{
+        "user_id": user_id, "item_id": r.question_id, "topic_id": r.topic_id,
+        "lecture_id": r.lecture_id, "correct": r.score >= pass_threshold,
+        "partial_score": r.score, "original_score": r.ai_score,
+        "difficulty": r.difficulty, "bloom_level": r.bloom,
+        "mistake_tag_ids": r.mistake_tag_ids or None, "source": source,
+    } for r in reviewed]
+    try:
+        aggregates = _next_mastery(events, user_id, config)
+        written = record_graded_evidence(user_id, events, aggregates, config=config)
+    except Exception:
+        logger.error("reviewed grades not recorded", exc_info=True,
+                     extra={"events": len(events), "source": source})
+        return {"mastery_events": 0, "topics_updated": 0, "mastery_recorded": False}
+    overturned = sum(1 for r in reviewed if r.score != r.ai_score)
+    logger.info("reviewed grades recorded", extra={
+        "events": len(written), "topics": len(aggregates), "overturned": overturned})
+    return {"mastery_events": len(written), "topics_updated": len(aggregates),
+            "mastery_recorded": True}
 
 
 # --- build ------------------------------------------------------------------

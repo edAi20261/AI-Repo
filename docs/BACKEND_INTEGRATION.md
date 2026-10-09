@@ -127,6 +127,75 @@ move mastery.
 could not be stored. `mastery_events` is then 0. Retry the same request; nothing
 was written.
 
+### Grades held for a teacher
+
+A grade the model is unsure of comes back with `needs_review: true` and moves no
+mastery. `review` says why: `low_confidence` (below `grade.review_below`) or
+`unclear_reading` (the answer was read off a photo and part of it was a guess).
+The grade itself is still there (`partial_score`, `feedback`, `mistake_labels`),
+so show it to the student as provisional and to the teacher to decide.
+`summary.needs_review` counts them.
+
+When the teacher decides, send it back. This is the only way a held grade reaches
+the student's mastery:
+
+`POST /ai/grade/reviewed` (no credits; no model runs)
+
+```json
+{
+  "user_id": "uuid",
+  "source": "uploaded",
+  "grades": [
+    { "topic_id": "uuid", "lecture_id": "uuid", "question_id": "uuid",
+      "ai_score": 0.0, "score": 1.0,
+      "difficulty": "easy", "bloom": null, "mistake_tag_ids": ["uuid"] }
+  ]
+}
+```
+
+`source` is the grade response's `source`. `ai_score` is the held grade's
+`partial_score` and `score` the teacher's (0–1); the other fields are copied from
+the held grade. Both scores are stored, so how often teachers overturn the model
+can be measured. Returns `mastery_events`, `topics_updated`, `mastery_recorded`.
+
+### Marking a photographed page — `POST /ai/homework/mark`
+
+Multipart, the photo as `image` (png, jpeg or webp, one page). Query:
+`user_id` (the student), `billed_user_id`, and optionally `subject_id`,
+`lecture_ids` (repeat the parameter) and `language`.
+
+The page is read, then every answer the student wrote is graded against the
+syllabus exactly as `/ai/grade` grades it, with `source: "uploaded"`. Returns:
+
+```json
+{
+  "unreadable": false,
+  "language": "ar",
+  "questions": [
+    { "number": "1", "question": "...", "student_answer": "29", "marks": 2,
+      "unclear": false, "status": "marked",
+      "grade": { "correct": true, "partial_score": 1.0, "feedback": "...",
+                 "mistake_labels": [], "needs_review": false, "review": [], "...": "..." } },
+    { "number": "2", "question": "...", "student_answer": null,
+      "unclear": false, "status": "blank", "grade": null }
+  ],
+  "summary": { "count": 1, "score": 1.0, "max_score": 1.0, "correct": 1,
+               "declined": 0, "needs_review": 0, "blank": 1 },
+  "mastery_events": 1, "topics_updated": 1, "mastery_recorded": true,
+  "degraded": false, "usage": { "...": "..." }
+}
+```
+
+- `status`: `marked`; `blank` (left empty: reported, never scored as wrong);
+  `not_marked` (nothing in the syllabus settles it, so it is not guessed at).
+- `unreadable: true`: nothing was marked or charged. Ask for a clearer photo.
+- `language` is the page's own, so the feedback is written in the language the
+  homework is in; the `language` you send is used only when the page cannot tell.
+- Held grades work as above: show them to the teacher, then call
+  `/ai/grade/reviewed`.
+- Answer keys are not used here yet: a photographed page carries no question ids
+  to match a stored rubric on. Answers are graded against the lessons.
+
 ---
 
 ## 3. Student analysis and reports
@@ -243,8 +312,10 @@ fell back to string matching, an unreadable homework photo).
 | `GET /ai/reports/{user_id}` | `billed_user_id` | 1 |
 | `POST /ai/classes/report` | `billed_user_id` | 2 |
 | `POST /ai/homework/capture` | `billed_user_id` (query) | 1 |
+| `POST /ai/homework/mark` | `billed_user_id` (query) | 3 per page |
 
-`billed_user_id` is required on those four; send the account of whoever asked.
+`billed_user_id` is required on every call in this table except chat; send the
+account of whoever asked.
 Paid responses carry `usage` (what the model gateway billed), the same object as
 chat's.
 

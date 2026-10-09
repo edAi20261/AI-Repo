@@ -23,10 +23,10 @@ from agent.analytics import learner_summary
 from agent.class_analytics import class_analytics
 from agent.credits import Action
 from agent.graph import build_graph
-from agent.graph.grade import run_grade
+from agent.graph.grade import run_grade, run_reviewed
 from agent.graph.report import run_class_report, run_report
 from agent.graph.subgraphs import build_visual_sg
-from agent.homework import HomeworkCapture, capture
+from agent.homework import HomeworkCapture, MarkedHomework, capture, mark
 from agent.models import PersonaCard
 from agent.persona.build import BuildRequest, build_persona
 from agent.persona.models import Exemplar, Persona
@@ -62,6 +62,10 @@ def _degraded(result: dict[str, Any]) -> bool:
 
 def _unreadable(result: HomeworkCapture) -> bool:
     return result.unreadable
+
+
+def _unmarked(result: MarkedHomework) -> bool:
+    return result.unreadable or result.degraded
 
 
 def _unheard(result: Heard) -> bool:
@@ -136,6 +140,9 @@ class AgentRuntime:
                                   partial(run_grade, payload, config=self._config),
                                   units=len(payload["submissions"]), failed=_degraded)
 
+    async def record_reviewed(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._offload(run_reviewed, payload, config=self._config)
+
     async def report(self, payload: dict[str, Any], *,
                      billed_user_id: str) -> Metered:
         return await self._billed(billed_user_id, Action.STUDENT_REPORT,
@@ -148,6 +155,12 @@ class AgentRuntime:
                                   partial(capture, content, config=self._config,
                                           language_hint=language),
                                   failed=_unreadable)
+
+    async def mark_homework(self, content: bytes, payload: dict[str, Any], *,
+                            billed_user_id: str) -> Metered:
+        return await self._billed(billed_user_id, Action.HOMEWORK_MARK,
+                                  partial(mark, content, config=self._config, **payload),
+                                  failed=_unmarked)
 
     async def transcribe(self, audio: bytes, content_type: str, *,
                          language: Optional[str], billed_user_id: str) -> Metered:

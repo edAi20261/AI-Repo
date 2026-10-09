@@ -292,7 +292,7 @@ def _submissions(lesson: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _homework_png() -> bytes:
+def _homework_png(answers: tuple[str, ...] = ()) -> bytes:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -303,7 +303,8 @@ def _homework_png() -> bytes:
              "3. Classify: water, oxygen, air (element / compound / mixture).",
              "4. What is the valency of sodium?"]
     for i, line in enumerate(lines):
-        fig.text(0.05, 0.75 - i * 0.15, line, fontsize=12)
+        answer = f"   Answer: {answers[i]}" if i < len(answers) and answers[i] else ""
+        fig.text(0.05, 0.75 - i * 0.15, line + answer, fontsize=10 if answer else 12)
     buffer = io.BytesIO()
     fig.savefig(buffer, format="png")
     plt.close(fig)
@@ -427,6 +428,17 @@ async def run_direct(args) -> Report:
                     ok(lambda b: len(b.get("questions") or []) >= 3,
                        lambda b: f"questions={len(b.get('questions') or [])} "
                                  f"unreadable={b.get('unreadable')}"))
+        await check(report, "Homework photo marked", "POST /ai/homework/mark",
+                    ai.post("/ai/homework/mark",
+                            params={"user_id": student, "billed_user_id": student,
+                                    "subject_id": SCIENCE_EN["subject_id"]},
+                            files={"image": ("hw.png", _homework_png(
+                                ("protons, neutrons and electrons", "", "", "2")), "image/png")}),
+                    ok(lambda b: any(q.get("status") == "marked" for q in b.get("questions") or [])
+                       and any(q.get("status") == "blank" for q in b.get("questions") or [])
+                       and not b.get("degraded"),
+                       lambda b: f"statuses={[q.get('status') for q in b.get('questions') or []]} "
+                                 f"needs_review={(b.get('summary') or {}).get('needs_review')}"))
         await check(report, "Homework capture rejects non-image", "POST /ai/homework/capture",
                     ai.post("/ai/homework/capture", params={"billed_user_id": student},
                             files={"image": ("a.txt", b"hello", "text/plain")}), status_is(422))

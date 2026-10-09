@@ -20,7 +20,9 @@ from .pathways import build_namespaces
 from ..config import Config, get_config
 from .graph import (
     _kind_source, _subject_facts, _subject_instructions)
+from ..models import ReviewedGrade
 from .subgraphs import build_grade_sg
+from .subgraphs.grade_sg import record_reviewed
 
 
 def run_grade(payload: dict[str, Any], *, config: Optional[Config] = None) -> dict:
@@ -32,9 +34,8 @@ def run_grade(payload: dict[str, Any], *, config: Optional[Config] = None) -> di
     ``user_id``, ``subject_id?``, ``kind?`` (quiz|homework), ``assessment_id?`` (to
     fetch the rubric), ``source?``, ``language?``.
 
-    Inputs supported: inline free-text answers and a DB quiz/homework reference.
-    TODO: attachment answers (photo/PDF of solved work) — needs the upload/extraction
-    (vision/OCR) pipeline before they can be graded."""
+    Inputs supported: inline free-text answers and a DB quiz/homework reference. A
+    photographed page is read by ``agent.homework.mark`` and graded through here."""
     config = config or get_config()
     try:
         client = get_backend_client(config)
@@ -62,3 +63,15 @@ def run_grade(payload: dict[str, Any], *, config: Optional[Config] = None) -> di
         "min_score": config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE),
     })
     return result.get("result", {})
+
+
+def run_reviewed(payload: dict[str, Any], *, config: Optional[Config] = None) -> dict:
+    """Record the grades a teacher decided after they were held for review."""
+    config = config or get_config()
+    return record_reviewed(
+        payload["user_id"],
+        [ReviewedGrade.model_validate(g) for g in payload["grades"]],
+        source=payload["source"],
+        pass_threshold=config.get("grade.pass_threshold"),
+        config=config,
+    )

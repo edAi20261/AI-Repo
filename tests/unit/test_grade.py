@@ -133,7 +133,8 @@ def test_summary_totals():
         _build_graded(_sub(), GradeDraft(partial_score=0.0), 0.5),
     ]
     s = _summary(graded)
-    assert s == {"count": 2, "score": 1.0, "max_score": 2.0, "correct": 1, "declined": 0}
+    assert s == {"count": 2, "score": 1.0, "max_score": 2.0, "correct": 1, "declined": 0,
+                 "needs_review": 0}
 
 
 # --- canonicalize (mistake tags) -------------------------------------------
@@ -299,7 +300,7 @@ def test_grade_sg_stub_grades_and_writes_mastery(monkeypatch):
     })
     res = out["result"]
     assert res["summary"] == {"count": 2, "score": 1.0, "max_score": 2.0, "correct": 1,
-                              "declined": 0}
+                              "declined": 0, "needs_review": 0}
     assert res["mastery_events"] == 2 and res["source"] == "quiz"
     assert len(written["events"]) == 2               # both grounded -> both written
 
