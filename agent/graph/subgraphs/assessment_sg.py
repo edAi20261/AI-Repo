@@ -30,6 +30,7 @@ from ...tools import (
     get_mastery,
     get_question_bank,
     get_topic_chunks,
+    get_topic_labels,
     resolve_topics,
 )
 
@@ -268,7 +269,8 @@ def _retrieve_batch(state: AssessmentState) -> dict:
     k = state.get("k_per_topic", 4)
     topics = {slot["topic_id"] for slot in state.get("coverage", [])}
     by_topic: dict[str, list] = {}
-    fallbacks = 0
+    fallbacks = named = 0
+    labels: dict[str, str] | None = None
     for topic in topics:
         chunks = retrieval.retrieve(
             state.get("query") or "",
@@ -287,10 +289,25 @@ def _retrieve_batch(state: AssessmentState) -> dict:
         if not chunks and topic:
             chunks = get_topic_chunks([topic], namespaces, per_topic=k)
             fallbacks += 1
+        # A book whose passages were tagged sparsely has topics no passage
+        # carries: three Arabic multiple-choice questions on entrepreneurship came
+        # back as one, because two of the three topics found nothing to ask from.
+        # The topic's own name finds its passages where its tag does not.
+        if not chunks and topic:
+            if labels is None:
+                labels = get_topic_labels(list(topics))
+            if labels.get(topic):
+                chunks = retrieval.retrieve(
+                    labels[topic], namespaces, subject_id=state.get("subject_id"),
+                    lecture_ids=state.get("lecture_ids") or None, k=k,
+                    min_score=state.get("min_score", DEFAULT_MIN_SCORE))
+                named += 1
         by_topic[topic or ""] = chunks
-    logger.info("retrieve_batch", extra={
+    empty = sum(1 for chunks in by_topic.values() if not chunks)
+    log = logger.warning if empty else logger.info
+    log("retrieve_batch", extra={
         "topics": len(by_topic), "chunks": sum(len(v) for v in by_topic.values()),
-        "topic_fallbacks": fallbacks})
+        "topic_fallbacks": fallbacks, "found_by_name": named, "topics_without_passages": empty})
     return {"chunks_by_topic": by_topic}
 
 
