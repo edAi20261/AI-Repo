@@ -163,3 +163,16 @@ def test_a_taught_answer_carries_the_no_greeting_rule_and_small_talk_does_not():
 
     assert CONVERSE_PROMPT.language_rule is LanguageRule.REPLY
     assert "أهلا" not in CONVERSE_PROMPT.render_language("ar")
+
+
+def test_a_question_asking_for_a_fact_is_never_read_as_small_talk():
+    """"What year did World War 2 end?" asked inside mathematics was read as small
+    talk: it skipped the lessons, and the chat reply said "I can definitely help
+    you with that". "How many legs does a spider have?" went to the lessons and
+    was declined. Whether the lessons cover a question is decided by searching
+    them, never by the turn reading."""
+    from agent.prompts import UNDERSTAND_PROMPT
+
+    template = " ".join(UNDERSTAND_PROMPT.template.split())
+    assert "A question that asks for a fact" in template
+    assert "whether their lessons cover it is decided later" in template

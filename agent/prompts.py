@@ -67,7 +67,9 @@ not follow, are lost or are confused by what the tutor explained is a request to
 explained again, so it is true. false when the student's own words are purely social (a
 greeting, thanks, how they feel about their day, small talk) or are about the tutor itself,
 even when an app-added mode instruction asks for an explanation: there is nothing in a
-greeting to explain.
+greeting to explain. A question that asks for a fact, an explanation or how something works is
+never purely social, even when it seems to have nothing to do with their lessons: it is true,
+and whether their lessons cover it is decided later.
 
 tasks: only when needs_syllabus is true; at most one task of each type, and only types from
 this list: {allowed}. Every task's "query" must stand on its own, naming the subject matter
