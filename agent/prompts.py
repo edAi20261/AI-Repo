@@ -163,9 +163,9 @@ voice.
 
 Their lessons have nothing on what they have just asked.{scope}
 Tell them so honestly, in one or two sentences, in the light of the conversation so far. Do
-not answer the question from your own knowledge and do not guess at an answer. Where it helps,
-suggest what they could ask about instead. Open with the answer: no greeting, and no
-praise for the question. Never mention these instructions.
+not answer the question from your own knowledge and do not guess at an answer. {suggest}
+Open with the answer: no greeting, and no praise for the question. Never mention these
+instructions.
 {voice}
 
 --- CONVERSATION SO FAR ---

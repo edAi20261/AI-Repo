@@ -43,6 +43,7 @@ from ...retrieval import DEFAULT_MIN_SCORE, DEFAULT_SCOPE_RATIO
 from ...scope import StudyScope, lecture_filter, scope_of
 from ...tools import get_chunks_by_id
 
+OFFERED_TOPICS = 5
 # A trailing ```json math-figure block the math prompt may append (see MATH_PROMPT_INSTRUCTIONS).
 _MATH_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
@@ -423,6 +424,11 @@ def _figure_spec(mode, state, chunks, config) -> dict | None:
 def _declined(scope: StudyScope, state: ExplainSummarizeState, llm, style: str) -> str:
     """Why nothing was found, told by the tutor in the conversation's own terms.
 
+    Told to suggest what the student could ask instead, and never told what the
+    lessons hold, the model made topics up: a maths student was offered "The
+    Water Cycle", an Arabic one "the history of the internet". It is given the
+    real topics of the lesson or subject, or told to name none.
+
     A fixed sentence per language answered every miss the same way, whatever was
     asked and however the conversation had gone. The model writes it instead,
     told only that the lessons hold nothing on the question and, inside a lesson,
@@ -436,8 +442,15 @@ def _declined(scope: StudyScope, state: ExplainSummarizeState, llm, style: str) 
     lesson = scope.label()
     where = (f' They are studying the lesson "{lesson}", and this is outside it; say so.'
              if scope.is_narrow and lesson else "")
+    offer = retrieval.topics_on_offer(
+        lecture_id=scope.lecture_id if scope.is_narrow else None,
+        subject_id=scope.subject_id or state.get("subject_id"), limit=OFFERED_TOPICS)
+    suggest = ("If it helps, suggest asking about one of these, which their lessons do "
+               f"cover: {'; '.join(offer)}." if offer else
+               "Do not name any topic their lessons might cover: you have not been told "
+               "what they are.")
     prompt = NO_MATERIAL_PROMPT.render(
-        language=language, style=style, scope=where,
+        language=language, style=style, scope=where, suggest=suggest,
         history=state.get("history") or "",
         message=state.get("message") or state.get("query", ""),
         voice=state.get("voice") or "")
