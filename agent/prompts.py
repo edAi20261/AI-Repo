@@ -77,6 +77,9 @@ to look up in the lessons; how the student wants it presented (simpler, shorter,
 an example or a memory aid) belongs to the answer, not the search. Write the query in
 {material_language}. For "grade", the query is the answer to mark, copied as written.
 level is basic or intermediate; length is short or medium.
+whole_lesson: on a task, true only when a lesson is selected (see what is in force) and the
+task is about that lesson as a whole, such as summarising it or giving an overview of it,
+rather than about one topic inside it. Otherwise false.
 For "assessment", copy only what the student stated: a question count only if they gave one,
 question types only if they named them, a difficulty only if they said one, and focus "weak"
 only if they asked to practise their weak spots or what they struggle with. Omit the rest.
