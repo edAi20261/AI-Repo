@@ -18,7 +18,9 @@ class ChatRequest(Schema):
     user_type: Pathway = Field(description="Determines the allowed tasks and the voice.")
     message: str = Field(min_length=1, max_length=8000)
     subject_id: Optional[str] = Field(
-        default=None, description="Scopes retrieval. Inferred from the message when omitted."
+        default=None,
+        description=("Scopes retrieval. Falls back to study_scope.subject_id, then is "
+                     "inferred from the message when neither is sent."),
     )
     lecture_ids: Optional[list[str]] = Field(
         default=None, description="Narrows retrieval to specific lessons."
@@ -62,7 +64,8 @@ class ChatRequest(Schema):
             "user_id": self.user_id,
             "user_type": self.user_type,
             "message": self.message,
-            "subject_id": self.subject_id,
+            "subject_id": self.subject_id or (self.study_scope.subject_id
+                                              if self.study_scope else None),
             "lecture_ids": self.lecture_ids,
             "session_id": self.session_id,
             "grade": self.grade,

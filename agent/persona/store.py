@@ -15,12 +15,13 @@ import logging
 import threading
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from shared.config import Config
-from shared.errors import ConflictError, NotFoundError
+from shared.errors import ConflictError, NotFoundError, ServiceError, ServiceUnavailableError
 from shared.postgres import connect
 
 from ..models import PersonaCard
@@ -226,25 +227,26 @@ class PostgresPersonaStore(PersonaStore):
     def create(self, new: NewPersona, exemplars: list[Exemplar]) -> Persona:
         from psycopg.errors import UniqueViolation
 
-        try:
-            with connect(self._config) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(_NEXT_VERSION, (new.teacher_id,))
-                    version = cur.fetchone()[0]
-                    cur.execute(_INSERT, (
-                        new.teacher_id, version, new.teacher_name,
-                        new.card.model_dump_json(), len(exemplars),
-                        json.dumps(new.sources, ensure_ascii=False), new.consented_at))
-                    persona = _persona(cur.fetchone())
-                    cur.executemany(_INSERT_EXEMPLAR, [
-                        (persona.persona_id, ordinal, e.text, e.prompt, e.move, e.source_id,
-                         e.embedding)
-                        for ordinal, e in enumerate(exemplars)])
-                conn.commit()
-        except UniqueViolation as error:
-            raise ConflictError("Another persona for this teacher was stored at the same "
-                                "moment. Build it again.",
-                                details={"teacher_id": new.teacher_id}) from error
+        with _failing_closed("create", new.teacher_id):
+            try:
+                with connect(self._config) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(_NEXT_VERSION, (new.teacher_id,))
+                        version = cur.fetchone()[0]
+                        cur.execute(_INSERT, (
+                            new.teacher_id, version, new.teacher_name,
+                            new.card.model_dump_json(), len(exemplars),
+                            json.dumps(new.sources, ensure_ascii=False), new.consented_at))
+                        persona = _persona(cur.fetchone())
+                        cur.executemany(_INSERT_EXEMPLAR, [
+                            (persona.persona_id, ordinal, e.text, e.prompt, e.move, e.source_id,
+                             e.embedding)
+                            for ordinal, e in enumerate(exemplars)])
+                    conn.commit()
+            except UniqueViolation as error:
+                raise ConflictError("Another persona for this teacher was stored at the same "
+                                    "moment. Build it again.",
+                                    details={"teacher_id": new.teacher_id}) from error
         return persona
 
     def get(self, teacher_id: str, version: int) -> Optional[Persona]:
@@ -254,61 +256,80 @@ class PostgresPersonaStore(PersonaStore):
         return self._one(_ACTIVE, (teacher_id,))
 
     def versions(self, teacher_id: str) -> list[Persona]:
-        with connect(self._config) as conn, conn.cursor() as cur:
-            cur.execute(_VERSIONS, (teacher_id,))
-            return [_persona(row) for row in cur.fetchall()]
+        with _failing_closed("versions", teacher_id):
+            with connect(self._config) as conn, conn.cursor() as cur:
+                cur.execute(_VERSIONS, (teacher_id,))
+                return [_persona(row) for row in cur.fetchall()]
 
     def exemplars(self, persona_id: str) -> list[Exemplar]:
-        with connect(self._config) as conn, conn.cursor() as cur:
-            cur.execute(_EXEMPLARS, (persona_id,))
-            return [Exemplar(text=text, prompt=prompt, move=move, source_id=source_id,
-                             embedding=list(embedding or []))
-                    for text, prompt, move, source_id, embedding in cur.fetchall()]
+        with _failing_closed("exemplars", persona_id):
+            with connect(self._config) as conn, conn.cursor() as cur:
+                cur.execute(_EXEMPLARS, (persona_id,))
+                return [Exemplar(text=text, prompt=prompt, move=move, source_id=source_id,
+                                 embedding=list(embedding or []))
+                        for text, prompt, move, source_id, embedding in cur.fetchall()]
 
     def update_card(self, teacher_id: str, version: int, card: PersonaCard) -> Persona:
-        with connect(self._config) as conn:
-            with conn.cursor() as cur:
-                cur.execute(_UPDATE_CARD, (card.model_dump_json(), teacher_id, version))
-                row = cur.fetchone()
-            conn.commit()
+        with _failing_closed("update_card", teacher_id):
+            with connect(self._config) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_UPDATE_CARD, (card.model_dump_json(), teacher_id, version))
+                    row = cur.fetchone()
+                conn.commit()
         if row is not None:
             return _persona(row)
         existing = self.get(teacher_id, version)
         raise _live(teacher_id, version) if existing else _missing(teacher_id, version)
 
     def activate(self, teacher_id: str, version: int) -> Persona:
-        with connect(self._config) as conn:
-            with conn.cursor() as cur:
-                cur.execute(_BY_VERSION, (teacher_id, version))
-                if cur.fetchone() is None:
-                    raise _missing(teacher_id, version)
-                cur.execute(_RETIRE, (teacher_id,))
-                cur.execute(_ACTIVATE, (teacher_id, version))
-                row = cur.fetchone()
-            conn.commit()
+        with _failing_closed("activate", teacher_id):
+            with connect(self._config) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_BY_VERSION, (teacher_id, version))
+                    if cur.fetchone() is None:
+                        raise _missing(teacher_id, version)
+                    cur.execute(_RETIRE, (teacher_id,))
+                    cur.execute(_ACTIVATE, (teacher_id, version))
+                    row = cur.fetchone()
+                conn.commit()
         return _persona(row)
 
     def deactivate(self, teacher_id: str) -> Optional[Persona]:
-        with connect(self._config) as conn:
-            with conn.cursor() as cur:
-                cur.execute(_RETIRE, (teacher_id,))
-                row = cur.fetchone()
-            conn.commit()
+        with _failing_closed("deactivate", teacher_id):
+            with connect(self._config) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_RETIRE, (teacher_id,))
+                    row = cur.fetchone()
+                conn.commit()
         return _persona(row) if row else None
 
     def delete(self, teacher_id: str) -> int:
-        with connect(self._config) as conn:
-            with conn.cursor() as cur:
-                cur.execute(_DELETE, (teacher_id,))
-                deleted = cur.rowcount
-            conn.commit()
+        with _failing_closed("delete", teacher_id):
+            with connect(self._config) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_DELETE, (teacher_id,))
+                    deleted = cur.rowcount
+                conn.commit()
         return max(0, deleted)
 
     def _one(self, sql: str, params: tuple) -> Optional[Persona]:
-        with connect(self._config) as conn, conn.cursor() as cur:
-            cur.execute(sql, params)
-            row = cur.fetchone()
+        with _failing_closed("read", str(params[0])):
+            with connect(self._config) as conn, conn.cursor() as cur:
+                cur.execute(sql, params)
+                row = cur.fetchone()
         return _persona(row) if row else None
+
+
+@contextmanager
+def _failing_closed(label: str, subject: str) -> Iterator[None]:
+    try:
+        yield
+    except ServiceError:
+        raise
+    except Exception as error:
+        logger.error("persona store %s failed", label, extra={"subject": subject}, exc_info=error)
+        raise ServiceUnavailableError(
+            "Teaching personas cannot be reached right now. Please try again shortly.") from error
 
 
 def _persona(row: tuple) -> Persona:

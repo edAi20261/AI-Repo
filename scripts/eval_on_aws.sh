@@ -14,6 +14,7 @@
 #   scripts/eval_on_aws.sh conversations             # memory, language, greeting
 #   scripts/eval_on_aws.sh conversations --repeat 3  # and how often each passes
 #   scripts/eval_on_aws.sh retrieval                 # precision@1 and refusals
+#   scripts/eval_on_aws.sh homework                  # reading, marking, review sweep
 #
 # Everything after the eval name is passed to the script unchanged. Only the
 # conversation eval speaks HTTP, so only it is pointed at the load balancer;
@@ -29,8 +30,8 @@ LOG_GROUP="${EVAL_LOG_GROUP:-/ecs/edu-ai-ai-service}"
 
 name="${1:-}"
 case "$name" in
-  conversations|retrieval|rag|answers) shift;;
-  *) echo "usage: $0 <conversations|retrieval|rag|answers> [arguments]" >&2; exit 2;;
+  conversations|retrieval|rag|answers|homework) shift;;
+  *) echo "usage: $0 <conversations|retrieval|rag|answers|homework> [arguments]" >&2; exit 2;;
 esac
 
 # The service's own task definition and network, so the eval runs with the same

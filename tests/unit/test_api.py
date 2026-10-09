@@ -13,7 +13,7 @@ import anyio
 import pytest
 from fastapi.testclient import TestClient
 
-from agent.homework import HomeworkCapture
+from agent.homework import HomeworkCapture, MarkedHomework
 from shared.config import get_config
 from shared.metering import Meter, record_usage
 from system.errors import ConflictError, NotFoundError, UpstreamTimeoutError
@@ -32,6 +32,7 @@ class StubRuntime:
         self.in_flight = 0
         self.config = get_config()
         self.homework = HomeworkCapture()
+        self.marked = MarkedHomework()
 
     async def chat(self, payload):
         self.calls.append(("chat", payload))
@@ -77,6 +78,16 @@ class StubRuntime:
         self.calls.append(("capture_homework", {"bytes": len(content), "language": language}))
         self.billed.append(billed_user_id)
         return Metered(self.homework, Meter())
+
+    async def mark_homework(self, content, payload, *, billed_user_id):
+        self.calls.append(("mark_homework", {"bytes": len(content), **payload}))
+        self.billed.append(billed_user_id)
+        return Metered(self.marked, Meter())
+
+    async def record_reviewed(self, payload):
+        self.calls.append(("record_reviewed", payload))
+        return {"mastery_events": len(payload["grades"]), "topics_updated": 1,
+                "mastery_recorded": True}
 
     async def class_analytics(self, payload):
         self.calls.append(("class_analytics", payload))
@@ -853,6 +864,88 @@ def test_a_scanned_booklet_is_refused_by_size(client):
 
 def test_an_empty_upload_is_refused(client):
     assert _photo(client, content=b"").status_code == 422
+
+
+def _mark(client, params=None, content_type="image/png"):
+    return client.post(
+        "/ai/homework/mark",
+        params={"user_id": "s-1", "billed_user_id": "t-1", **(params or {})},
+        files={"image": ("page.png", b"\x89PNG\r\n", content_type)},
+        headers=auth(),
+    )
+
+
+def test_a_marked_page_comes_back_with_a_grade_beside_each_answer(client):
+    client.runtime.marked = MarkedHomework.model_validate({
+        "language": "en",
+        "questions": [
+            {"number": "1", "question": "81 - 52?", "student_answer": "39", "status": "marked",
+             "grade": {"question": "81 - 52?", "correct": False, "partial_score": 0.0,
+                       "mistake_labels": ["borrowing error"], "review": ["low_confidence"]}},
+            {"number": "2", "question": "7 x 8?", "status": "blank"},
+        ],
+        "summary": {"count": 1, "needs_review": 1, "blank": 1},
+    })
+
+    body = _mark(client).json()
+    first, second = body["questions"]
+    assert first["status"] == "marked" and first["grade"]["needs_review"] is True
+    assert first["grade"]["mistake_labels"] == ["borrowing error"]
+    assert second["status"] == "blank" and second["grade"] is None
+    assert body["summary"]["blank"] == 1 and body["usage"] is not None
+
+
+def test_marking_is_for_the_named_student_and_paid_by_the_named_account(client):
+    _mark(client, {"subject_id": "math", "lecture_ids": ["l1", "l2"], "language": "ar"})
+
+    name, call = client.runtime.calls[-1]
+    assert name == "mark_homework"
+    assert call["user_id"] == "s-1" and call["subject_id"] == "math"
+    assert call["lecture_ids"] == ["l1", "l2"] and call["language"] == "ar"
+    assert client.runtime.billed[-1] == "t-1"
+
+
+def test_an_unreadable_page_is_reported_as_unmarked(client):
+    client.runtime.marked = MarkedHomework(unreadable=True)
+    body = _mark(client).json()
+    assert body["unreadable"] is True and body["questions"] == []
+
+
+def test_marking_needs_to_know_whose_page_it_is(client):
+    response = client.post(
+        "/ai/homework/mark", params={"billed_user_id": "t-1"},
+        files={"image": ("page.png", b"\x89PNG", "image/png")}, headers=auth())
+    assert response.status_code == 422
+
+
+def test_a_pdf_is_refused_before_marking_is_paid_for(client):
+    assert _mark(client, content_type="application/pdf").status_code == 422
+    assert not any(name == "mark_homework" for name, _ in client.runtime.calls)
+
+
+def test_a_teacher_s_decision_on_held_grades_is_recorded(client):
+    response = client.post("/ai/grade/reviewed", headers=auth(), json={
+        "user_id": "s-1", "source": "uploaded",
+        "grades": [{"topic_id": "t1", "lecture_id": "l1", "ai_score": 0.0, "score": 1.0}],
+    })
+
+    assert response.status_code == 200
+    assert response.json()["mastery_events"] == 1
+    name, call = client.runtime.calls[-1]
+    assert name == "record_reviewed" and call["grades"][0]["score"] == 1.0
+
+
+@pytest.mark.parametrize("grade", [
+    {"topic_id": "t1", "lecture_id": "l1", "ai_score": 0.0, "score": 2.0},
+    {"topic_id": "", "lecture_id": "l1", "ai_score": 0.0, "score": 1.0},
+    {"lecture_id": "l1", "ai_score": 0.0, "score": 1.0},
+])
+def test_a_teacher_decision_that_cannot_become_evidence_is_refused(client, grade):
+    """Without a topic and a lesson a decision cannot move mastery, and a score past
+    one would move it past its bounds."""
+    response = client.post("/ai/grade/reviewed", headers=auth(), json={
+        "user_id": "s-1", "source": "uploaded", "grades": [grade]})
+    assert response.status_code == 422
 
 
 def test_capture_needs_the_service_token(client):

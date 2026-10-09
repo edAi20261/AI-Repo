@@ -276,3 +276,23 @@ def test_a_refusal_that_knows_no_topics_is_told_to_name_none(monkeypatch):
     _declined(StudyScope(), {"language": "en", "message": "q"}, writer, "friendly")
     assert "Do not name any topic" in writer.prompt
     assert "suggest what they could ask about instead" not in writer.prompt
+# --- the selected subject is the turn's subject ------------------------------
+
+def test_the_subject_a_student_selected_is_the_subject_the_turn_is_answered_in():
+    """A turn that carried its subject only inside study_scope had it ignored: the
+    subject was guessed from the words of the message, and a student sitting in
+    the Arabic subject's Entrepreneurship lesson was answered as if in Arabic
+    mathematics."""
+    from system.schemas.chat import ChatRequest
+
+    state = ChatRequest(user_id="u1", user_type="student", message="لخص لي هذا الدرس",
+                        study_scope={"subject_id": "arabic", "lecture_id": LESSON}).to_state()
+    assert state["subject_id"] == "arabic"
+
+
+def test_a_subject_sent_on_the_turn_itself_still_wins():
+    from system.schemas.chat import ChatRequest
+
+    state = ChatRequest(user_id="u1", user_type="student", message="q", subject_id="maths",
+                        study_scope={"subject_id": "arabic"}).to_state()
+    assert state["subject_id"] == "maths"

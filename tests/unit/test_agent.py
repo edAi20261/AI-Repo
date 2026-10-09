@@ -168,7 +168,8 @@ def test_without_a_model_every_turn_is_an_explain_task(monkeypatch):
     out = node({"pathway": "student", "message": "explain photosynthesis",
                 "conversation": {}, "history": ""})
     assert out["planned_tasks"] == [{"type": "explain", "query": "explain photosynthesis",
-                                     "level": "intermediate", "length": "medium"}]
+                                     "level": "intermediate", "length": "medium",
+                                     "whole_lesson": False}]
 
 
 def test_a_reading_that_contradicts_itself_goes_back_to_the_model(monkeypatch):

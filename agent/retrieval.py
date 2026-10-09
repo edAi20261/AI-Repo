@@ -15,6 +15,7 @@ from shared.logging import clip
 from .models import Citation, PrereqTopic, RetrievedChunk
 from .tools import (
     get_lecture_topics,
+    get_lesson_chunks,
     get_neighbours,
     get_subject_topics,
     get_topic_deps,
@@ -112,6 +113,11 @@ def topics_on_offer(*, lecture_id: str | None, subject_id: str | None,
                        extra={"lecture_id": lecture_id, "subject_id": subject_id},
                        exc_info=True)
     return []
+def whole_lesson(lecture_id: str, namespaces: list[str], *, limit: int) -> list[RetrievedChunk]:
+    """The selected lesson's own passages, for a request about the lesson as a whole."""
+    chunks = get_lesson_chunks(lecture_id, namespaces, limit=limit)
+    logger.info("read the whole lesson", extra={"lecture_id": lecture_id, "kept": len(chunks)})
+    return chunks
 
 
 def with_neighbours(

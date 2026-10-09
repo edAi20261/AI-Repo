@@ -158,3 +158,27 @@ def test_with_credits_disabled_nothing_is_charged_and_turns_still_run():
     graph = _Graph()
     turn = anyio.run(_runtime(graph, None).chat, {"user_id": "u-1", "message": "hi"})
     assert turn.result == {"response": "Evaporation is ..."} and graph.calls == 1
+
+
+@pytest.mark.parametrize("marked, refunded", [
+    ({"unreadable": True}, True),
+    ({"degraded": True}, True),
+    ({}, False),
+])
+def test_a_homework_page_is_paid_for_only_when_it_was_marked(monkeypatch, marked, refunded):
+    """A photo nobody could read, or a page the grader failed on, came back with no
+    marks on it. Charging for it is charging for nothing."""
+    import system.runtime as runtime_module
+    from agent.homework import MarkedHomework
+
+    monkeypatch.setattr(runtime_module, "mark",
+                        lambda content, config, **payload: MarkedHomework(**marked))
+    credits = _credits()
+    runtime = _runtime(_Graph(), credits)
+
+    async def run():
+        return await runtime.mark_homework(b"png", {"user_id": "s-1"}, billed_user_id="t-1")
+
+    anyio.run(run)
+    expected = [Kind.ALLOWANCE_RENEWAL, Kind.USAGE] + ([Kind.REFUND] if refunded else [])
+    assert _kinds(credits, "t-1") == expected

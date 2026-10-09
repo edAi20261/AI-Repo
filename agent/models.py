@@ -323,6 +323,10 @@ class PlannedTask(_ReadsNullWords):
     assessment: Optional[AssessmentSpec] = None   # only on an assessment task (Q2)
     grade: Optional[GradeSpec] = None             # only on a grade task
     visual: Optional[VisualSpec] = None           # only on a visual task
+    whole_lesson: bool = Field(
+        default=False,
+        description="true only when a lesson is selected and this task is about that "
+                    "lesson as a whole rather than a topic inside it.")
 
 
 class LanguageRequest(_ReadsNullWords):
@@ -466,6 +470,10 @@ class SubmissionItem(BaseModel):
     bloom: Optional[str] = None
     points: Optional[float] = None
     known_score: Optional[float] = Field(default=None, ge=0, le=1)
+    unclear_reading: bool = False
+
+
+ReviewReason = Literal["low_confidence", "unclear_reading"]
 
 
 class GradedItem(BaseModel):
@@ -489,6 +497,24 @@ class GradedItem(BaseModel):
     difficulty: Optional[str] = None
     bloom: Optional[str] = None
     points: Optional[float] = None
+    review: list[ReviewReason] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def needs_review(self) -> bool:
+        return bool(self.review)
+
+
+class ReviewedGrade(BaseModel):
+    """A held grade after a teacher decided it: the model's score and the teacher's."""
+    topic_id: str = Field(min_length=1)
+    lecture_id: str = Field(min_length=1)
+    question_id: Optional[str] = None
+    ai_score: float = Field(ge=0.0, le=1.0)
+    score: float = Field(ge=0.0, le=1.0)
+    difficulty: Optional[str] = None
+    bloom: Optional[str] = None
+    mistake_tag_ids: list[str] = Field(default_factory=list)
 
 
 class GradeDraft(BaseModel):
@@ -512,7 +538,10 @@ class GradeDraft(BaseModel):
         default_factory=list,
         description="1-3 short, reusable error labels for a wrong answer; empty when correct.")
     confidence: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0, description="Confidence in this grade.")
+        default=None, ge=0.0, le=1.0,
+        description=("How sure you are that this mark is right, 0 to 1. Low when the answer "
+                     "is ambiguous or garbled, or when the reference and context do not "
+                     "settle whether it is right."))
 
 
 class GradeBatch(BaseModel):

@@ -77,6 +77,9 @@ to look up in the lessons; how the student wants it presented (simpler, shorter,
 an example or a memory aid) belongs to the answer, not the search. Write the query in
 {material_language}. For "grade", the query is the answer to mark, copied as written.
 level is basic or intermediate; length is short or medium.
+whole_lesson: on a task, true only when a lesson is selected (see what is in force) and the
+task is about that lesson as a whole, such as summarising it or giving an overview of it,
+rather than about one topic inside it. Otherwise false.
 For "assessment", copy only what the student stated: a question count only if they gave one,
 question types only if they named them, a difficulty only if they said one, and focus "weak"
 only if they asked to practise their weak spots or what they struggle with. Omit the rest.
@@ -810,6 +813,11 @@ too, exactly as they wrote it — including a wrong one. Where they left it blan
 return null.
 
 Copy. Do not answer, correct, complete or tidy anything.
+
+Set "unclear": true on a question when you had to guess at any word, digit or
+symbol in it or in the student's answer: a smudge, a crossed-out word, a letter
+that could be another. A mark given to an answer you half-read is checked by
+the teacher, so say so rather than settle on a reading.
 
 If the photograph is too blurred, dark or cropped to read with confidence, set
 "unreadable": true and return no questions. A misread question produces a

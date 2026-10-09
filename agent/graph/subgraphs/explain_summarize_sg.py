@@ -78,6 +78,7 @@ class ExplainSummarizeState(TypedDict, total=False):
     expand_anchors: int
     expand_window: int
     context_limit: int
+    whole_lesson: bool
     approach: str                   # models.TeachingApproach, from the turn reading
     scope_fit: str                  # models.ScopeFit: topic | foundation | outside
     subject_name: str | None
@@ -96,6 +97,8 @@ class ExplainSummarizeState(TypedDict, total=False):
 def _retrieve(state: ExplainSummarizeState, config) -> dict:
     """The passages this turn answers from.
 
+    A request about the selected lesson as a whole reads that lesson; there is
+    nothing in "this lesson" for a search to match.
     A turn that carries the last answer on starts from the passages that answer
     rested on, reached by id, and adds whatever a search for the rewritten
     question finds. The rewrite names its subject, so the search is a real one;
@@ -104,6 +107,10 @@ def _retrieve(state: ExplainSummarizeState, config) -> dict:
     passed them on the turn that found them.
     """
     scope = scope_of(state)
+    if scope.is_narrow and state.get("whole_lesson"):
+        return {"chunks": retrieval.whole_lesson(
+            scope.lecture_id, state["namespaces"],
+            limit=state.get("context_limit", state.get("k", 8)))}
     subject_id = scope.subject_id or state.get("subject_id")
     query = state.get("query") or state.get("message") or ""
     k = state.get("k", 8)
