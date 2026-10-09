@@ -75,13 +75,15 @@ class HistoryWindow:
             rebuild_tokens=settings.get("rebuild_tokens", DEFAULT_REBUILD_TOKENS),
         )
 
-    def render(self, conversation: Conversation, *, carried_over: str = "") -> str:
+    def render(self, conversation: Conversation, *, carried_over: str = "",
+               standing: str = "") -> str:
         """The conversation so far, oldest first, as the prompts quote it.
 
         ``carried_over`` is what the tutor knows about this student from before
         this conversation, and stands in for the history only while there is no
         history: it is the weakest evidence here, and the moment there is a turn
-        to read the turn is better.
+        to read the turn is better. ``standing`` is what the student asked of
+        every answer, and heads the history on every turn.
         """
         chosen: list[str] = []
         spent = 0
@@ -92,13 +94,13 @@ class HistoryWindow:
                 break
             chosen.insert(0, block)
             spent += cost
-        parts = []
+        parts = [standing] if standing else []
         if conversation.summary:
             parts.append(f"Earlier in this conversation (summary):\n{conversation.summary}")
         parts.extend(chosen)
-        if parts:
+        if chosen or conversation.summary:
             return "\n\n".join(parts)
-        return f"{NO_HISTORY}\n\n{carried_over}" if carried_over else NO_HISTORY
+        return "\n\n".join([*parts, NO_HISTORY, *([carried_over] if carried_over else [])])
 
     def overflow(self, conversation: Conversation) -> list[Turn]:
         """The turns to fold into the summary, oldest first, or none yet."""

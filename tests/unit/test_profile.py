@@ -73,7 +73,9 @@ def test_a_stated_preference_outlives_the_conversation_it_was_stated_in(fake_pos
     assert carried.stated.length == "short" and carried.stated.examples is True
     assert carried.stated.pace == "slow"
     assert carried.stated.visuals is None        # false in the column is "never said"
-    text = carried.render()
+    from agent.profile import standing_requests
+
+    text = standing_requests(carried.stated)
     assert "short answers" in text and "worked examples" in text
 
 
@@ -147,3 +149,37 @@ def test_a_conversation_with_turns_in_it_does_not_reach_back(monkeypatch):
                                    SubjectDirectory(get_config()))
     classify({"user_type": "student", "user_id": USER, "session_id": session})
     assert not reached
+
+
+def test_a_stated_preference_holds_after_the_first_answer(monkeypatch):
+    """"Always keep it short" was shown to the tutor only while a conversation had
+    no turns, so it governed the first answer of the next chat and none after
+    it: the second answer came back at 1,915 characters."""
+    store = InMemoryConversationStore()
+    session = str(uuid.uuid4())
+    store.append(USER, "student", session, nmod.Turn(message="hello", reply="hi"))
+    monkeypatch.setattr(nmod, "stated_preference",
+                        lambda user_id, config=None: StatedPreference(length="short"))
+    classify = nmod.build_classify(get_config(), store, HistoryWindow(),
+                                   SubjectDirectory(get_config()))
+    history = classify({"user_type": "student", "user_id": USER,
+                        "session_id": session})["history"]
+    assert "They asked for short answers." in history and "hello" in history
+
+
+def test_a_new_conversation_shows_the_preference_once(monkeypatch):
+    conversation = InMemoryConversationStore().load(USER, str(uuid.uuid4()))
+    from agent.profile import standing_requests
+
+    text = HistoryWindow().render(
+        conversation, carried_over=Carryover(subjects=["Science"],
+                                             stated=StatedPreference(length="short")).render(),
+        standing=standing_requests(StatedPreference(length="short")))
+    assert text.count("short answers") == 1 and NO_HISTORY in text
+
+
+def test_a_preference_that_cannot_be_read_answers_without_it(fake_postgres):
+    from agent.profile import stated_preference
+
+    fake_postgres(explode=True)
+    assert not stated_preference(USER, config=get_config())
