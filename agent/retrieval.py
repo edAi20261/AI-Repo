@@ -13,7 +13,13 @@ from collections.abc import Sequence
 from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
-from .tools import get_neighbours, get_topic_deps, rag_search
+from .tools import (
+    get_lecture_topics,
+    get_neighbours,
+    get_subject_topics,
+    get_topic_deps,
+    rag_search,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +96,22 @@ def answers_within_scope(
     if not unscoped:
         return True
     return scoped_best / unscoped[0].score >= ratio
+
+
+def topics_on_offer(*, lecture_id: str | None, subject_id: str | None,
+                    limit: int) -> list[str]:
+    """What the student's lessons do cover, for a tutor that has to say they do not
+    cover what was asked: the selected lesson's topics, else the subject's."""
+    try:
+        if lecture_id:
+            return [t.label for t in get_lecture_topics([lecture_id], limit=limit) if t.label]
+        if subject_id:
+            return get_subject_topics(subject_id, limit=limit)
+    except Exception:
+        logger.warning("could not read what the lessons cover; the refusal will name none",
+                       extra={"lecture_id": lecture_id, "subject_id": subject_id},
+                       exc_info=True)
+    return []
 
 
 def with_neighbours(

@@ -230,3 +230,49 @@ def test_a_refusal_the_model_cannot_write_fails_the_turn():
     scope = StudyScope(lecture_id=LESSON, lesson_title="Photosynthesis")
     with pytest.raises(TutorUnavailable):
         _declined(scope, {"language": "en", "message": "q"}, _Writer(error=True), "friendly")
+
+
+def _offers(monkeypatch, topics):
+    from agent.graph.subgraphs import explain_summarize_sg as sg
+
+    asked = {}
+
+    def offer(**kw):
+        asked.update(kw)
+        return topics
+
+    monkeypatch.setattr(sg.retrieval, "topics_on_offer", offer)
+    return asked
+
+
+def test_a_refusal_suggests_only_topics_the_lessons_really_cover(monkeypatch):
+    """Told to suggest what to ask instead and never told what the lessons hold, the
+    model made topics up: a maths student was offered "The Water Cycle", an Arabic
+    one "the history of the internet"."""
+    from agent.graph.subgraphs.explain_summarize_sg import _declined
+
+    asked = _offers(monkeypatch, ["Column subtraction", "Borrowing"])
+    writer = _Writer("Your lessons don't cover that.")
+    _declined(StudyScope(subject_id="maths"), {"language": "en", "message": "spider legs?",
+                                               "subject_id": "maths"}, writer, "friendly")
+    assert "Column subtraction; Borrowing" in writer.prompt
+    assert asked == {"lecture_id": None, "subject_id": "maths", "limit": 5}
+
+
+def test_inside_a_lesson_the_refusal_offers_that_lessons_topics(monkeypatch):
+    from agent.graph.subgraphs.explain_summarize_sg import _declined
+
+    asked = _offers(monkeypatch, ["Borrowing"])
+    _declined(StudyScope(subject_id="maths", lecture_id=LESSON, lesson_title="Subtraction"),
+              {"language": "en", "message": "q"}, _Writer("x"), "friendly")
+    assert asked["lecture_id"] == LESSON
+
+
+def test_a_refusal_that_knows_no_topics_is_told_to_name_none(monkeypatch):
+    from agent.graph.subgraphs.explain_summarize_sg import _declined
+
+    _offers(monkeypatch, [])
+    writer = _Writer("Your lessons don't cover that.")
+    _declined(StudyScope(), {"language": "en", "message": "q"}, writer, "friendly")
+    assert "Do not name any topic" in writer.prompt
+    assert "suggest what they could ask about instead" not in writer.prompt

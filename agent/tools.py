@@ -570,6 +570,22 @@ def get_lecture_topics(
                 for r in cur.fetchall()]
 
 
+def get_subject_topics(
+    subject_id: str,
+    *,
+    limit: int = 20,
+    config: Config | None = None,
+) -> list[str]:
+    """The labels of a subject's topics, in the order they were taught. A lookup."""
+    config = config or Config.load()
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT label FROM ai.topics WHERE subject_id::text = %s AND label <> '' "
+            "GROUP BY label ORDER BY min(created_at) LIMIT %s",
+            (str(subject_id), limit))
+        return [r[0] for r in cur.fetchall()]
+
+
 def get_topic_lectures(
     topic_ids: Sequence[str],
     *,
