@@ -43,6 +43,7 @@ from ..models import (
     GradeSpec,
     PlannedTask,
     PrereqTopic,
+    StatedPreference,
     Style,
     TurnUnderstanding,
     VisualSpec,
@@ -61,7 +62,7 @@ from ..scope import lecture_filter
 from ..subjects import SubjectDirectory
 from ..learner import standing
 from ..persona.voice import PersonaDirectory, Voices
-from ..profile import Carryover, carried_over, record
+from ..profile import Carryover, carried_over, record, standing_requests, stated_preference
 from ..tools import rag_search, resolve_topics
 from .pathways import build_namespaces, resolve_style
 
@@ -99,6 +100,12 @@ def build_classify(config, store: ConversationStore, window: HistoryWindow,
         # queries for something the last six turns already say better.
         carried = (carried_over(user_id, subjects, config=config)
                    if conversation.is_new and pathway == "student" else Carryover())
+        if pathway != "student":
+            stated = StatedPreference()
+        elif conversation.is_new:
+            stated = carried.stated
+        else:
+            stated = stated_preference(user_id, config=config)
         logger.info("classify", extra={
             "pathway": pathway, "remembered_turns": len(conversation.turns),
             "summarised": bool(conversation.summary), **carried.log_fields()})
@@ -106,7 +113,8 @@ def build_classify(config, store: ConversationStore, window: HistoryWindow,
             "pathway": pathway,
             "api_language": state.get("language"),
             "conversation": conversation.model_dump(),
-            "history": window.render(conversation, carried_over=carried.render()),
+            "history": window.render(conversation, carried_over=carried.render(),
+                                     standing=standing_requests(stated)),
         }
 
     return classify

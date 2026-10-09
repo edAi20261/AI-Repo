@@ -109,7 +109,6 @@ class Carryover:
             lines.append(f"- They have been working on: {', '.join(self.subjects)}.")
         if self.languages:
             lines.append(f"- They write to you in: {', '.join(self.languages)}.")
-        lines.extend(f"- {line}" for line in _stated_lines(self.stated))
         lines.append("Do not greet them as a stranger and do not recap this back at them; "
                      "it is context, not something they asked about.")
         return "\n".join(lines)
@@ -118,6 +117,35 @@ class Carryover:
         return {"carried_subjects": len(self.subjects),
                 "carried_languages": len(self.languages),
                 "carried_preferences": bool(self.stated)}
+
+
+def standing_requests(stated: StatedPreference) -> str:
+    """What the student asked of every answer, as the head of the conversation."""
+    lines = _stated_lines(stated)
+    if not lines:
+        return ""
+    return "\n".join(["What this student asked for, which holds for every answer:",
+                      *(f"- {line}" for line in lines)])
+
+
+def stated_preference(user_id: Optional[str], *, config=None) -> StatedPreference:
+    """What the student said they want from every answer, or nothing when unknown.
+
+    Read on every turn, not once per conversation: it was only shown while a
+    conversation had no turns, so "always keep it short" governed the first
+    answer of the next chat and none after it.
+    """
+    if not user_id:
+        return StatedPreference()
+    try:
+        with connect(config) as conn, conn.cursor() as cur:
+            cur.execute(_STATED, (user_id,))
+            row = cur.fetchone()
+    except Exception:
+        logger.warning("the student's stated preferences could not be read; "
+                       "answering without them", exc_info=True)
+        return StatedPreference()
+    return _stated_from_row(row)
 
 
 def _stated_lines(stated: StatedPreference) -> list[str]:
