@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
-from .tools import get_neighbours, get_topic_deps, rag_search
+from .tools import get_lesson_chunks, get_neighbours, get_topic_deps, rag_search
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,13 @@ def answers_within_scope(
     if not unscoped:
         return True
     return scoped_best / unscoped[0].score >= ratio
+
+
+def whole_lesson(lecture_id: str, namespaces: list[str], *, limit: int) -> list[RetrievedChunk]:
+    """The selected lesson's own passages, for a request about the lesson as a whole."""
+    chunks = get_lesson_chunks(lecture_id, namespaces, limit=limit)
+    logger.info("read the whole lesson", extra={"lecture_id": lecture_id, "kept": len(chunks)})
+    return chunks
 
 
 def with_neighbours(

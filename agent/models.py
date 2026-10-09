@@ -323,6 +323,10 @@ class PlannedTask(_ReadsNullWords):
     assessment: Optional[AssessmentSpec] = None   # only on an assessment task (Q2)
     grade: Optional[GradeSpec] = None             # only on a grade task
     visual: Optional[VisualSpec] = None           # only on a visual task
+    whole_lesson: bool = Field(
+        default=False,
+        description="true only when a lesson is selected and this task is about that "
+                    "lesson as a whole rather than a topic inside it.")
 
 
 class LanguageRequest(_ReadsNullWords):

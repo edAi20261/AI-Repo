@@ -545,6 +545,56 @@ def get_neighbours(
     return _apply_labels(chunks, _citation_labels([c.chunk_id for c in chunks], config))
 
 
+def get_lesson_chunks(
+    lecture_id: str,
+    namespaces: Sequence[str],
+    *,
+    limit: int,
+    ready_only: bool = True,
+    config: Config | None = None,
+) -> list[RetrievedChunk]:
+    """Passages from across one lesson, in reading order, at most ``limit``.
+
+    A request about a lesson as a whole names nothing a search can match: "this
+    lesson" scored 0.47 against a subtraction lesson, and the turn was refused as
+    outside the lesson the student was sitting in. A lookup reads the lesson
+    itself. A lesson longer than ``limit`` is sampled at even steps from its first
+    passage to its last, so a summary covers the end of the lesson and not only
+    its opening pages. ``score`` is 0.0: nothing was ranked.
+    """
+    if not namespaces:
+        raise ValueError("get_lesson_chunks requires at least one namespace (invariant 1).")
+    if limit < 1:
+        return []
+    config = config or Config.load()
+    ready_clause = ""
+    if ready_only:
+        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
+                        "ai.lecture_ingestion WHERE status = 'ready')")
+    sql = (
+        "SELECT DISTINCT c.chunk_id::text, c.text, c.heading_path, c.page_from, "
+        "c.page_to, c.lecture_id::text, c.language, c.topic_ids, c.order_index "
+        "FROM ai.chunks c JOIN ai.vector_index v ON v.chunk_id = c.chunk_id "
+        "WHERE c.lecture_id::text = %s AND v.namespace = ANY(%s)"
+        + ready_clause + " ORDER BY c.order_index"
+    )
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute(sql, (str(lecture_id), list(namespaces)))
+        rows = [r for r in cur.fetchall() if chunk_kind(r[1] or "") not in NOT_CONTENT]
+    if len(rows) > limit:
+        step = (len(rows) - 1) / (limit - 1) if limit > 1 else 0
+        rows = [rows[round(i * step)] for i in range(limit)]
+    chunks = [
+        RetrievedChunk(
+            chunk_id=r[0], score=0.0, text=r[1], heading_path=r[2],
+            page_from=r[3], page_to=r[4], lecture_id=r[5], language=r[6],
+            topic_ids=[str(t) for t in (r[7] or [])], order_index=r[8],
+        )
+        for r in rows
+    ]
+    return _apply_labels(chunks, _citation_labels([c.chunk_id for c in chunks], config))
+
+
 def get_lecture_topics(
     lecture_ids: Sequence[str],
     *,

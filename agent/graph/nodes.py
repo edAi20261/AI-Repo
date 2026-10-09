@@ -57,7 +57,7 @@ from ..prompts import (
     UNDERSTAND_PROMPT,
 )
 from ..retrieval import DEFAULT_MIN_SCORE
-from ..scope import lecture_filter
+from ..scope import StudyScope, lecture_filter, scope_of
 from ..subjects import SubjectDirectory
 from ..learner import standing
 from ..persona.voice import PersonaDirectory, Voices
@@ -166,7 +166,8 @@ def capabilities(config, pathway: Optional[str]) -> str:
 
 
 def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
-                   pending: Optional[PendingAssessment] = None) -> str:
+                   pending: Optional[PendingAssessment] = None,
+                   scope: Optional[StudyScope] = None) -> str:
     lines = []
     if subject.name or subject.language:
         taught = (f", taught in {name_of(subject.language)}"
@@ -174,6 +175,10 @@ def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
         lines.append(f"- Subject: {subject.name or 'unnamed'}{taught}.")
     else:
         lines.append("- Subject: not settled yet.")
+    if scope and scope.is_narrow:
+        named = f' "{scope.label()}"' if scope.label() else ""
+        lines.append(f"- The student has selected the lesson{named}. When they speak of "
+                     "this lesson, they mean it.")
     if requested:
         lines.append(f"- The student asked to be answered in {name_of(requested)}.")
     if pending and pending.items:
@@ -227,7 +232,7 @@ def _read_turn(state, llm, config, *, allowed, subject, requested, policy,
         role=state["pathway"],
         task_descriptions=_allowed_descriptions(allowed),
         allowed=", ".join(allowed),
-        session=_session_facts(subject, requested, policy, pending),
+        session=_session_facts(subject, requested, policy, pending, scope_of(state)),
         history=state.get("history") or "",
         message=message,
         material_language=material,
@@ -256,7 +261,8 @@ def _planned(reading: TurnUnderstanding) -> list[dict]:
     tasks = []
     for task in reading.tasks:
         entry = {"type": task.type, "query": task.query.strip(),
-                 "level": task.level, "length": task.length}
+                 "level": task.level, "length": task.length,
+                 "whole_lesson": task.whole_lesson}
         if task.type == "assessment" and task.assessment:
             entry["assessment"] = task.assessment.model_dump(exclude_none=True)
         if task.type == "grade" and task.grade:
@@ -578,6 +584,7 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
                 "topic_labels": [r.label for r in resolved],
                 "approach": reading.approach,
                 "scope_fit": reading.scope_fit,
+                "whole_lesson": bool(t.get("whole_lesson")),
             }
             # Honour a user-requested count/types on an assessment; else assessment_sg
             # uses the config default type_mix. A requested count is capped to the
