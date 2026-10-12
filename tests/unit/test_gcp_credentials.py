@@ -61,3 +61,12 @@ def test_the_attached_account_supplies_both_the_token_and_the_project(config, mo
     monkeypatch.setattr(gcp, "_attached", lambda: (_Credentials(), "ingest-project"))
     assert gcp.access_token(gcp.ATTACHED) == "attached-token"
     assert gcp.project_of(gcp.ATTACHED) == "ingest-project"
+
+
+def test_a_cloud_run_job_reads_pages_with_the_model_not_the_stub(config, monkeypatch):
+    """The first book run on Cloud Run stopped on every reader: the vision
+    client asked for a key file itself, found none, and fell back to the stub."""
+    from ingestion.llm_provider import get_vision_client
+
+    monkeypatch.setenv(gcp.CLOUD_RUN_JOB_ENV, "ingest-read")
+    assert not get_vision_client(config).is_stub

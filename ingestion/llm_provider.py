@@ -172,8 +172,9 @@ def _credential_present(config: Config, provider: str) -> bool:
     how a misconfigured deployment silently indexes empty books.
     """
     if provider == "vertex":
-        return bool(config.secret(config.get("vision.credentials_env")
-                                  or "GOOGLE_APPLICATION_CREDENTIALS"))
+        from shared.gcp import credential_source
+
+        return bool(credential_source(config))
     named = config.get("vision.api_key_env")
     if named:
         return bool(config.secret(named))

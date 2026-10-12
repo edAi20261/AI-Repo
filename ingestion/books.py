@@ -215,6 +215,8 @@ ON CONFLICT (id) DO UPDATE SET
     updated_at = now()
 """
 
+_LOCK_SUBJECT = "SELECT pg_advisory_xact_lock(hashtext(%s))"
+
 _NEXT_ORDER = """
 SELECT COALESCE(MAX(order_index), -1) + 1 FROM content.lessons
 WHERE subject_id = %s AND NOT (id = ANY(%s::uuid[]))
@@ -250,6 +252,7 @@ class LessonCatalog:
         ids = [lesson["lesson_id"] for lesson in lessons]
         with self._connect() as conn:
             with conn.cursor() as cur:
+                cur.execute(_LOCK_SUBJECT, (subject_id,))
                 cur.execute(_NEXT_ORDER, (subject_id, ids))
                 base = cur.fetchone()[0]
                 for lesson in lessons:

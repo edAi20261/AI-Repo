@@ -193,6 +193,17 @@ vector_store:
 ingestion:
   books:
     lesson_source: ministry_official
+  # The read step runs on six machines a book, each with eight workers, against
+  # one Postgres that allows 79 connections. A pool of eight a machine took 48
+  # for one book, so a second book reading at the same time was refused. A
+  # connection is held for one insert between model calls of ~12s, so eight
+  # workers share three without waiting: three books then hold 54.
+  page_cache:
+    pool_size: 3
+    # A refused or slow connection used to turn the cache off for the rest of
+    # the run, and the page the machine had just paid for was never stored.
+    write_attempts: 3
+    retry_delay_seconds: 2.0
   source:
     timeout_seconds: 120
     max_bytes: 209715200

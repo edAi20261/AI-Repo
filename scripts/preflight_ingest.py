@@ -22,9 +22,9 @@ PROBE = f"preflight/{uuid.uuid4()}"
 
 
 def _database(config) -> str:
-    from shared.postgres import connect
+    from shared.postgres import connect_once
 
-    with connect(config, connect_timeout=10, statement_timeout_ms=15000) as conn:
+    with connect_once(config) as conn:
         with conn.cursor() as cur:
             cur.execute("select current_user, current_database()")
             who, where = cur.fetchone()
