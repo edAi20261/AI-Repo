@@ -12,4 +12,9 @@ LESSON_ARGS=()
 case "${LANGUAGE:-}" in ""|"ask the backend") ;; *) LESSON_ARGS+=(--language "$LANGUAGE");; esac
 [ -n "${GRADE:-}" ] && LESSON_ARGS+=(--grade "$GRADE")
 [ "${SUBJECT_IS_MATH:-false}" = "true" ] && LESSON_ARGS+=(--subject-is-math)
+case "${BOOK_KIND:-ministry}" in
+  ministry) ;;
+  external) LESSON_ARGS+=(--namespace external) ;;
+  *) echo "BOOK_KIND is ministry or external, not ${BOOK_KIND}" >&2; return 2 ;;
+esac
 true

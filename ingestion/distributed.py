@@ -41,7 +41,9 @@ from shared.logging import setup_logging
 from shared.metering import start_meter
 
 from . import get_config
-from .books import LessonCatalog, detect_lessons, file_under_lessons, lesson_states
+from shared.namespaces import SYLLABUS
+
+from .books import LessonCatalog, file_under_lessons, lesson_states, lessons_for
 from .context import PipelineContext
 from .graph import run_stages
 from .lesson import add_lesson_arguments, apply_lesson_overrides, lesson_state, report
@@ -126,10 +128,13 @@ def _cmd_read(args, config) -> int:
     print(json.dumps({"shard": args.shard, "of": args.of, **outcome}, ensure_ascii=False))
     asked = outcome.get("to_read", 0)
     kept = outcome.get("layout_read", 0) + outcome.get("transcribed", 0)
-    if asked and not kept:
+    if asked and not kept and not outcome.get("already_paid_for"):
         # Every call failed: a credential, a quota or the network, and the same
         # fault waits for the next machine. Stopping here is cheaper than six
-        # more machines finding it.
+        # more machines finding it. Not on a share already read before: what is
+        # left there is the pages that failed last time, a re-run of one blank
+        # page failing again said nothing about the credential and stopped the
+        # book, and prepare reads such a page again itself.
         print("no page could be read; see the log above", file=sys.stderr)
         return 1
     return 0
@@ -143,7 +148,7 @@ def _cmd_prepare(args, config) -> int:
     meter = start_meter()
     state = run_stages(state, ctx, ("extract", "chunk"))
     if state.get("book_id"):
-        state = file_under_lessons(state, detect_lessons(state, config))
+        state = file_under_lessons(state, lessons_for(state, config))
         _summarise_lessons(state)
     texts = embedding_texts(state.get("chunks", []), config)
     _dump(args.out, {
@@ -259,23 +264,49 @@ def _cmd_finish(args, config) -> int:
 _STAGES = ("topics", "dependencies", "index")
 
 
+def _finish_lesson(part: dict, ctx: PipelineContext, catalog: LessonCatalog):
+    try:
+        done = run_stages(part, ctx, _STAGES)
+        status = done.get("ingestion_status") or "ready"
+        errors = done.get("errors", [])
+    except Exception as error:
+        logger.exception("lesson failed", extra={"lecture_id": part["lecture_id"]})
+        done, status, errors = part, "failed", [f"{type(error).__name__}: {error}"]
+    catalog.finished(part["lecture_id"], status=status, errors=errors,
+                     version=part.get("version", 1))
+    return part, done, status, errors
+
+
+def _finish_lessons(parts: list[dict], ctx: PipelineContext, catalog: LessonCatalog,
+                    workers: int):
+    """Every lesson of a book through topics, prerequisites and the index, several
+    at a time, returned in book order.
+
+    One at a time, a 36-lesson book spent an hour and a half here, almost all of
+    it waiting on model calls. Everything a lesson shares with the others is
+    built before the first one starts, so no two threads build the embedder.
+    """
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    for shared in ("embedder", "topic_extractor", "dependency_deriver",
+                   "chunk_store", "vector_store"):
+        getattr(ctx, shared)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(contextvars.copy_context().run, _finish_lesson, part, ctx, catalog)
+                   for part in parts]
+        return [future.result() for future in futures]
+
+
 def _finish_book(state: dict, ctx: PipelineContext, config) -> dict:
     catalog = LessonCatalog(config)
     catalog.register(subject_id=state["subject_id"], book_title=state.get("lesson_title"),
-                     lessons=state["lessons"])
+                     lessons=state["lessons"], namespace=state.get("namespace") or SYLLABUS)
     results: list[dict] = []
     totals = {"chunks_written": 0, "figures_written": 0, "points_upserted": 0}
     topics = edges = 0
-    for part in lesson_states(state):
-        try:
-            done = run_stages(part, ctx, _STAGES)
-            status = done.get("ingestion_status") or "ready"
-            errors = done.get("errors", [])
-        except Exception as error:
-            logger.exception("lesson failed", extra={"lecture_id": part["lecture_id"]})
-            done, status, errors = part, "failed", [f"{type(error).__name__}: {error}"]
-        catalog.finished(part["lecture_id"], status=status, errors=errors,
-                         version=part.get("version", 1))
+    for part, done, status, errors in _finish_lessons(lesson_states(state), ctx, catalog,
+                                                      config.get("ingestion.books.finish_workers")):
         stats = done.get("stats", {})
         for key in totals:
             totals[key] += stats.get("index", {}).get(key, 0)

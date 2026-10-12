@@ -38,8 +38,11 @@ llm:
     # Ingestion's two chat calls, one per book each. They follow vision onto
     # Vertex so the whole ingestion path bills to one account; everything below
     # answers students and stays on OpenRouter.
-    extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192 }
-    derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192 }
+    # max_retries: with several books finishing four lessons at a time, one
+    # topic call met five 429s in a row on Vertex and its lesson failed; the
+    # client backs off between attempts, and ten waits out a burst.
+    extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192, max_retries: 10 }
+    derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192, max_retries: 10 }
     split_lessons:   { provider: vertex, model: google/gemini-2.5-pro, temperature: 0.0, max_tokens: 32000, timeout_seconds: 600, max_retries: 1, fallback_models: [google/gemini-2.5-flash] }
     understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
     converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }
@@ -192,7 +195,30 @@ vector_store:
 
 ingestion:
   books:
-    lesson_source: ministry_official
+    # content.lessons.source for the lessons a book is split into, by what the
+    # book is. A ministry book's lessons are the ones the app shows; an external
+    # book's are background, filed as ai_generated so the app can tell them apart
+    # without a new value in the backend's enum.
+    lesson_source:
+      syllabus: ministry_official
+      external: ai_generated
+    # Lessons of one book taken through topics, prerequisites and the index at
+    # once. One at a time, a 36-lesson book's finish took 1h25m (~2.3 min a
+    # lesson, nearly all of it model calls). Each worker holds at most one
+    # database connection at a time, against 79, and topic labels are embedded
+    # one call at a time behind the embedder's own lock.
+    finish_workers: 4
+  # The read step runs on six machines a book, each with eight workers, against
+  # one Postgres that allows 79 connections. A pool of eight a machine took 48
+  # for one book, so a second book reading at the same time was refused. A
+  # connection is held for one insert between model calls of ~12s, so eight
+  # workers share three without waiting: three books then hold 54.
+  page_cache:
+    pool_size: 3
+    # A refused or slow connection used to turn the cache off for the rest of
+    # the run, and the page the machine had just paid for was never stored.
+    write_attempts: 3
+    retry_delay_seconds: 2.0
   source:
     timeout_seconds: 120
     max_bytes: 209715200

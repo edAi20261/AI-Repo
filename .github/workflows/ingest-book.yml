@@ -34,6 +34,11 @@ on:
       subject_id:
         description: "Subject ID the book belongs to (academics.subjects.id). Its lessons are created under it."
         required: true
+      kind:
+        description: "ministry: the app shows its lessons. external: background for the ministry lessons of its subject, never shown"
+        type: choice
+        options: [ministry, external]
+        required: true
       preview:
         description: "Preview only: read the book and list its lessons, write nothing"
         type: boolean
@@ -67,6 +72,7 @@ env:
   # lessons are found in the book.
   SOURCE: ${{ inputs.source }}
   SUBJECT_ID: ${{ inputs.subject_id }}
+  BOOK_KIND: ${{ inputs.kind }}
   PYTHONUNBUFFERED: "1"
   TOKENIZERS_PARALLELISM: "false"
 

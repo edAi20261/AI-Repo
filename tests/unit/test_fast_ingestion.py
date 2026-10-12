@@ -572,7 +572,7 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
         return lessons_from(breakdown, book_id=state["lecture_id"], first_page=1,
                             last_page=11)
 
-    monkeypatch.setattr(distributed, "detect_lessons", split)
+    monkeypatch.setattr(distributed, "lessons_for", split)
 
     class _Catalog:
         registered: list = []
@@ -581,7 +581,7 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
         def __init__(self, cfg):
             pass
 
-        def register(self, *, subject_id, book_title, lessons):
+        def register(self, *, subject_id, book_title, lessons, namespace="syllabus"):
             _Catalog.registered.append((subject_id, [lsn["title"] for lsn in lessons]))
 
         def finished(self, lesson_id, *, status, errors, version):

@@ -168,3 +168,21 @@ def test_lessons_are_registered_under_the_subject_after_the_lessons_already_ther
         (lessons[0]["lesson_id"], SUBJECT, "Lesson 0", 7),
         (lessons[1]["lesson_id"], SUBJECT, "Lesson 1", 8)]
     assert db.committed
+
+
+def test_a_background_book_with_no_lessons_is_filed_as_one_not_failed():
+    """Question banks and revision booklets often have no lessons to find, and
+    the split refused them; as background they only need to be searchable."""
+    from ingestion.books import BreakdownFailed, lessons_for
+    from shared.config import get_config
+    from shared.namespaces import BACKGROUND, SYLLABUS
+
+    pages = [_page(n, "Question bank", f"question {n}") for n in range(1, 6)]
+    model = _Model('{"units": []}')
+    state = {"lecture_id": BOOK, "parsed_pages": pages, "lesson_title": "Bank",
+             "namespace": BACKGROUND}
+    lessons = lessons_for(state, get_config(), llm=model)
+    assert [(lsn.title, lsn.page_from, lsn.page_to) for lsn in lessons] == [("Bank", 1, 5)]
+    assert lessons[0].lesson_id == lesson_id_for(BOOK, 0)
+    with pytest.raises(BreakdownFailed):
+        lessons_for({**state, "namespace": SYLLABUS}, get_config(), llm=_Model('{"units": []}'))

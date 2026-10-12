@@ -16,6 +16,8 @@ import unicodedata
 import uuid
 from pathlib import Path
 
+from shared.namespaces import BACKGROUND, SYLLABUS
+
 from . import get_backend_client
 from .state import new_state
 from .utils.grades import to_platform_grade
@@ -257,7 +259,9 @@ def add_lesson_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="force every page down the vision route (maths subject)",
     )
-    parser.add_argument("--namespace", default="syllabus")
+    parser.add_argument("--namespace", default=SYLLABUS, choices=[SYLLABUS, BACKGROUND],
+                        help="syllabus for a ministry book, whose lessons the app shows; "
+                             "external for a book that is background to them")
     parser.add_argument("--version", type=int, default=1, help="re-ingestion version")
     parser.add_argument("--language", default=None,
                         help="the book's language (ar, en, fr, de) when the backend "

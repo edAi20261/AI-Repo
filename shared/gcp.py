@@ -20,12 +20,16 @@ the kind of credential differ.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+DEFAULT_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
+ATTACHED = "attached"
+CLOUD_RUN_JOB_ENV = "CLOUD_RUN_JOB"
 
 # Refresh this long before the token actually expires. Google issues them for
 # an hour; five minutes is enough for a slow page read to finish on the old one.
@@ -38,6 +42,26 @@ _SOURCE: Optional[str] = None
 
 class CredentialsUnavailable(RuntimeError):
     """No service account could be loaded, so no Google call can be signed."""
+
+
+def credential_source(config: Any) -> Optional[str]:
+    configured = config.secret(config.get("vision.credentials_env") or DEFAULT_CREDENTIALS_ENV)
+    if configured:
+        return configured
+    return ATTACHED if os.environ.get(CLOUD_RUN_JOB_ENV) else None
+
+
+def _attached() -> tuple[Any, Optional[str]]:
+    try:
+        import google.auth
+    except ImportError as error:  # pragma: no cover - import guard
+        raise CredentialsUnavailable(
+            "google-auth is not installed; it is needed to reach Vertex.") from error
+    try:
+        return google.auth.default(scopes=[SCOPE])
+    except Exception as error:
+        raise CredentialsUnavailable(
+            "no service account is attached to this job") from error
 
 
 def _load(source: str) -> Any:
@@ -54,6 +78,8 @@ def _load(source: str) -> Any:
         raise CredentialsUnavailable(
             "google-auth is not installed; it is needed to reach Vertex.") from error
 
+    if source == ATTACHED:
+        return _attached()[0]
     text = source.strip()
     if text.startswith("{"):
         import json
@@ -75,6 +101,8 @@ def project_of(source: str) -> Optional[str]:
     """The project a service account belongs to, from a path or from the JSON."""
     import json
 
+    if source == ATTACHED:
+        return _attached()[1]
     text = source.strip()
     try:
         if text.startswith("{"):

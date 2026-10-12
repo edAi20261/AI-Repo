@@ -48,7 +48,7 @@ def pg_url(raw: str) -> str:
 
 
 def _pool_for(url: str, connect_timeout: int, statement_timeout_ms: int,
-              config: Config) -> object:
+              config: Config, size: Optional[int] = None) -> object:
     """The pool serving this exact bound, opened the first time it is wanted.
 
     Built the first time a connection is wanted, never at import: resolving
@@ -62,11 +62,11 @@ def _pool_for(url: str, connect_timeout: int, statement_timeout_ms: int,
     """
     from psycopg_pool import ConnectionPool
 
-    key = (url, connect_timeout, statement_timeout_ms)
+    size = size or config.get("database.pool_size")
+    key = (url, connect_timeout, statement_timeout_ms, size)
     with _lock:
         pool = _pools.get(key)
         if pool is None:
-            size = config.get("database.pool_size")
             pool = ConnectionPool(
                 url,
                 min_size=size,
@@ -96,6 +96,7 @@ def connect(
     *,
     connect_timeout: Optional[int] = None,
     statement_timeout_ms: Optional[int] = None,
+    pool_size: Optional[int] = None,
 ) -> Iterator[object]:
     """A pooled psycopg connection to ``ai.*``, bounded on both ends.
 
@@ -114,7 +115,7 @@ def connect(
         statement_timeout_ms = config.get("database.statement_timeout_ms")
 
     pool = _pool_for(pg_url(config.secret("DATABASE_URL")),
-                     connect_timeout, statement_timeout_ms, config)
+                     connect_timeout, statement_timeout_ms, config, pool_size)
     with pool.connection() as conn:
         yield conn
 

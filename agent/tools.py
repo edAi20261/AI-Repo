@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 from .mastery import Mastery, MasteryParams, status
 from shared.matching import NOT_CONTENT, chunk_kind
+from shared.namespaces import BACKGROUND, NOT_BACKGROUND_TOPIC, SYLLABUS
 from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR, has_named_vectors
 from .models import PrereqTopic, ResolvedTopic, RetrievedChunk
 
@@ -104,8 +105,9 @@ def rag_search(
 
     vector = get_embedder(config).embed_query(query)
 
-    must = [models.FieldCondition(
+    own = [models.FieldCondition(
         key="namespace", match=models.MatchAny(any=list(namespaces)))]
+    must = []
     if subject_id:
         must.append(models.FieldCondition(
             key="subject_id", match=models.MatchValue(value=subject_id)))
@@ -121,7 +123,7 @@ def rag_search(
     # Optional lecture scoping: applied only when lecture_ids are supplied; None -> whole subject.
     # Fed from the request `lecture_ids` field, threaded state -> subgraph -> here.
     if lecture_ids:
-        must.append(models.FieldCondition(
+        own.append(models.FieldCondition(
             key="lecture_id", match=models.MatchAny(any=list(lecture_ids))))
     # TODO (pending decision: school/content scoping) filter on `source_type` / `school_id` /
     # `classroom_id` payload fields so retrieval is limited to the
@@ -138,8 +140,14 @@ def rag_search(
     fetch = k * 3 if ready_only else k
     if config.get("agent.hybrid.enabled"):
         fetch = max(fetch, config.get("agent.hybrid.candidates"))
+    background = _background_scope(namespaces, subject_id, lecture_ids, config)
+    if background is None:
+        scope = models.Filter(must=must + own, must_not=must_not)
+    else:
+        scope = models.Filter(must=must, must_not=must_not, should=[
+            models.Filter(must=own), models.Filter(must=background)])
     scores, meta = _candidate_scores(
-        query, [models.Filter(must=must, must_not=must_not)], config,
+        query, [scope], config,
         collection=collection, limit=fetch, vector=vector, with_meta=True)
     if not scores:
         return []
@@ -169,6 +177,7 @@ def rag_search(
             lesson_order=meta.get(r[0], {}).get("lesson_order"),
             subject_id=meta.get(r[0], {}).get("subject_id"),
             order_index=r[8],
+            background=meta.get(r[0], {}).get("namespace") == BACKGROUND,
         )
         for r in rows
     ]
@@ -177,6 +186,33 @@ def rag_search(
         out = _fuse_lexically(query, out, config)
     return out[:k]
 
+
+
+def _background_scope(namespaces: Sequence[str], subject_id: str | None,
+                      lecture_ids: Sequence[str] | None, config: Config) -> list | None:
+    """Where the background a syllabus search also reads lives: the external
+    books of the same subject. A lesson's own id never matches them, since they
+    are filed under lessons of their own, so a lesson-scoped search reaches them
+    through its subject."""
+    from qdrant_client import models
+
+    if SYLLABUS not in namespaces or BACKGROUND in namespaces:
+        return None
+    subjects = [subject_id] if subject_id else (
+        _subjects_of(lecture_ids, config) if lecture_ids else None)
+    if lecture_ids and not subjects:
+        return None
+    scope = [models.FieldCondition(key="namespace", match=models.MatchValue(value=BACKGROUND))]
+    if subjects:
+        scope.append(models.FieldCondition(key="subject_id", match=models.MatchAny(any=subjects)))
+    return scope
+
+
+def _subjects_of(lecture_ids: Sequence[str], config: Config) -> list[str]:
+    with connect(config) as conn, conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT subject_id::text FROM content.lessons "
+                    "WHERE id::text = ANY(%s)", (list(lecture_ids),))
+        return [row[0] for row in cur.fetchall()]
 
 
 def _candidate_scores(
@@ -325,10 +361,12 @@ def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config
     if lecture_ids:
         must.append(models.FieldCondition(
             key="lecture_id", match=models.MatchAny(any=list(lecture_ids))))
+    not_background = [models.FieldCondition(
+        key="namespace", match=models.MatchValue(value=BACKGROUND))]
     client = query_client(config)
     hits = client.query_points(
         config.vector_store.get("topics_collection", "eduai_topics"),
-        query=vector, query_filter=models.Filter(must=must) if must else None,
+        query=vector, query_filter=models.Filter(must=must, must_not=not_background),
         limit=k, score_threshold=threshold, with_payload=True,
     ).points
     return [
@@ -346,7 +384,7 @@ def _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config):
     """Brute-force cosine over ``ai.topics`` in Python. Correct but O(N) — the Qdrant
     path replaces it once the topics collection is populated (re-ingest)."""
     sql = ("SELECT topic_id::text, label, subject_id::text, label_embedding FROM ai.topics "
-           "WHERE label_embedding IS NOT NULL")
+           "WHERE label_embedding IS NOT NULL AND " + NOT_BACKGROUND_TOPIC)
     params: list = []
     if subject_id:
         sql += " AND subject_id = %s"
@@ -631,7 +669,7 @@ def get_subject_topics(
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT label FROM ai.topics WHERE subject_id::text = %s AND label <> '' "
-            "GROUP BY label ORDER BY min(created_at) LIMIT %s",
+            "AND " + NOT_BACKGROUND_TOPIC + " GROUP BY label ORDER BY min(created_at) LIMIT %s",
             (str(subject_id), limit))
         return [r[0] for r in cur.fetchall()]
 

@@ -7,6 +7,8 @@ match the columns so the store layer is a straight copy.
 
 from __future__ import annotations
 
+from shared.namespaces import SYLLABUS
+
 import logging
 
 from dataclasses import dataclass, field
@@ -150,6 +152,7 @@ class Topic:
     topic_id: Optional[str] = None
     label_embedding: Optional[list[float]] = None
     reused: bool = False
+    namespace: str = SYLLABUS
 
 
 @dataclass

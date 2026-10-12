@@ -14,6 +14,7 @@ a word invalidates the cache without anyone remembering to say so.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Iterable, Optional
 
 from psycopg.types.json import Json
@@ -172,21 +173,36 @@ class PageCache:
         return bool(stored) and set(stored) <= set(self._shape.model_fields)
 
     def _run(self, sql: str, params: tuple, *, fetch: bool = False):
-        try:
-            with connect(self._config, connect_timeout=CONNECT_TIMEOUT,
-                         statement_timeout_ms=NO_STATEMENT_TIMEOUT) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
-                    rows = cur.fetchall() if fetch else None
-                conn.commit()
-                return rows
-        except Exception as error:      # noqa: BLE001 — never fail an ingest over a cache
-            self._available = False
-            logger.error(
-                "page cache unavailable; this run pays full price for every page. "
-                "Apply ai.page_transcriptions from scripts/dev_ai_schema.sql.",
-                exc_info=error)
-            return None
+        attempts = self._config.get("ingestion.page_cache.write_attempts")
+        delay = self._config.get("ingestion.page_cache.retry_delay_seconds")
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._once(sql, params, fetch=fetch)
+            except Exception as error:      # noqa: BLE001 — never fail an ingest over a cache
+                if attempt < attempts:
+                    logger.warning("page cache call failed; retrying",
+                                   extra={"attempt": attempt, "error": type(error).__name__})
+                    time.sleep(delay * attempt)
+                    continue
+                self._give_up(error)
+        return None
+
+    def _once(self, sql: str, params: tuple, *, fetch: bool):
+        with connect(self._config, connect_timeout=CONNECT_TIMEOUT,
+                     statement_timeout_ms=NO_STATEMENT_TIMEOUT,
+                     pool_size=self._config.get("ingestion.page_cache.pool_size")) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall() if fetch else None
+            conn.commit()
+            return rows
+
+    def _give_up(self, error: Exception) -> None:
+        self._available = False
+        logger.error(
+            "page cache unavailable; this run pays full price for every page. "
+            "Apply ai.page_transcriptions from scripts/dev_ai_schema.sql.",
+            exc_info=error)
 
     def report(self) -> dict:
         """What the cache did, for the run's stats."""

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import uuid
 
+from shared.namespaces import SYLLABUS
 from shared.structured import StructuredOutputError
 
 from ..context import PipelineContext
@@ -85,6 +86,7 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
                 topic_id=match_id if reused else str(uuid.uuid4()),
                 label_embedding=vec,
                 reused=reused,
+                namespace=state.get("namespace") or SYLLABUS,
             )
         )
     stats["extracted"] = len(topics)

@@ -22,9 +22,9 @@ PROBE = f"preflight/{uuid.uuid4()}"
 
 
 def _database(config) -> str:
-    from shared.postgres import connect
+    from shared.postgres import connect_once
 
-    with connect(config, connect_timeout=10, statement_timeout_ms=15000) as conn:
+    with connect_once(config) as conn:
         with conn.cursor() as cur:
             cur.execute("select current_user, current_database()")
             who, where = cur.fetchone()
@@ -56,11 +56,9 @@ def _vision(config) -> str:
         from shared.vision import _api_key
 
         return f"{provider}, key present" if _api_key(config) else f"{provider}, NO KEY"
-    import os
+    from shared.gcp import access_token, credential_source, project_of
 
-    from shared.gcp import access_token, project_of
-
-    source = os.environ.get(config.get("vision.credentials_env") or "", "")
+    source = credential_source(config)
     if not source:
         raise RuntimeError(
             f"{config.get('vision.credentials_env')} is empty; Vertex needs a service account")

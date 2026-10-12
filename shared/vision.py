@@ -81,10 +81,9 @@ def _api_key(config: Config) -> Optional[str]:
     """
     provider = (config.get("vision.provider") or "openrouter").lower()
     if provider == "vertex":
-        from .gcp import access_token  # lazy: only this provider needs google-auth
+        from .gcp import access_token, credential_source
 
-        path = config.secret(config.get("vision.credentials_env")
-                             or "GOOGLE_APPLICATION_CREDENTIALS")
+        path = credential_source(config)
         if not path:
             raise VisionUnavailable(
                 "vision.provider is vertex but no service account path is set; "
@@ -120,10 +119,9 @@ def _project_from_credentials(config: Config) -> Optional[str]:
     Saves naming the project twice: it is already in the credential, and two
     copies of one fact is how they come to disagree.
     """
-    from .gcp import project_of
+    from .gcp import credential_source, project_of
 
-    source = config.secret(config.get("vision.credentials_env")
-                           or "GOOGLE_APPLICATION_CREDENTIALS")
+    source = credential_source(config)
     return project_of(source) if source else None
 
 
