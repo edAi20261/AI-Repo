@@ -6,7 +6,13 @@
 #
 # The .env supplies the database, S3 and Qdrant values, which go into Secret
 # Manager. Nothing is printed. Gemini needs no secret: the jobs run as
-# SERVICE_ACCOUNT, and Vertex is billed to this project.
+# SERVICE_ACCOUNT, and Vertex is billed to this project. The image is built as
+# SERVICE_ACCOUNT too: a project made secure by default gives the default
+# compute account no access, so a build running as it cannot read its source.
+#
+# SERVICE_ACCOUNT needs: Cloud Run Admin, Artifact Registry Administrator,
+# Cloud Build Editor, Secret Manager Admin, Storage Admin, Service Account
+# User, Vertex AI User, Logs Viewer and Logs Writer.
 #
 #   PROJECT          default: gcloud's configured project
 #   REGION           default: europe-west3, beside the database in Frankfurt
@@ -49,6 +55,7 @@ done
 secret_list="$(IFS=,; echo "${secret_flags[*]}")"
 
 gcloud builds submit --config infra/cloud-run/cloudbuild.yaml \
+  --service-account "projects/$project/serviceAccounts/$account" \
   --substitutions "_IMAGE=$image" .
 
 deploy() {
