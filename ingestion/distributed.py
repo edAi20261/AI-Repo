@@ -264,6 +264,40 @@ def _cmd_finish(args, config) -> int:
 _STAGES = ("topics", "dependencies", "index")
 
 
+def _finish_lesson(part: dict, ctx: PipelineContext, catalog: LessonCatalog):
+    try:
+        done = run_stages(part, ctx, _STAGES)
+        status = done.get("ingestion_status") or "ready"
+        errors = done.get("errors", [])
+    except Exception as error:
+        logger.exception("lesson failed", extra={"lecture_id": part["lecture_id"]})
+        done, status, errors = part, "failed", [f"{type(error).__name__}: {error}"]
+    catalog.finished(part["lecture_id"], status=status, errors=errors,
+                     version=part.get("version", 1))
+    return part, done, status, errors
+
+
+def _finish_lessons(parts: list[dict], ctx: PipelineContext, catalog: LessonCatalog,
+                    workers: int):
+    """Every lesson of a book through topics, prerequisites and the index, several
+    at a time, returned in book order.
+
+    One at a time, a 36-lesson book spent an hour and a half here, almost all of
+    it waiting on model calls. Everything a lesson shares with the others is
+    built before the first one starts, so no two threads build the embedder.
+    """
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    for shared in ("embedder", "topic_extractor", "dependency_deriver",
+                   "chunk_store", "vector_store"):
+        getattr(ctx, shared)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(contextvars.copy_context().run, _finish_lesson, part, ctx, catalog)
+                   for part in parts]
+        return [future.result() for future in futures]
+
+
 def _finish_book(state: dict, ctx: PipelineContext, config) -> dict:
     catalog = LessonCatalog(config)
     catalog.register(subject_id=state["subject_id"], book_title=state.get("lesson_title"),
@@ -271,16 +305,8 @@ def _finish_book(state: dict, ctx: PipelineContext, config) -> dict:
     results: list[dict] = []
     totals = {"chunks_written": 0, "figures_written": 0, "points_upserted": 0}
     topics = edges = 0
-    for part in lesson_states(state):
-        try:
-            done = run_stages(part, ctx, _STAGES)
-            status = done.get("ingestion_status") or "ready"
-            errors = done.get("errors", [])
-        except Exception as error:
-            logger.exception("lesson failed", extra={"lecture_id": part["lecture_id"]})
-            done, status, errors = part, "failed", [f"{type(error).__name__}: {error}"]
-        catalog.finished(part["lecture_id"], status=status, errors=errors,
-                         version=part.get("version", 1))
+    for part, done, status, errors in _finish_lessons(lesson_states(state), ctx, catalog,
+                                                      config.get("ingestion.books.finish_workers")):
         stats = done.get("stats", {})
         for key in totals:
             totals[key] += stats.get("index", {}).get(key, 0)

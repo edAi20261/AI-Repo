@@ -135,3 +135,47 @@ def test_a_page_that_fails_again_on_a_re_run_does_not_stop_the_book(monkeypatch)
     left had failed the first time, failed again, and the whole book stopped."""
     assert _read_with(monkeypatch, {"to_read": 1, "already_paid_for": 113,
                                     "layout_read": 0, "transcribed": 0}) == 0
+
+
+def test_a_books_lessons_are_finished_several_at_a_time_in_book_order(monkeypatch):
+    """One lesson at a time, a 36-lesson supplement spent an hour and a half
+    in finish, almost all of it waiting on model calls."""
+    import threading
+    import time
+
+    import ingestion.distributed as distributed
+
+    running, peak, built = [0], [0], []
+    lock = threading.Lock()
+
+    def stages(part, ctx, names):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        time.sleep(0.05)
+        with lock:
+            running[0] -= 1
+        if part["lecture_id"] == "l2":
+            raise RuntimeError("model unavailable")
+        return {**part, "stats": {"index": {"chunks_written": 1}}}
+
+    class _Ctx:
+        def __getattr__(self, name):
+            built.append(name)
+            return object()
+
+    class _Catalog:
+        settled = []
+
+        def finished(self, lesson_id, *, status, errors, version):
+            _Catalog.settled.append((lesson_id, status))
+
+    monkeypatch.setattr(distributed, "run_stages", stages)
+    parts = [{"lecture_id": f"l{n}", "lesson_title": f"L{n}"} for n in range(6)]
+    out = distributed._finish_lessons(parts, _Ctx(), _Catalog(), 4)
+    assert [part["lecture_id"] for part, *_ in out] == [f"l{n}" for n in range(6)]
+    assert [status for _p, _d, status, _e in out] == [
+        "ready", "ready", "failed", "ready", "ready", "ready"]
+    assert peak[0] > 1
+    assert sorted(set(built)) == sorted(
+        ["embedder", "topic_extractor", "dependency_deriver", "chunk_store", "vector_store"])

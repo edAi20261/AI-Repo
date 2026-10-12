@@ -199,6 +199,12 @@ ingestion:
     lesson_source:
       syllabus: ministry_official
       external: ai_generated
+    # Lessons of one book taken through topics, prerequisites and the index at
+    # once. One at a time, a 36-lesson book's finish took 1h25m (~2.3 min a
+    # lesson, nearly all of it model calls). Each worker holds at most one
+    # database connection at a time, against 79, and topic labels are embedded
+    # one call at a time behind the embedder's own lock.
+    finish_workers: 4
   # The read step runs on six machines a book, each with eight workers, against
   # one Postgres that allows 79 connections. A pool of eight a machine took 48
   # for one book, so a second book reading at the same time was refused. A
