@@ -597,7 +597,7 @@ class QdrantVectorStore(VectorStore):
             )
         existing = set(
             (self._client.get_collection(self._topics_collection).payload_schema or {}).keys())
-        for field in ("subject_id", "lecture_id"):  # filtered on in resolve_topics
+        for field in ("subject_id", "lecture_id", "namespace"):  # filtered on in resolve_topics
             if field in existing:
                 continue
             try:

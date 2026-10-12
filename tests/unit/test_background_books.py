@@ -160,3 +160,33 @@ def test_the_ingest_workflow_files_a_book_as_external_when_told():
         ["bash", "-c", "source scripts/ci_lesson_args.sh"],
         env={"BOOK_KIND": "guide", "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
     assert bad.returncode != 0
+
+
+def test_the_topics_collection_is_indexed_on_namespace():
+    """Topic lookups leave background topics out with a namespace filter, and
+    Qdrant refuses to filter on a field it has no index for: the production
+    topics collection had none, and every lookup would have failed."""
+    from ingestion.stores import QdrantVectorStore
+
+    created = []
+
+    class _Info:
+        payload_schema = {"subject_id": {}, "lecture_id": {}}
+
+    class _Client:
+        def collection_exists(self, _name):
+            return True
+
+        def get_collection(self, _name):
+            return _Info()
+
+        def create_payload_index(self, collection, *, field_name, field_schema):
+            created.append(field_name)
+
+    store = QdrantVectorStore.__new__(QdrantVectorStore)
+    store._client = _Client()
+    store._topics_collection = "eduai_topics"
+    store._distance = "cosine"
+    store._hnsw = {}
+    store.ensure_topics_collection(1024)
+    assert created == ["namespace"]

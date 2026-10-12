@@ -14,12 +14,12 @@ from dataclasses import asdict, dataclass, replace
 from typing import Any, Optional, Sequence
 
 from shared.llm import get_llm, llm_key_available
-from shared.namespaces import SYLLABUS
+from shared.namespaces import BACKGROUND, SYLLABUS
 from shared.structured import call_structured, schema_hint
 
 from .layout.blocks import ParsedPage
 from .layout.bridge import parsed_pages
-from .lesson import ID_NAMESPACE
+from .lesson import ID_NAMESPACE, UNTITLED
 from .prompts import LESSON_BREAKDOWN_PROMPT
 from .schemas import LessonBreakdown
 from .state import IngestionState
@@ -134,6 +134,29 @@ def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Le
         raise BreakdownFailed(f"could not split the book into lessons: {error}") from error
     return lessons_from(breakdown, book_id=state["lecture_id"],
                         first_page=numbers[0], last_page=numbers[-1])
+
+
+def lessons_for(state: IngestionState, config, *, llm: Any = None) -> list[Lesson]:
+    """The book's lessons; for a background book that has none to find, itself.
+
+    A question bank or a revision booklet is often not split into lessons at
+    all. As background it is searched across its whole subject and never shown,
+    so it is filed as one lesson rather than failing the book. A ministry book
+    whose lessons cannot be found still fails: its lessons are what the app
+    shows."""
+    try:
+        return detect_lessons(state, config, llm=llm)
+    except BreakdownFailed:
+        if state.get("namespace") != BACKGROUND:
+            raise
+        logger.warning("background book has no lessons to find; filed as one",
+                       extra={"lecture_id": state["lecture_id"]}, exc_info=True)
+    pages = sorted(p.meta.page for p in parsed_pages(state.get("parsed_pages") or []))
+    if not pages:
+        return []
+    return [Lesson(lesson_id=lesson_id_for(state["lecture_id"], 0), ordinal=0,
+                   title=state.get("lesson_title") or UNTITLED, unit_number=None,
+                   unit_title="", page_from=pages[0], page_to=pages[-1])]
 
 
 def lessons_from(breakdown: LessonBreakdown, *, book_id: str,

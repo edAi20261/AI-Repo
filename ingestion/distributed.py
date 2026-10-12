@@ -43,7 +43,7 @@ from shared.metering import start_meter
 from . import get_config
 from shared.namespaces import SYLLABUS
 
-from .books import LessonCatalog, detect_lessons, file_under_lessons, lesson_states
+from .books import LessonCatalog, file_under_lessons, lesson_states, lessons_for
 from .context import PipelineContext
 from .graph import run_stages
 from .lesson import add_lesson_arguments, apply_lesson_overrides, lesson_state, report
@@ -148,7 +148,7 @@ def _cmd_prepare(args, config) -> int:
     meter = start_meter()
     state = run_stages(state, ctx, ("extract", "chunk"))
     if state.get("book_id"):
-        state = file_under_lessons(state, detect_lessons(state, config))
+        state = file_under_lessons(state, lessons_for(state, config))
         _summarise_lessons(state)
     texts = embedding_texts(state.get("chunks", []), config)
     _dump(args.out, {
