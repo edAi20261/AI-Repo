@@ -70,3 +70,20 @@ def test_a_cloud_run_job_reads_pages_with_the_model_not_the_stub(config, monkeyp
 
     monkeypatch.setenv(gcp.CLOUD_RUN_JOB_ENV, "ingest-read")
     assert not get_vision_client(config).is_stub
+
+
+def test_a_long_finish_asks_for_a_fresh_token_on_every_model_call(config, monkeypatch):
+    """A book's finish step ran past the life of the Cloud Run token it started
+    with: the model client had been built with that one token, and the last
+    lesson of the book failed with 401."""
+    import shared.gcp as gcp_module
+    from shared.llm import get_llm
+
+    monkeypatch.setenv(gcp.CLOUD_RUN_JOB_ENV, "ingest-finish")
+    issued = iter(["first-token", "second-token", "third-token"])
+    monkeypatch.setattr(gcp_module, "access_token", lambda _source: next(issued))
+    monkeypatch.setattr(gcp_module, "project_of", lambda _source: "ingest-project")
+
+    client = get_llm(config, "extract_topics").root_client
+    assert client._refresh_api_key() == "second-token"
+    assert client._refresh_api_key() == "third-token"

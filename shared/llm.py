@@ -9,6 +9,8 @@ importing this module never requires a provider that isn't installed.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from functools import partial
 
 from .config import Config
 
@@ -31,7 +33,7 @@ _NATIVE_KEY = {
 VERTEX = "vertex"
 
 
-def _vertex_gateway(config: Config) -> tuple[str, str]:
+def _vertex_gateway(config: Config) -> tuple[str, Callable[[], str]]:
     """Vertex's OpenAI-compatible base URL and a fresh bearer token.
 
     Not in ``_OPENAI_COMPAT`` because neither half is a constant: the address
@@ -47,7 +49,7 @@ def _vertex_gateway(config: Config) -> tuple[str, str]:
             "GOOGLE_APPLICATION_CREDENTIALS takes a path or the JSON itself.")
     project = config.get("vision.project") or project_of(source)
     location = config.get("vision.location") or "us-central1"
-    return vertex_base_url(project, location), access_token(source)
+    return vertex_base_url(project, location), partial(access_token, source)
 
 
 def llm_key_available(config: Config, spec: dict) -> bool:
@@ -86,6 +88,7 @@ def get_llm(config: Config, task: str | None = None):
         from .metering import MeteringCallback
 
         base_url, token = _vertex_gateway(config)
+        token()
         return ChatOpenAI(model=model, base_url=base_url, api_key=token,
                           callbacks=[MeteringCallback()], **common)
 
