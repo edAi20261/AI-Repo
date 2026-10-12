@@ -18,12 +18,12 @@ run_id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
 overrides="^@^SOURCE=$source_uri@SUBJECT_ID=$subject@RUN_DIR=/work/runs/$run_id"
 
 gc() {
-  local attempt
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if "$@"; then return 0; fi
-    sleep $((attempt * 15))
+  local waited=0
+  until "$@"; do
+    if [ "$waited" -ge "${GIVE_UP_AFTER_SECONDS:-21600}" ]; then return 1; fi
+    sleep 60
+    waited=$((waited + 60))
   done
-  return 1
 }
 
 execute() {
