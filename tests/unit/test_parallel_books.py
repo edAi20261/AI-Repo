@@ -101,3 +101,37 @@ def test_two_books_of_one_subject_register_their_lessons_one_after_the_other(fak
     order = next(i for i, sql in enumerate(statements) if "MAX(order_index)" in sql)
     assert lock < order
     assert db.statements[lock][1] == (SUBJECT,)
+
+
+def _read_with(monkeypatch, outcome: dict) -> int:
+    import argparse
+
+    import ingestion.distributed as distributed
+
+    class _Doc:
+        def __len__(self):
+            return 57
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(distributed, "lesson_state", lambda args, config: {})
+    monkeypatch.setattr(distributed.PipelineContext, "build", staticmethod(lambda config: None))
+    monkeypatch.setattr(distributed.pdf, "open_document", lambda source: _Doc())
+    monkeypatch.setattr(distributed, "read_ahead", lambda *a, **k: dict(outcome))
+    args = argparse.Namespace(source="book.pdf", shard=1, of=6, workers=8)
+    return distributed._cmd_read(args, config=None)
+
+
+def test_a_reader_that_reads_nothing_on_a_first_run_stops_the_book(monkeypatch):
+    """A share where every call fails on a first read is a credential, quota or
+    network fault, and the next machine would meet it too."""
+    assert _read_with(monkeypatch, {"to_read": 57, "already_paid_for": 0,
+                                    "layout_read": 0, "transcribed": 0}) == 1
+
+
+def test_a_page_that_fails_again_on_a_re_run_does_not_stop_the_book(monkeypatch):
+    """A re-run of a book found 56 of a reader's 57 pages already read; the one
+    left had failed the first time, failed again, and the whole book stopped."""
+    assert _read_with(monkeypatch, {"to_read": 1, "already_paid_for": 113,
+                                    "layout_read": 0, "transcribed": 0}) == 0
