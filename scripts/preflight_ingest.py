@@ -56,11 +56,9 @@ def _vision(config) -> str:
         from shared.vision import _api_key
 
         return f"{provider}, key present" if _api_key(config) else f"{provider}, NO KEY"
-    import os
+    from shared.gcp import access_token, credential_source, project_of
 
-    from shared.gcp import access_token, project_of
-
-    source = os.environ.get(config.get("vision.credentials_env") or "", "")
+    source = credential_source(config)
     if not source:
         raise RuntimeError(
             f"{config.get('vision.credentials_env')} is empty; Vertex needs a service account")
