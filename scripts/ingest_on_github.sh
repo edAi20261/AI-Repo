@@ -5,9 +5,10 @@
 #   scripts/ingest_on_github.sh books.txt
 #
 # books.txt is one book per line: its link (a Google Drive link shared as
-# "Anyone with the link", an https URL or an s3:// URI), a space, and the id of
-# the subject it belongs to. Blank lines and lines starting with # are skipped.
-# Each book is split into its lessons, created under that subject.
+# "Anyone with the link", an https URL or an s3:// URI), the id of the subject
+# it belongs to, and what it is: ministry (the app shows its lessons) or
+# external (background for the subject's ministry lessons, never shown).
+# Blank lines and lines starting with # are skipped.
 #
 # Needs the GitHub CLI (https://cli.github.com), logged in once with
 # `gh auth login` as someone who can run workflows in this repository.
@@ -25,14 +26,14 @@ started=0
 while IFS= read -r line || [ -n "${line:-}" ]; do
   line="$(printf '%s' "$line" | tr -d '\r' | xargs)"
   case "$line" in ""|\#*) continue;; esac
-  link="${line%% *}"
-  subject="${line##* }"
-  if [ "$link" = "$subject" ]; then
-    echo "skipped  $link (no subject id after the link)" >&2
-    continue
-  fi
-  gh workflow run ingest-book.yml --ref "${INGEST_REF:-main}" -f source="$link" -f subject_id="$subject"
-  echo "started  $link -> subject $subject"
+  read -r link subject kind _ <<<"$line"
+  case "${kind:-}" in
+    ministry|external) ;;
+    *) echo "skipped  $link (needs: link subject_id ministry|external)" >&2; continue ;;
+  esac
+  gh workflow run ingest-book.yml --ref "${INGEST_REF:-main}" -f source="$link" \
+    -f subject_id="$subject" -f kind="$kind"
+  echo "started  $link -> subject $subject ($kind)"
   started=$((started + 1))
 done < "$list"
 

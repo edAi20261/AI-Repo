@@ -9,6 +9,8 @@ no chat key is set.
 
 from __future__ import annotations
 
+from shared.namespaces import SYLLABUS
+
 from ..context import PipelineContext
 from ..state import Dependency, IngestionState
 
@@ -36,7 +38,9 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     label_to_id: dict[str, str] = {}
     for t in topics:
         label_to_id[t["label"]] = t["topic_id"]
-    for topic_id, label, _emb in ctx.chunk_store.read_topic_catalog(state["subject_id"]):
+    syllabus = (state.get("namespace") or SYLLABUS) == SYLLABUS
+    for topic_id, label, _emb in ctx.chunk_store.read_topic_catalog(
+            state["subject_id"], include_background=not syllabus):
         label_to_id.setdefault(label, topic_id)
 
     cfg = ctx.config.get("ingestion.dependencies", {})

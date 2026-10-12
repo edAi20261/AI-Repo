@@ -192,7 +192,13 @@ vector_store:
 
 ingestion:
   books:
-    lesson_source: ministry_official
+    # content.lessons.source for the lessons a book is split into, by what the
+    # book is. A ministry book's lessons are the ones the app shows; an external
+    # book's are background, filed as ai_generated so the app can tell them apart
+    # without a new value in the backend's enum.
+    lesson_source:
+      syllabus: ministry_official
+      external: ai_generated
   # The read step runs on six machines a book, each with eight workers, against
   # one Postgres that allows 79 connections. A pool of eight a machine took 48
   # for one book, so a second book reading at the same time was refused. A

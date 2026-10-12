@@ -41,6 +41,8 @@ from shared.logging import setup_logging
 from shared.metering import start_meter
 
 from . import get_config
+from shared.namespaces import SYLLABUS
+
 from .books import LessonCatalog, detect_lessons, file_under_lessons, lesson_states
 from .context import PipelineContext
 from .graph import run_stages
@@ -265,7 +267,7 @@ _STAGES = ("topics", "dependencies", "index")
 def _finish_book(state: dict, ctx: PipelineContext, config) -> dict:
     catalog = LessonCatalog(config)
     catalog.register(subject_id=state["subject_id"], book_title=state.get("lesson_title"),
-                     lessons=state["lessons"])
+                     lessons=state["lessons"], namespace=state.get("namespace") or SYLLABUS)
     results: list[dict] = []
     totals = {"chunks_written": 0, "figures_written": 0, "points_upserted": 0}
     topics = edges = 0

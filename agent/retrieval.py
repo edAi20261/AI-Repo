@@ -215,6 +215,8 @@ def resolve_prereqs(
 
 
 def cite(chunk: RetrievedChunk, n: int) -> Citation:
+    if chunk.background:
+        return Citation(n=n, subject_name=chunk.subject_name, chunk_id=chunk.chunk_id)
     return Citation(
         n=n,
         lecture_id=chunk.lecture_id,

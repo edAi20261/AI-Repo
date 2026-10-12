@@ -3,19 +3,24 @@
 # execution that waits for the one before. The jobs come from
 # infra/cloud-run/setup.sh.
 #
-#   scripts/ingest_on_cloud_run.sh SOURCE SUBJECT_ID [--preview]
+#   scripts/ingest_on_cloud_run.sh SOURCE SUBJECT_ID ministry|external [--preview]
 #
+# ministry: a ministry book, whose lessons the app shows. external: a book that
+# is background to the ministry lessons of its subject, never shown.
 # --preview stops after prepare and prints the lessons the book was split into;
 # nothing is written. A run reuses every page an earlier run already read.
 set -euo pipefail
 
-source_uri="${1:?usage: ingest_on_cloud_run.sh SOURCE SUBJECT_ID [--preview]}"
-subject="${2:?usage: ingest_on_cloud_run.sh SOURCE SUBJECT_ID [--preview]}"
-preview="${3:-}"
+usage="usage: ingest_on_cloud_run.sh SOURCE SUBJECT_ID ministry|external [--preview]"
+source_uri="${1:?$usage}"
+subject="${2:?$usage}"
+kind="${3:?$usage}"
+preview="${4:-}"
+case "$kind" in ministry|external) ;; *) echo "$usage" >&2; exit 2 ;; esac
 project="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 region="${REGION:-europe-west3}"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
-overrides="^@^SOURCE=$source_uri@SUBJECT_ID=$subject@RUN_DIR=/work/runs/$run_id"
+overrides="^@^SOURCE=$source_uri@SUBJECT_ID=$subject@BOOK_KIND=$kind@RUN_DIR=/work/runs/$run_id"
 
 gc() {
   local waited=0

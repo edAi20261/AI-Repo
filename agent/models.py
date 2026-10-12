@@ -58,6 +58,7 @@ class RetrievedChunk:
     lesson_order: Optional[int] = None
     subject_id: Optional[str] = None
     order_index: Optional[int] = None
+    background: bool = False
 
 
 @dataclass

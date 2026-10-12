@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from shared.matching import chunk_kind
+from shared.namespaces import NOT_BACKGROUND_TOPIC
 from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
 from shared.vector_store import upsert_client
 
@@ -49,9 +50,11 @@ class ChunkStore(ABC):
         """Upsert the ``ai.vector_index`` manifest (ON CONFLICT chunk_id,namespace)."""
 
     @abstractmethod
-    def read_topic_catalog(self, subject_id: str) -> list[tuple[str, str, list[float]]]:
+    def read_topic_catalog(self, subject_id: str, *, include_background: bool = True,
+                           ) -> list[tuple[str, str, list[float]]]:
         """Existing ``(topic_id, label, label_embedding)`` for a subject — the
-        dependency stage's prerequisite candidate pool."""
+        dependency stage's prerequisite candidate pool. A ministry lesson leaves
+        background topics out: a prerequisite is shown to a student by name."""
 
     @abstractmethod
     def read_lecture_topics(self, lecture_id: str) -> list[tuple[str, str, list[float]]]:
@@ -133,6 +136,8 @@ SELECT topic_id, label, label_embedding
 FROM ai.topics
 WHERE subject_id = :subject_id
 """
+
+_SELECT_SYLLABUS_TOPICS = _SELECT_TOPICS + "AND " + NOT_BACKGROUND_TOPIC + "\n"
 
 _SELECT_LECTURE_TOPICS = """
 SELECT topic_id, label, label_embedding
@@ -253,11 +258,13 @@ class PostgresChunkStore(ChunkStore):
             if rows:
                 conn.execute(text(_UPSERT_INDEX), rows)
 
-    def read_topic_catalog(self, subject_id: str) -> list[tuple[str, str, list[float]]]:
+    def read_topic_catalog(self, subject_id: str, *, include_background: bool = True,
+                           ) -> list[tuple[str, str, list[float]]]:
         from sqlalchemy import text
 
+        sql = _SELECT_TOPICS if include_background else _SELECT_SYLLABUS_TOPICS
         with self._engine.begin() as conn:
-            result = conn.execute(text(_SELECT_TOPICS), {"subject_id": subject_id})
+            result = conn.execute(text(sql), {"subject_id": subject_id})
             out = []
             for tid, label, emb in result:
                 if emb:  # skip catalog topics that never got an embedding
@@ -363,7 +370,8 @@ class DryRunChunkStore(ChunkStore):
             for c in chunks
         )
 
-    def read_topic_catalog(self, subject_id: str) -> list[tuple[str, str, list[float]]]:
+    def read_topic_catalog(self, subject_id: str, *, include_background: bool = True,
+                           ) -> list[tuple[str, str, list[float]]]:
         return []  # no persistent catalog in dry-run
 
     def read_lecture_topics(self, lecture_id: str) -> list[tuple[str, str, list[float]]]:
@@ -450,7 +458,7 @@ def _payload(c: Chunk) -> dict[str, Any]:
 def _topic_payload(t: Any) -> dict[str, Any]:
     # label rides along so resolve_topics returns it without a Postgres hydrate.
     payload = {"topic_id": t.topic_id, "label": t.label, "subject_id": t.subject_id,
-               "lecture_id": t.lecture_id}
+               "lecture_id": t.lecture_id, "namespace": t.namespace}
     return {k: v for k, v in payload.items() if v is not None}
 
 

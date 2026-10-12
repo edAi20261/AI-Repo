@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from typing import Any, Optional, Sequence
 
 from shared.llm import get_llm, llm_key_available
+from shared.namespaces import SYLLABUS
 from shared.structured import call_structured, schema_hint
 
 from .layout.blocks import ParsedPage
@@ -240,7 +241,7 @@ WHERE id = ANY(%s::uuid[])
 class LessonCatalog:
     def __init__(self, config) -> None:
         self._config = config
-        self._source = config.get("ingestion.books.lesson_source", "ministry_official")
+        self._sources = config.get("ingestion.books.lesson_source")
 
     def _connect(self):
         from shared.postgres import connect_once
@@ -248,7 +249,8 @@ class LessonCatalog:
         return connect_once(self._config)
 
     def register(self, *, subject_id: str, book_title: Optional[str],
-                 lessons: Sequence[dict]) -> None:
+                 lessons: Sequence[dict], namespace: str = SYLLABUS) -> None:
+        source = self._sources[namespace]
         ids = [lesson["lesson_id"] for lesson in lessons]
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -257,7 +259,7 @@ class LessonCatalog:
                 base = cur.fetchone()[0]
                 for lesson in lessons:
                     cur.execute(_UPSERT_LESSON, (
-                        lesson["lesson_id"], subject_id, self._source, lesson["title"],
+                        lesson["lesson_id"], subject_id, source, lesson["title"],
                         book_title, lesson["unit_number"], base + lesson["ordinal"]))
             conn.commit()
 
