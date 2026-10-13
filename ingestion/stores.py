@@ -183,7 +183,7 @@ class PostgresChunkStore(ChunkStore):
         from sqlalchemy import create_engine
 
         # Sync engine (offline batch); normalise DATABASE_URL to psycopg (v3).
-        self._engine = create_engine(_sync_url(database_url), future=True)
+        self._engine = create_engine(_sync_url(database_url), future=True, pool_pre_ping=True)
 
     def delete_lecture(self, lecture_id: str) -> None:
         from sqlalchemy import text
