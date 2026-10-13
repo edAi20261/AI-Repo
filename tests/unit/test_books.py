@@ -12,7 +12,7 @@ from ingestion.books import (
     lessons_from,
 )
 from ingestion.layout.blocks import Block, PageMeta, ParsedPage
-from ingestion.schemas import LessonBreakdown, LessonItem, UnitItem
+from ingestion.schemas import LessonBreakdown, LessonItem, SectionItem, UnitItem
 from ingestion.state import Chunk, Figure
 
 BOOK = "0743ec4c-b00d-5e17-b573-9b60b5593a26"
@@ -70,7 +70,7 @@ def test_chunks_and_figures_are_filed_under_the_lesson_their_page_is_in():
 
 
 def test_a_breakdown_that_does_not_fit_the_book_is_sent_back():
-    check = _validator(1, 50)
+    check = _validator(1, 50, 3.5)
     check(_breakdown(1, 10, 30))
     check(_breakdown(1, 10, 10))
     for bad in (_breakdown(), _breakdown(10, 5), _breakdown(1, 70)):
@@ -98,7 +98,7 @@ def test_two_lessons_taught_on_the_same_pages_each_get_those_pages():
 
 
 def test_a_unit_listed_as_its_own_lesson_is_sent_back():
-    check = _validator(1, 50)
+    check = _validator(1, 50, 3.5)
     unit_as_lesson = LessonBreakdown(units=[
         UnitItem(title="Unit 1 Our Environment", unit_number=1,
                  lessons=[LessonItem(title="Unit 1  our environment", start_page=1)]),
@@ -186,3 +186,96 @@ def test_a_background_book_with_no_lessons_is_filed_as_one_not_failed():
     assert lessons[0].lesson_id == lesson_id_for(BOOK, 0)
     with pytest.raises(BreakdownFailed):
         lessons_for({**state, "namespace": SYLLABUS}, get_config(), llm=_Model('{"units": []}'))
+
+
+def test_a_term_revision_after_the_last_lesson_is_filed_as_its_own_section():
+    """A book's closing revision and exams were filed under its last lesson:
+    133 pages of one Arabic book under "دعاء شاعرة"."""
+    breakdown = _breakdown(1, 10, 20)
+    breakdown.sections = [SectionItem(title="Final revision", start_page=30),
+                          SectionItem(title="Model exams", start_page=45)]
+    lessons = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=80)
+    assert [(lsn.title, lsn.page_from, lsn.page_to) for lsn in lessons] == [
+        ("Lesson 1", 1, 9), ("Lesson 2", 10, 19), ("Lesson 3", 20, 29),
+        ("Final revision", 30, 44), ("Model exams", 45, 80)]
+    assert lessons[3].label == "Final revision"
+    assert len({lsn.lesson_id for lsn in lessons}) == 5
+
+
+def test_a_section_before_the_first_lesson_keeps_its_pages():
+    """A supplement opening with 105 pages of weekly assessments filed them all
+    under its first lesson."""
+    breakdown = _breakdown(40, 50, 60)
+    breakdown.sections = [SectionItem(title="Weekly assessments", start_page=3)]
+    lessons = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=70)
+    assert [(lsn.title, lsn.page_from, lsn.page_to) for lsn in lessons] == [
+        ("Weekly assessments", 1, 39), ("Lesson 1", 40, 49), ("Lesson 2", 50, 59),
+        ("Lesson 3", 60, 70)]
+
+
+def test_a_lesson_that_takes_in_the_pages_after_it_is_sent_back():
+    """Correct first and last lessons ran to at most 2.7x a book's median
+    lesson; those holding a term's revision ran 4x-34x, and nothing caught it."""
+    check = _validator(1, 200, 3.5)
+    with pytest.raises(ValueError, match="sections"):
+        check(_breakdown(1, 11, 21, 31, 41))
+    split = _breakdown(1, 11, 21, 31, 41)
+    split.sections = [SectionItem(title="Final revision", start_page=51)]
+    check(split)
+
+
+def test_a_book_of_only_exams_can_be_all_sections():
+    check = _validator(1, 50, 3.5)
+    check(LessonBreakdown(sections=[SectionItem(title="Exam 1", start_page=1),
+                                    SectionItem(title="Exam 2", start_page=20)]))
+    for bad in ([SectionItem(title="A", start_page=5), SectionItem(title="B", start_page=5)],
+                [SectionItem(title="", start_page=5)],
+                [SectionItem(title="A", start_page=99)]):
+        with pytest.raises(ValueError):
+            check(LessonBreakdown(sections=bad))
+    clash = _breakdown(1, 10)
+    clash.sections = [SectionItem(title="Revision", start_page=10)]
+    with pytest.raises(ValueError, match="one or the other"):
+        check(clash)
+
+
+def test_lessons_on_the_same_pages_of_a_background_book_are_filed_once():
+    """Every lesson sharing pages held its own copy of them, and search drops
+    repeats by chunk id, so one passage filled up to six results."""
+    from ingestion.books import lessons_for
+    from shared.config import get_config
+    from shared.namespaces import BACKGROUND, SYLLABUS
+
+    pages = [_page(n, f"Lessons {n}", f"text {n}") for n in range(1, 31)]
+    reply = ('{"units": [{"title": "Unit 1", "unit_number": 1, "lessons": ['
+             '{"title": "Lesson 1", "start_page": 1}, {"title": "Lesson 2", "start_page": 1}, '
+             '{"title": "Lesson 3", "start_page": 11}, {"title": "Lesson 4", "start_page": 21}, '
+             '{"title": "Lesson 5", "start_page": 21}]}]}')
+    state = {"lecture_id": BOOK, "parsed_pages": pages, "namespace": BACKGROUND}
+    lessons = lessons_for(state, get_config(), llm=_Model(reply))
+    assert [(lsn.title, lsn.page_from, lsn.page_to) for lsn in lessons] == [
+        ("Lesson 1 / Lesson 2", 1, 10), ("Lesson 3", 11, 20), ("Lesson 4 / Lesson 5", 21, 30)]
+    state["chunks"] = [_chunk(n) for n in range(1, 31)]
+    file_under_lessons(state, lessons)
+    assert len(state["chunks"]) == 30
+
+    ministry = lessons_for({**state, "namespace": SYLLABUS}, get_config(), llm=_Model(reply))
+    assert len(ministry) == 5
+
+
+class _RateLimited:
+    def invoke(self, prompt):
+        raise RuntimeError("Error code: 429 - Resource exhausted")
+
+
+def test_a_rate_limit_while_splitting_fails_the_book_rather_than_filing_it_whole():
+    """A 429 during the split was taken as "this book has no lessons", and two
+    supplements were filed as one lesson each."""
+    from ingestion.books import lessons_for
+    from shared.config import get_config
+    from shared.namespaces import BACKGROUND
+
+    pages = [_page(n, "Unit 1", f"text {n}") for n in range(1, 6)]
+    state = {"lecture_id": BOOK, "parsed_pages": pages, "namespace": BACKGROUND}
+    with pytest.raises(RuntimeError, match="429"):
+        lessons_for(state, get_config(), llm=_RateLimited())

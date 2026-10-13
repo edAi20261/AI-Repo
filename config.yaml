@@ -43,7 +43,7 @@ llm:
     # client backs off between attempts, and ten waits out a burst.
     extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192, max_retries: 10 }
     derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192, max_retries: 10 }
-    split_lessons:   { provider: vertex, model: google/gemini-2.5-pro, temperature: 0.0, max_tokens: 32000, timeout_seconds: 600, max_retries: 1, fallback_models: [google/gemini-2.5-flash] }
+    split_lessons:   { provider: vertex, model: google/gemini-2.5-pro, temperature: 0.0, max_tokens: 32000, timeout_seconds: 600, max_retries: 10, structured_attempts: 3, fallback_models: [google/gemini-2.5-flash] }
     understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
     converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }
     conversation_summary: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 1200 }
@@ -202,6 +202,18 @@ ingestion:
     lesson_source:
       syllabus: ministry_official
       external: ai_generated
+    # Lessons taught on the same pages: a ministry book's are each shown, so each
+    # keeps a copy of those pages; an external book's are never shown, and the
+    # copies only repeat one passage in a student's results (~7,000 of 35,700
+    # external chunks were copies on 12 Oct 2026).
+    shared_pages:
+      syllabus: copy
+      external: merge
+    # A lesson this many times a book's median lesson is sent back to be split
+    # into its lesson and the sections after it. Across the 23 external books of
+    # 12 Oct 2026, correctly split first and last lessons ran to at most 2.7x the
+    # median; those that had taken in a term's revision or exams ran 4.0x-33.7x.
+    oversized_lesson_ratio: 3.5
     # Lessons of one book taken through topics, prerequisites and the index at
     # once. One at a time, a 36-lesson book's finish took 1h25m (~2.3 min a
     # lesson, nearly all of it model calls). Each worker holds at most one
