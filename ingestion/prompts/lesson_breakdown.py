@@ -28,9 +28,18 @@ Listening, Vocabulary), a single exercise, the book's cover or introduction.
 Review pages, tests and question banks that close a unit belong to that unit's
 last lesson.
 
+Some parts of a book belong to no single lesson: revision of the whole term,
+model exams, weekly or monthly assessments, exam papers, answer keys, a grammar
+or vocabulary reference for the whole book. They are often at the end of the
+book, and sometimes at its start. List each of them under sections, with its
+title as printed and the outline page where it starts, so that its pages are not
+filed under the lesson next to it. A book that is only questions or exams can
+have sections and no lessons.
+
 For each unit give its title as printed and its number. For each lesson give
 its own title as printed, in the book's own words and language, with its number
-when the book shows one, and the outline page where its own content starts.
+when the book shows one, and the outline page where its own content starts. A
+lesson whose pages show only its number is titled with that number as printed.
 When the book has no units, return one unit with an empty title holding every
 lesson.
 
@@ -42,7 +51,8 @@ lessons at once, and its pages, exercises and tests are headed with all of them
 together ("Lessons 1 and 2"). Lessons taught together like that share their
 pages: give every lesson of the group the same start page, the page where the
 group starts. Only give a lesson a start page of its own when the book really
-teaches it on pages of its own. Pages before the first lesson belong to it.
+teaches it on pages of its own. The cover, contents and introduction before
+the first lesson or section belong to it.
 
 The book has {page_count} pages. Return JSON only, no prose. Fields:
 {schema}

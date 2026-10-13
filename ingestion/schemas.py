@@ -144,8 +144,23 @@ class UnitItem(BaseModel):
             return None
 
 
+class SectionItem(BaseModel):
+    title: str = Field(description="The section's title as printed in the book.")
+    start_page: int = Field(
+        description="The outline page number where this section starts.")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _clamp_title(cls, v):
+        return _one_line(v)
+
+
 class LessonBreakdown(BaseModel):
     units: list[UnitItem] = Field(default_factory=list)
+    sections: list[SectionItem] = Field(
+        default_factory=list,
+        description="Parts of the book that belong to no single lesson, in book order; "
+                    "empty when every page after the opening belongs to a lesson.")
 
 
 # --- dependencies ----------------------------------------------------------

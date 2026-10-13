@@ -9,13 +9,14 @@ lesson.
 from __future__ import annotations
 
 import logging
+import statistics
 import uuid
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Optional, Sequence
 
 from shared.llm import get_llm, llm_key_available
 from shared.namespaces import BACKGROUND, SYLLABUS
-from shared.structured import call_structured, schema_hint
+from shared.structured import StructuredValidationFailure, call_structured, schema_hint
 
 from .layout.blocks import ParsedPage
 from .layout.bridge import parsed_pages
@@ -80,11 +81,55 @@ def book_outline(pages: Sequence[ParsedPage]) -> tuple[str, str]:
     return opening, outline
 
 
-def _validator(first_page: int, last_page: int):
+@dataclass(frozen=True)
+class _Entry:
+    title: str
+    start_page: int
+    unit_title: str = ""
+    unit_number: Optional[int] = None
+    section: bool = False
+
+
+def _entries(breakdown: LessonBreakdown) -> list[_Entry]:
+    lessons = [_Entry(item.title, item.start_page, unit.title, unit.unit_number)
+               for unit in breakdown.units for item in unit.lessons]
+    sections = [_Entry(item.title, item.start_page, section=True)
+                for item in breakdown.sections]
+    return sorted(lessons + sections, key=lambda entry: entry.start_page)
+
+
+def _spans(entries: Sequence[_Entry], first_page: int,
+           last_page: int) -> list[tuple[int, int]]:
+    opening = entries[0].start_page if entries else first_page
+    spans = []
+    for n, entry in enumerate(entries):
+        start = entry.start_page
+        later = [other.start_page for other in entries[n + 1:] if other.start_page > start]
+        spans.append((first_page if start == opening else start,
+                      later[0] - 1 if later else last_page))
+    return spans
+
+
+def _oversized(entries: Sequence[_Entry], first_page: int, last_page: int,
+               ratio: float) -> list[str]:
+    spans = _spans(entries, first_page, last_page)
+    lessons: dict[tuple[int, int], list[str]] = {}
+    for entry, span in zip(entries, spans):
+        if not entry.section:
+            lessons.setdefault(span, []).append(entry.title)
+    if len(lessons) < 3:
+        return []
+    typical = statistics.median(to - start + 1 for start, to in lessons)
+    return [f"{' / '.join(titles)} (pages {start}-{to}, {to - start + 1} pages)"
+            for (start, to), titles in lessons.items()
+            if to - start + 1 > ratio * typical]
+
+
+def _validator(first_page: int, last_page: int, oversized_ratio: float):
     def check(breakdown: LessonBreakdown) -> None:
         items = [item for unit in breakdown.units for item in unit.lessons]
-        if not items:
-            raise ValueError("a book teaches at least one lesson; none were listed")
+        if not items and not breakdown.sections:
+            raise ValueError("a book holds at least one lesson or section; none were listed")
         empty = [unit.title for unit in breakdown.units if not unit.lessons]
         if empty:
             raise ValueError(f"these units list no lessons: {empty}. List the lessons "
@@ -95,14 +140,32 @@ def _validator(first_page: int, last_page: int):
             raise ValueError(f"a unit is not a lesson, but these units are listed as their "
                              f"own lesson: {posing}. List the lessons inside them")
         starts = [item.start_page for item in items]
-        outside = [s for s in starts if not first_page <= s <= last_page]
+        section_starts = [item.start_page for item in breakdown.sections]
+        outside = [s for s in starts + section_starts if not first_page <= s <= last_page]
         if outside:
             raise ValueError(f"start pages {outside} are outside the book "
                              f"(pages {first_page}-{last_page})")
         if any(b < a for a, b in zip(starts, starts[1:])):
             raise ValueError(f"start pages must not go back in book order; got {starts}")
-        if any(not item.title for item in items):
-            raise ValueError("every lesson needs its title as printed in the book")
+        if any(b <= a for a, b in zip(section_starts, section_starts[1:])):
+            raise ValueError("each section starts on its own page, after the one before "
+                             f"it; got {section_starts}")
+        both = sorted(set(starts) & set(section_starts))
+        if both:
+            raise ValueError(f"pages {both} are given as the start of a lesson and of a "
+                             "section; a page starts one or the other")
+        if any(not item.title for item in [*items, *breakdown.sections]):
+            raise ValueError("every lesson and section needs its title as printed in the "
+                             "book; a lesson whose pages show only its number is titled "
+                             "with that number as printed")
+        long = _oversized(_entries(breakdown), first_page, last_page, oversized_ratio)
+        if long:
+            raise ValueError(
+                "these lessons run far longer than a lesson in this book usually does: "
+                f"{long}. Pages that belong to no single lesson — revision of the whole "
+                "term, model exams, weekly or monthly assessments, answer keys — are not "
+                "part of the lesson before them: list them under sections, each with the "
+                "page it starts on")
     return check
 
 
@@ -115,6 +178,7 @@ def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Le
     if not pages:
         return []
     spec = config.llm_for(TASK)
+    settings = config.get("ingestion.books")
     if llm is None:
         if not llm_key_available(config, spec):
             logger.warning("no model for the lesson breakdown; the book stays one lesson",
@@ -129,11 +193,13 @@ def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Le
     try:
         breakdown = call_structured(
             LessonBreakdown, prompt, task=TASK, config=config, llm=llm,
-            label="lesson_breakdown", validate=_validator(numbers[0], numbers[-1]))
-    except Exception as error:
+            label="lesson_breakdown",
+            validate=_validator(numbers[0], numbers[-1], settings["oversized_lesson_ratio"]))
+    except StructuredValidationFailure as error:
         raise BreakdownFailed(f"could not split the book into lessons: {error}") from error
+    shared = settings["shared_pages"][state.get("namespace") or SYLLABUS]
     return lessons_from(breakdown, book_id=state["lecture_id"],
-                        first_page=numbers[0], last_page=numbers[-1])
+                        first_page=numbers[0], last_page=numbers[-1], shared_pages=shared)
 
 
 def lessons_for(state: IngestionState, config, *, llm: Any = None) -> list[Lesson]:
@@ -159,21 +225,33 @@ def lessons_for(state: IngestionState, config, *, llm: Any = None) -> list[Lesso
                    unit_title="", page_from=pages[0], page_to=pages[-1])]
 
 
-def lessons_from(breakdown: LessonBreakdown, *, book_id: str,
-                 first_page: int, last_page: int) -> list[Lesson]:
-    items = [(unit, item) for unit in breakdown.units for item in unit.lessons]
-    opening = items[0][1].start_page if items else first_page
-    lessons: list[Lesson] = []
-    for ordinal, (unit, item) in enumerate(items):
-        start = item.start_page
-        page_from = first_page if start == opening else start
-        later = [other.start_page for _, other in items[ordinal + 1:] if other.start_page > start]
-        page_to = later[0] - 1 if later else last_page
-        lessons.append(Lesson(
-            lesson_id=lesson_id_for(book_id, ordinal), ordinal=ordinal, title=item.title,
-            unit_number=unit.unit_number, unit_title=unit.title,
-            page_from=page_from, page_to=page_to))
-    return lessons
+COPY, MERGE = "copy", "merge"
+
+
+def _merged(entries: Sequence[_Entry]) -> list[_Entry]:
+    merged: list[_Entry] = []
+    for entry in entries:
+        last = merged[-1] if merged else None
+        if last and not entry.section and not last.section \
+                and last.start_page == entry.start_page:
+            merged[-1] = replace(last, title=f"{last.title} / {entry.title}")
+        else:
+            merged.append(entry)
+    return merged
+
+
+def lessons_from(breakdown: LessonBreakdown, *, book_id: str, first_page: int,
+                 last_page: int, shared_pages: str = COPY) -> list[Lesson]:
+    if shared_pages not in (COPY, MERGE):
+        raise ValueError(f"shared_pages is {COPY!r} or {MERGE!r}, not {shared_pages!r}")
+    entries = _entries(breakdown)
+    if shared_pages == MERGE:
+        entries = _merged(entries)
+    return [Lesson(lesson_id=lesson_id_for(book_id, ordinal), ordinal=ordinal,
+                   title=entry.title, unit_number=entry.unit_number,
+                   unit_title=entry.unit_title, page_from=page_from, page_to=page_to)
+            for ordinal, (entry, (page_from, page_to))
+            in enumerate(zip(entries, _spans(entries, first_page, last_page)))]
 
 
 def lessons_at(lessons: Sequence[Lesson], page: int) -> list[Lesson]:
