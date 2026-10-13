@@ -507,3 +507,45 @@ def test_an_unreadable_envelope_is_still_the_gateway(config):
     llm = ExplodingLLM(parsed(), explosions=99, error=_provider_error())
     with pytest.raises(StructuredProviderError):
         call_structured(Batch, [], task="assessment", config=config, llm=llm)
+
+
+class RateLimitedLLM(FakeLLM):
+    def __init__(self, failures: int, *results):
+        super().__init__(*results)
+        self.failures = failures
+
+    def invoke(self, messages):
+        if self.failures:
+            self.failures -= 1
+            from langchain_core.exceptions import ModelRateLimitError
+
+            raise ModelRateLimitError("Error code: 429 - Resource exhausted")
+        return super().invoke(messages)
+
+
+def test_an_ingestion_call_waits_out_a_rate_limit_instead_of_failing_its_lesson(
+        config, monkeypatch):
+    """Three re-ingested books each lost a lesson to 429s that lasted longer
+    than the client's own retries, and each whole book had to run again."""
+    import shared.structured as structured
+
+    slept: list[float] = []
+    monkeypatch.setattr(structured.time, "sleep", slept.append)
+    llm = RateLimitedLLM(4, parsed(items=[]))
+    result = call_structured(Batch, "classify", task="extract_topics", config=config, llm=llm)
+    assert result == Batch(items=[])
+    assert len(slept) == 4
+    assert sum(slept) <= config.llm_for("extract_topics")["rate_limit_wait_seconds"]
+
+
+def test_a_student_turn_is_never_held_back_waiting_out_a_rate_limit(config, monkeypatch):
+    from langchain_core.exceptions import ModelRateLimitError
+
+    import shared.structured as structured
+
+    slept: list[float] = []
+    monkeypatch.setattr(structured.time, "sleep", slept.append)
+    with pytest.raises(ModelRateLimitError):
+        call_structured(Batch, "classify", task="assessment", config=config,
+                        llm=RateLimitedLLM(1, parsed(items=[])))
+    assert slept == []

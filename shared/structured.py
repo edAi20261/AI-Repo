@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import time
 from collections.abc import Callable, Sequence
 from typing import Any, Optional, TypeVar
 
+from langchain_core.exceptions import ModelRateLimitError
 from langchain_core.messages import HumanMessage
 from openai import LengthFinishReasonError
 from pydantic import BaseModel
@@ -323,9 +325,24 @@ def _invoke(runnable: Any, conversation: Sequence[Any], *,
     """One model call, retrying a gateway that answered with an unreadable body."""
     delay = config.get("llm.provider_retry_delay_seconds", 0.5) if config else 0.5
     budget = config.get("llm.provider_retries", 2) if config else 2
-    for retry in range(budget + 1):
+    patience = config.llm_for(task).get("rate_limit_wait_seconds", 0) if config else 0
+    waited = 0.0
+    pause = RATE_LIMIT_FIRST_PAUSE
+    retry = 0
+    while True:
         try:
             return runnable.invoke(conversation)
+        except ModelRateLimitError as exc:
+            if waited >= patience:
+                raise
+            sleep = min(pause * random.uniform(0.5, 1.5), patience - waited)
+            logger.warning("rate limited; waiting before the same call again",
+                           extra={"task": task, "label": label, "waited_seconds": round(waited),
+                                  "sleeping_seconds": round(sleep, 1),
+                                  "error_detail": str(exc)[:MAX_ERROR_CHARS]})
+            time.sleep(sleep)
+            waited += sleep
+            pause = min(pause * 2, RATE_LIMIT_LONGEST_PAUSE)
         except PARSE_ERRORS as exc:
             if not _from_the_gateway(exc):
                 raise
@@ -335,7 +352,11 @@ def _invoke(runnable: Any, conversation: Sequence[Any], *,
                            extra={"task": task, "label": label, "retry": retry + 1,
                                   "error_detail": str(exc)[:MAX_ERROR_CHARS]})
             time.sleep(delay * (2 ** retry))
-    raise AssertionError("unreachable")
+            retry += 1
+
+
+RATE_LIMIT_FIRST_PAUSE = 15.0
+RATE_LIMIT_LONGEST_PAUSE = 120.0
 
 # How much more room a retry gets. Doubling rather than adding a constant: the
 # shortfall is proportional to how much the model chose to reason, not fixed.
