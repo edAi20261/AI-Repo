@@ -47,17 +47,28 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr-login
 
+      # ECS is moving this service onto Graviton (ARM64); every dependency in
+      # requirements.txt ships linux/aarch64 wheels for Python 3.11, so the
+      # image itself needs no change, only a multi-arch manifest. QEMU runs
+      # the arm64 leg under emulation (GitHub-hosted runners are x86_64 only)
+      # — noticeably slower here because the Dockerfile bakes in the 2GB
+      # BGE-M3 embedder at build time, not because of anything arm64-specific.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build and push image
+        uses: docker/build-push-action@v6
         env:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
           ECR_REPOSITORY: edu-ai-ai-service
           IMAGE_TAG: ${{ github.sha }}
-        run: |
-          docker build \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
 
       - name: Force new ECS deployment
         run: |
