@@ -91,8 +91,12 @@ class LocalSentenceTransformerEmbedder(Embedder):
         device: str | None = None,
         max_seq_length: int | None = None,
     ) -> None:
+        import torch
         from sentence_transformers import SentenceTransformer  # lazy, heavy
 
+        from .cpus import available_cpus
+
+        torch.set_num_threads(available_cpus())
         self._model = SentenceTransformer(model_name, device=device)
         if max_seq_length:
             self._model.max_seq_length = max_seq_length
