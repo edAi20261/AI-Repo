@@ -87,3 +87,19 @@ def test_a_long_finish_asks_for_a_fresh_token_on_every_model_call(config, monkey
     client = get_llm(config, "extract_topics").root_client
     assert client._refresh_api_key() == "second-token"
     assert client._refresh_api_key() == "third-token"
+
+
+def test_vertex_calls_can_be_billed_to_another_project_without_a_rebuild(monkeypatch):
+    """Ingestion spends one project's free credit, then moves to the next; the
+    credential stays the same and only the billed project changes."""
+    import json
+
+    from shared.config import Config
+    from shared.gcp import billed_project
+
+    source = json.dumps({"type": "service_account", "project_id": "credential-home"})
+    config = Config.load()
+    monkeypatch.delenv("VERTEX_PROJECT", raising=False)
+    assert billed_project(config, source) == "credential-home"
+    monkeypatch.setenv("VERTEX_PROJECT", "free-credit-project")
+    assert billed_project(config, source) == "free-credit-project"

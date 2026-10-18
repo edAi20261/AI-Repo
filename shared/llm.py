@@ -40,14 +40,14 @@ def _vertex_gateway(config: Config) -> tuple[str, Callable[[], str]]:
     carries the project and region, and the credential is an OAuth token that
     expires in an hour rather than a key that does not.
     """
-    from .gcp import access_token, credential_source, project_of, vertex_base_url
+    from .gcp import access_token, billed_project, credential_source, vertex_base_url
 
     source = credential_source(config)
     if not source:
         raise ValueError(
             "a task is configured for vertex but no service account is set; "
             "GOOGLE_APPLICATION_CREDENTIALS takes a path or the JSON itself.")
-    project = config.get("vision.project") or project_of(source)
+    project = billed_project(config, source)
     location = config.get("vision.location") or "us-central1"
     return vertex_base_url(project, location), partial(access_token, source)
 

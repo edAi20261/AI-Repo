@@ -162,6 +162,19 @@ def reset() -> None:
         _CREDENTIALS, _SOURCE = None, None
 
 
+BILLED_PROJECT_ENV = "VERTEX_PROJECT"
+
+
+def billed_project(config: Any, source: Optional[str]) -> Optional[str]:
+    """The project a Vertex call is made in, which is the project it is billed to.
+
+    Usually the credential's own. ``VERTEX_PROJECT`` moves the bill to another
+    project the credential may call, without a rebuild: ingestion spends one
+    project's free credit, then is pointed at the next."""
+    return (config.secret(BILLED_PROJECT_ENV) or config.get("vision.project")
+            or (project_of(source) if source else None))
+
+
 def vertex_base_url(project: str, location: str) -> str:
     """Vertex's OpenAI-compatible endpoint for a project and region.
 
