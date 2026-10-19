@@ -232,8 +232,11 @@ ingestion:
     write_attempts: 3
     retry_delay_seconds: 2.0
   source:
-    timeout_seconds: 120
-    max_bytes: 209715200
+    # A 401 MB scanned revision book and a 316 MB American textbook were refused
+    # at 200 MB on 19 Oct 2026; 10 of 148 books were over it. Pages are rendered
+    # one at a time, so the file's size bounds the download, not memory.
+    timeout_seconds: 300
+    max_bytes: 536870912
     chunk_bytes: 1048576
   chunk:
     target_tokens: 650
