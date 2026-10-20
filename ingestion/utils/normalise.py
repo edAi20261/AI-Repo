@@ -17,12 +17,15 @@ _MULTISPACE = re.compile(r"[ \t ]+")
 _MULTINEWLINE = re.compile(r"\n{3,}")
 _MARK_RUN = 5
 _REPEATED_MARK = re.compile(rf"([^\w\s]|_)\1{{{_MARK_RUN},}}")
+# A text layer can carry NUL and other C0 controls; Postgres refuses NUL in a
+# text column, and a Geometry textbook's lessons failed to store on 19 Oct 2026.
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def collapse_repeated_marks(text: str) -> str:
     if not text:
         return ""
-    return _REPEATED_MARK.sub(lambda m: m.group(1) * _MARK_RUN, text)
+    return _REPEATED_MARK.sub(lambda m: m.group(1) * _MARK_RUN, _CONTROL.sub(" ", text))
 
 
 def normalise_text(
