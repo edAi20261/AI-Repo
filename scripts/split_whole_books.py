@@ -22,6 +22,7 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import asdict
 from pathlib import Path
+from typing import Sequence
 
 from ingestion.books import Lesson, LessonCatalog, detect_lessons, lessons_at
 from ingestion.layout.blocks import Block, PageMeta, ParsedPage
@@ -34,7 +35,7 @@ SELECT subject_id::text, title, source, status, version FROM content.lessons WHE
 """
 _CHUNKS = """
 SELECT chunk_id::text, page_from, heading_path, text, topic_ids::text[]
-FROM ai.chunks WHERE lecture_id = %s ORDER BY page_from, order_index
+FROM ai.chunks WHERE lecture_id = ANY(%s::uuid[]) ORDER BY page_from, order_index
 """
 _REFILE = (
     "UPDATE ai.chunks SET lecture_id = %(lesson)s WHERE chunk_id = ANY(%(chunks)s::uuid[])",
@@ -54,7 +55,7 @@ ON CONFLICT (lecture_id) DO UPDATE SET
     chunk_count = EXCLUDED.chunk_count, figure_count = EXCLUDED.figure_count,
     topic_count = EXCLUDED.topic_count, status = 'ready', ingested_at = now()
 """
-_BOOK_TOPICS = "SELECT topic_id::text FROM ai.topics WHERE lecture_id = %s"
+_BOOK_TOPICS = "SELECT topic_id::text FROM ai.topics WHERE lecture_id = ANY(%s::uuid[])"
 _ARCHIVE_BOOK = ("UPDATE content.lessons SET status = 'archived', ingestion_status = 'ready', "
                  "updated_at = now() WHERE id = %s")
 
@@ -87,13 +88,17 @@ def _filing(lessons: list[Lesson], chunks: list[tuple], book_topics: list[str]):
     return passages, topics
 
 
-def _read(config, book_id: str):
+def _read(config, book_id: str, lesson_ids: Sequence[str] = ()):
+    """The book and everything filed under it, or under its lessons already: a
+    run that stopped after the database was refiled is finished by running
+    again."""
+    owners = [book_id, *lesson_ids]
     with connect_once(config) as conn, conn.cursor() as cur:
         cur.execute(_BOOK, (book_id,))
         book = cur.fetchone()
-        cur.execute(_CHUNKS, (book_id,))
+        cur.execute(_CHUNKS, (owners,))
         chunks = cur.fetchall()
-        cur.execute(_BOOK_TOPICS, (book_id,))
+        cur.execute(_BOOK_TOPICS, (owners,))
         topics = [row[0] for row in cur.fetchall()]
     return book, chunks, topics
 
@@ -123,7 +128,7 @@ def _apply(config, plan: dict) -> None:
 
     book_id = plan["book"]
     lessons = [Lesson(**lesson) for lesson in plan["lessons"]]
-    book, chunks, book_topics = _read(config, book_id)
+    book, chunks, book_topics = _read(config, book_id, [lesson.lesson_id for lesson in lessons])
     version = book[4]
     passages, topics = _filing(lessons, chunks, book_topics)
     catalog = LessonCatalog(config)
@@ -142,7 +147,7 @@ def _apply(config, plan: dict) -> None:
         cur.execute(_ARCHIVE_BOOK, (book_id,))
         conn.commit()
 
-    client = upsert_client(config)
+    client = upsert_client(config, config.secret("QDRANT_URL"))
     for lesson in lessons:
         if passages[lesson.lesson_id]:
             client.set_payload(
