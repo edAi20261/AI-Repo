@@ -25,6 +25,9 @@ llm:
   # model mistake: the request goes again, unchanged, before it can fail a turn.
   provider_retries: 2
   provider_retry_delay_seconds: 0.5
+  # How long a call keeps waiting out a rate limit after the client's own
+  # retries. None on a student's turn: an answer minutes late is no answer.
+  rate_limit_wait_seconds: 0
   # Served in order when the endpoint above errors. Both honour json_schema
   # (see structured_output), so a fallback never costs the schema.
   fallback_models: [google/gemini-2.5-flash-lite]
@@ -41,9 +44,14 @@ llm:
     # max_retries: with several books finishing four lessons at a time, one
     # topic call met five 429s in a row on Vertex and its lesson failed; the
     # client backs off between attempts, and ten waits out a burst.
-    extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192, max_retries: 10 }
-    derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192, max_retries: 10 }
-    split_lessons:   { provider: vertex, model: google/gemini-2.5-pro, temperature: 0.0, max_tokens: 32000, timeout_seconds: 600, max_retries: 10, structured_attempts: 3, fallback_models: [google/gemini-2.5-flash] }
+    # rate_limit_wait_seconds: ten retries span about a minute, and on 13 Oct
+    # 2026 three re-ingested books each lost a lesson to 429s that outlasted it.
+    # timeout_seconds: the 60s a student's turn gets timed out a topic call on
+    # a lesson of monthly assessments; up to 8192 tokens are allowed back, and
+    # page reading, which writes as much, gets 180.
+    extract_topics:  { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192, timeout_seconds: 180, max_retries: 10, rate_limit_wait_seconds: 900 }
+    derive_deps:     { provider: vertex, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 8192, timeout_seconds: 180, max_retries: 10, rate_limit_wait_seconds: 900 }
+    split_lessons:   { provider: vertex, model: google/gemini-2.5-pro, temperature: 0.0, max_tokens: 32000, timeout_seconds: 600, max_retries: 10, structured_attempts: 3, rate_limit_wait_seconds: 900, fallback_models: [google/gemini-2.5-flash] }
     understand:      { provider: openrouter, model: google/gemini-2.5-flash, temperature: 0.0, max_tokens: 1500 }
     converse:        { provider: openrouter, model: google/gemini-2.5-flash, max_tokens: 800 }
     conversation_summary: { provider: openrouter, model: google/gemini-2.5-flash-lite, temperature: 0.0, max_tokens: 1200 }
