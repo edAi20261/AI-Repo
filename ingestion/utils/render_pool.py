@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import concurrent.futures as futures
 import multiprocessing
-import os
 import threading
 from typing import Optional
+
+from shared.cpus import available_cpus
 
 from . import pdf
 
@@ -39,7 +40,7 @@ def _render(page_no: int) -> bytes:
 
 def default_processes(configured: int) -> int:
     """``configured`` render processes, or one per core when it is 0."""
-    return configured if configured > 0 else (os.cpu_count() or 1)
+    return configured if configured > 0 else available_cpus()
 
 
 class PageRenderer:
