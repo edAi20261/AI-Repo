@@ -319,9 +319,13 @@ ON CONFLICT (id) DO UPDATE SET
 
 _LOCK_SUBJECT = "SELECT pg_advisory_xact_lock(hashtext(%s))"
 
-_NEXT_ORDER = """
+_SHOWN_IN_SUBJECT = """
+subject_id = %(subject)s AND status <> 'archived' AND source <> %(background_source)s
+"""
+
+_NEXT_ORDER = f"""
 SELECT COALESCE(MAX(order_index), -1) + 1 FROM content.lessons
-WHERE subject_id = %s AND NOT (id = ANY(%s::uuid[]))
+WHERE {_SHOWN_IN_SUBJECT} AND NOT (id = ANY(%(ids)s::uuid[]))
 """
 
 _PUBLISHES = "%(publish)s AND status = 'draft' AND source = %(shown_source)s"
@@ -360,7 +364,11 @@ class LessonCatalog:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(_LOCK_SUBJECT, (subject_id,))
-                cur.execute(_NEXT_ORDER, (subject_id, ids))
+                # A student sees a lesson's place among the lessons shown: the
+                # first book after twelve background books in a subject was
+                # numbered from 583.
+                cur.execute(_NEXT_ORDER, {"subject": subject_id, "ids": ids,
+                                          "background_source": self._sources[BACKGROUND]})
                 base = cur.fetchone()[0]
                 for lesson in lessons:
                     cur.execute(_UPSERT_LESSON, (

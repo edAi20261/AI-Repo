@@ -171,6 +171,22 @@ def test_lessons_are_registered_under_the_subject_after_the_lessons_already_ther
     assert db.committed
 
 
+def test_a_books_lessons_are_numbered_after_the_shown_lessons_only(fake_postgres):
+    """Twelve background books came first in a subject, so the one shown was
+    numbered from 583 and a student read "Lesson 588"."""
+    from shared.config import get_config
+    from shared.namespaces import BACKGROUND
+
+    db = fake_postgres(fetchone=[(0,)])
+    LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Gem", lessons=[
+        {"lesson_id": lesson_id_for(BOOK, 0), "ordinal": 0, "title": "Lesson 0",
+         "unit_number": 1}])
+    (sql, args), = [(sql, args) for sql, args in db.statements if "MAX(order_index)" in sql]
+    assert "status <> 'archived'" in sql
+    assert args["background_source"] == get_config().get(
+        "ingestion.books.lesson_source")[BACKGROUND]
+
+
 @pytest.mark.parametrize(("status", "shown"), [
     ("ready", True), ("needs_review", False), ("failed", False)])
 def test_a_ministry_lesson_is_published_once_it_is_ready(fake_postgres, status, shown):
