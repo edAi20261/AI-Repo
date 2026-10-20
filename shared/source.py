@@ -32,8 +32,8 @@ from shared.storage import s3_client
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_SECONDS = 120.0
-DEFAULT_MAX_BYTES = 200 * 1024 * 1024
+DEFAULT_TIMEOUT_SECONDS = 300.0
+DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 DEFAULT_CHUNK_BYTES = 1024 * 1024
 
 
