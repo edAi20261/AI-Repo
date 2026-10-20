@@ -105,7 +105,7 @@ def _base_url(config: Config) -> str:
         return configured
     from .gcp import vertex_base_url
 
-    project = config.get("vision.project") or _project_from_credentials(config)
+    project = _project_from_credentials(config)
     if not project:
         raise VisionUnavailable(
             "vision.provider is vertex but no project is known; set vision.project "
@@ -114,15 +114,10 @@ def _base_url(config: Config) -> str:
 
 
 def _project_from_credentials(config: Config) -> Optional[str]:
-    """The project the service account belongs to, read from its own JSON.
+    """The project page reading is billed to; the credential's own unless moved."""
+    from .gcp import billed_project, credential_source
 
-    Saves naming the project twice: it is already in the credential, and two
-    copies of one fact is how they come to disagree.
-    """
-    from .gcp import credential_source, project_of
-
-    source = credential_source(config)
-    return project_of(source) if source else None
+    return billed_project(config, credential_source(config))
 
 
 class VisionUnavailable(RuntimeError):
