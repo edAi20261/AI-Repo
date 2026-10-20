@@ -145,10 +145,15 @@ def fill_in_identity(args) -> None:
     if not args.lesson_title:
         args.lesson_title = _title_of(args.source)
     if not args.lecture_id:
-        args.lecture_id = str(uuid.uuid5(ID_NAMESPACE, "book:" + _fingerprint(args.source)))
+        args.lecture_id = book_id_for(args.source)
     if not args.subject_id:
         named = args.subject_name or args.lesson_title
         args.subject_id = str(uuid.uuid5(ID_NAMESPACE, "subject:" + _key(named)))
+
+
+def book_id_for(source: str) -> str:
+    """The id a book ingested from ``source`` is filed under."""
+    return str(uuid.uuid5(ID_NAMESPACE, "book:" + _fingerprint(source)))
 
 
 def _fingerprint(source: str) -> str:
