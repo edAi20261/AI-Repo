@@ -1428,3 +1428,12 @@ def test_a_heading_path_that_fits_is_left_exactly_as_it_is():
     chunk = Chunk(lecture_id="l1", text="body", heading_path=path,
                   page_from=1, page_to=1, language="fr", order_index=0)
     assert chunk.heading_path == path
+
+
+def test_a_connection_left_idle_through_a_rate_limit_is_checked_before_reuse():
+    """A lesson waited out Vertex 429s, then wrote its prerequisites on a pooled
+    connection the server had closed meanwhile, and its book failed."""
+    from ingestion.stores import PostgresChunkStore
+
+    store = PostgresChunkStore("postgresql://test:test@localhost:5432/test")
+    assert store._engine.pool._pre_ping

@@ -3,7 +3,9 @@
 The AI service of **EduAI**, a learning platform for schools. It turns each school's own
 syllabus into a tutor that students can talk to: it explains lessons, answers follow-up
 questions, sets and marks practice, tracks what every student has mastered, and reports
-progress — in Arabic, English, French and German.
+progress — in Arabic, English, French and German, typed or spoken. Teachers get class
+analytics and a tutor that can teach in their own style; the platform gets whole books
+read, split into lessons and indexed.
 
 ---
 
@@ -14,6 +16,8 @@ progress — in Arabic, English, French and German.
 - [Quickstart](#quickstart)
 - [How a turn is answered](#how-a-turn-is-answered)
 - [Retrieval and grounding](#retrieval-and-grounding)
+- [Student and class analytics](#student-and-class-analytics)
+- [Credits](#credits)
 - [Ingestion](#ingestion)
 - [Where data lives](#where-data-lives)
 - [Repository layout](#repository-layout)
@@ -21,6 +25,7 @@ progress — in Arabic, English, French and German.
 - [Running](#running)
 - [HTTP API](#http-api)
 - [Evaluation and tests](#evaluation-and-tests)
+- [Deployment](#deployment)
 - [Contributing](#contributing)
 - [Known limitations](#known-limitations)
 
@@ -50,6 +55,9 @@ books the student is studying:
   that choice is kept.
 - **It knows where each student stands.** Every graded answer moves a per-skill mastery
   score, which drives which topics are practised next and what the progress report says.
+- **It teaches the way the student needs.** "I didn't get that", "simpler" or "from the
+  very beginning, step by step" get a different explanation, not the same one again — and
+  a basic step the book assumes is taught, and marked as going beyond the lesson.
 
 ---
 
@@ -75,10 +83,10 @@ The AI layer provides:
 
 | For | What it does |
 |---|---|
-| Students | a tutor chat grounded in their lessons; practice quizzes aimed at their weak topics; marking with feedback and the correct answer; progress reports with the root cause of a weakness; mind maps, charts, flashcards, PDFs and slides; reading homework questions off a photo |
-| Teachers | the same tutor in a professional voice; quizzes, homework and exams generated from a lesson; marking submitted answers |
-| Parents | explanations, summaries and visuals of what their child is studying |
-| The platform | ingesting every published lesson — reading scanned pages, chunking, embedding, extracting skills and their prerequisites — so it can be searched |
+| Students | a tutor chat grounded in their lessons, typed or by voice, with replies read aloud; follow-ups re-taught another way; practice quizzes aimed at their weak topics; marking with feedback and the correct answer; a homepage summary of strengths, weak spots, what to practise next and what is being forgotten; progress notes with the root cause of a weakness; mind maps, charts, maths and geometry figures, flashcards, PDFs, slides and illustrations; reading homework questions off a photo |
+| Teachers | the same tutor in a professional voice; a persona that lets the tutor teach their students in their own style; quizzes, homework and exams generated from a lesson; marking submitted answers; class analytics (topic standings, students at risk and why, common mistakes, most-missed questions, groups to reteach) and a written class summary; topic suggestions for questions they write themselves |
+| Parents | explanations, summaries and visuals of what their child is studying; a progress note written to them |
+| The platform | ingesting every published lesson, or a whole book split into its lessons — reading scanned pages, chunking, embedding, extracting skills and their prerequisites — so it can be searched; a credit wallet per user that meters every model call |
 
 It deliberately does **not** handle login, users, schools, classes or chat history: those
 belong to the backend, which authenticates every user and calls this service with a
@@ -90,7 +98,7 @@ Inside, it is three deployable parts:
   expensive reading, embedding and extraction happens here.
 - **`agent/`** — the LangGraph graph a chat turn runs through. It searches the index and
   reads the catalogue, and writes only its own records: conversation memory, mastery,
-  mistake tags and rendered visuals.
+  mistake tags, rendered visuals, reports, personas and credits.
 - **`system/`** — the FastAPI service the backend calls. Transport only: it validates,
   authenticates and delegates.
 
@@ -127,6 +135,9 @@ cp .env.example .env
 | `BACKEND_API_BASE_URL` | subject facts, enrolments, answer keys, ingestion | the backend's `…/api/ai-integration` prefix |
 | `APP_ENV` | choosing the config overlay | `local`, `staging` or `production` — see below |
 | `S3_BUCKET`, `S3_REGION`, AWS keys | figures and rendered visuals | without them files go to a local folder |
+| `ELEVENLABS_API_KEY` | voice | speech-to-text and reading replies aloud |
+| `OPENAI_API_KEY` | illustrations | without it the `image` visual falls back to a stub, with a warning |
+| `GOOGLE_APPLICATION_CREDENTIALS` | ingestion | a service-account file for Vertex, which reads the pages (`.env.ingest.example`) |
 
 **Which `APP_ENV`?** `local` searches a separate, usually empty, development index
 (`eduai_chunks_dev`), so every question will be declined until you ingest something into
@@ -169,8 +180,7 @@ A message sent in the app's AI tutor then travels frontend → backend → this 
 ### 6. Run the tests
 
 ```bash
-pytest          # the unit suite: no keys, no services
-ruff check .
+.venv/bin/python scripts/verify.py   # lint and the unit suite, exactly as CI runs them
 ```
 
 ---
@@ -185,11 +195,11 @@ START
       ├── converse    a social turn: a model-written reply, no retrieval
       └── plan        subject, topics, reply language, the last answer's passages
             → dispatch       one parallel branch per task
-                ├── explain_sg / summarize_sg   retrieve → answer → prerequisites
+                ├── explain_sg / summarize_sg   retrieve → answer (or teach beyond the lesson) → prerequisites
                 ├── assessment_sg               questions generated from retrieved passages
                 ├── grade_sg                    marks answers; the only writer to mastery
                 ├── report_sg                   mastery, trend and root-cause prerequisite
-                └── visual_sg                   charts, mind maps, maths figures, flashcards, PDFs, slides
+                └── visual_sg                   charts, mind maps, maths figures, flashcards, PDFs, slides, illustrations
             → render_visuals → compose
   → verify_language   the reply is in the language decided, or is repaired once
   → persist           remember the turn; fold old turns into a running summary
@@ -232,6 +242,11 @@ new message in the light of the conversation:
   the pathway's allowlist), each with a self-contained search query that names what an
   "example" or "that" refers to;
 - whether the turn carries the last answer on, or moves to another subject;
+- how the student wants it taught — `simpler`, `deeper`, `example`, `step_by_step` or
+  `another_way` — each with one teaching strategy in `prompts.TEACHING_APPROACHES`, so a
+  student who is lost gets a different explanation rather than the same one again;
+- how the question fits the syllabus — on the `topic`, a `foundation` the book assumes,
+  or `outside` the subject;
 - whether the student asked to be answered in a particular language.
 
 There are no keyword lists, seed phrases or phrase rules deciding what a message is.
@@ -251,7 +266,10 @@ language is, in order:
 `language.reply_follows: message` swaps 2 and 3 for a deployment that answers in the
 student's language.
 
-**4. The tasks run, and the reply is composed.** Every sentence a student reads is written
+**4. The tasks run, and the reply is composed.** A student who asks to "practise my weak
+spots" without naming a topic gets a quiz built from their weakest topics in the subject,
+and any practice quiz gives weak topics more of its questions. Answers close with one
+offer of a next step the student can actually take. Every sentence a student reads is written
 by a model — explanations, refusals, small talk, progress notes. The service writes no
 fixed sentences in any language; the only fixed marks are symbols (✓ ✗ → 💡 ∅) and
 labels. A model call that fails fails the turn with a `503`, and the client shows its own
@@ -339,28 +357,126 @@ English and the reverse. For an explain or summarise task:
    sub-headings is otherwise found one fragment at a time.
 5. **Continue the last answer** — a turn that carries the previous one on starts from the
    passages that answer cited.
-6. **Answer** — the model answers only from the numbered passages, citing them inline. It
+6. **Answer** — the model answers from the numbered passages, citing them inline. It
    leads with the lesson's own examples and says when an example is its own.
-7. **Grounding check** — an answer that cites nothing is treated as a refusal: no sources,
-   no prerequisites, not remembered as evidence.
-8. **Prerequisites** — walked through the topic graph from the passages the answer cited.
+7. **Beyond the lesson** — one router in `explain_sg` picks the path. Passages found: the
+   answer comes from them, and a step they skip is explained and marked as going beyond
+   the lesson. Nothing found but inside the subject: the tutor teaches it, says so, and
+   cites nothing. Outside the subject: declined. A `foundation` question searches the
+   whole subject, since the basics are usually in an earlier lesson. Summaries never
+   leave the material, and inside a selected lesson only its foundations go beyond it.
+   `agent.beyond_lessons: false` turns this off per deployment.
+8. **Grounding check** — an answer that cites nothing is never remembered as evidence and
+   gets no sources or prerequisites. `answer_basis` on the chat response tells a client
+   or an evaluation whether it was taught from the lessons, taught beyond them, or
+   declined.
+9. **Prerequisites** — walked through the topic graph from the passages the answer cited.
 
 Citations, sources and prerequisites are returned as structured fields (`citations`,
 `prereq_topics`) and are not printed in the reply text.
+
+### Visuals
+
+`visual_sg` renders up to three visuals a turn (`render.max_per_turn`). Charts, mind maps,
+maths plots, geometry figures, flashcards, PDFs and slide decks are built by a small model
+and drawn deterministically (`agent/render.py`), because image models cannot be trusted
+with exact figures. Only the `image` kind — an illustration with nothing to get wrong —
+goes to an image model (`shared/image_gen.py`, `gpt-image-1` by default). Rendered files
+are stored in `ai.artifacts` and S3.
+
+### Homework from a photo
+
+`POST /ai/homework/capture` reads up to twenty numbered questions off a photographed page,
+with the student's own handwritten answer beside each when there is one, so each can be
+explained or marked. A blurred or unreadable page is reported as unreadable rather than
+guessed at (`agent/homework.py`).
+
+---
+
+## Student and class analytics
+
+The analytics are read-only and model-free, so a homepage can ask on every load. The
+service never decides who may see whom: the backend passes only the students the signed-in
+user may see.
+
+- **Student summary** — `GET /ai/learners/{user_id}/summary` (`agent/analytics.py`). Per
+  subject, how many topics are strong, developing, weak, unknown or not practised; the
+  student's strengths and weak spots with their latest answers; their commonest mistake
+  categories; graded answers per week and the trend; and a **review queue** of topics they
+  have probably started to forget, with an estimated retention that grows with how often
+  and how well each was assessed.
+- **What to practise next** — `agent/recommend.py`, a pure policy over the evidence, so the
+  homepage, the tutor and a teacher's view can never disagree. Weak topics come first,
+  each preceded by any weak prerequisite it rests on; then developing topics; then
+  untouched topics in the current lessons; then strong topics whose retention has faded.
+  Reasons are returned as codes, never sentences, so the client words them in its reader's
+  language.
+- **Progress note** — `GET /ai/reports/{user_id}` writes a note (one model call) for the
+  student or, with `scope=parent`, for their parent: a narrative whose every sentence cites
+  its evidence, the weak topics, strengths, the root-cause prerequisite, the trend and a
+  chart. It is stored in `ai.reports`; `.../latest` serves the stored one with no model
+  call and says when it is stale.
+- **Class analytics** — `POST /ai/classes/analytics` (`agent/class_analytics.py`), for a
+  roster of up to 500 students: per-topic standings, students at risk with the facts that
+  flagged them (many weak topics, declining, inactive), students not started, common
+  mistakes, most-missed questions, score distribution, engagement, and groups of students
+  weak on the same topic to reteach together. `POST /ai/classes/report` writes a summary
+  for the teacher that never names a student; `GET /ai/classes/{class_id}/report/latest`
+  serves the stored one.
+- **Topic suggestions** — `POST /ai/topics/suggest` (`agent/tagging.py`). A question a
+  teacher writes carries no topic, and an answer with no topic moves no mastery, so the
+  nearest syllabus topics are suggested once, when the question is saved.
+
+---
+
+## Credits
+
+Every call that pays a model is charged to one account before any model runs, and
+refunded if it fails, times out or comes back degraded (`agent/credits/`,
+`system/billing.py`). Each user has a wallet: a monthly allowance from their plan
+(`free` 50, `basic` 500, `pro` 2000), spent first and reset each period, plus granted
+extra credits that never expire. Every change is an append-only ledger entry that
+records what the model gateway actually billed, which is the evidence prices are re-set
+from.
+
+| Action | Price (`credits.prices`) |
+|---|---|
+| chat message | 1 |
+| grading | 1 per 10 answers |
+| student progress note | 1 |
+| class summary | 2 |
+| homework capture | 1 |
+| persona build | 5 |
+| voice transcription | 1 |
+| reading a reply aloud | 1 |
+
+An account that cannot cover a call gets `402 insufficient_credits` with its balance and
+renewal date, and nothing runs; a stream is refused before it opens. Credits are off
+(`credits.enabled: false`) until the backend creates `ai.credit_wallets` and
+`ai.credit_ledger`; while off, nothing is charged and the credits endpoints answer `503`.
 
 ---
 
 ## Ingestion
 
-One PDF (or a lesson's body text) is one lesson:
+A PDF given with a lesson id (or a lesson's body text) is one lesson. A PDF given with
+only its subject is a **book**, and is split into the lessons it teaches before anything
+is indexed (`ingestion/books.py`): a model reads the book's opening pages and outline and
+returns its units and the lessons in each, every lesson becomes its own row in
+`content.lessons`, and every chunk, figure and topic is filed under the lesson whose pages
+it came from. Two lessons taught on the same pages each get those pages, and lessons a
+book teaches as a group share the group's pages. Every id is derived from the book, so
+uploading the same book again replaces it instead of landing beside it.
 
 ```
-extract       each page as typed blocks in reading order. The PDF's own text layer is
-              used wherever it has usable text; a page with none (a scan, or glyph noise
-              from subset fonts) is read by a vision model (Qwen3-VL, Claude fallback),
-              and what comes back is checked before it is believed. Figures are cropped
-              to S3 with alt text. A lesson with more than 5% unreadable pages is held
-              back as needs_review and never searched.
+extract       each page as typed blocks in reading order, chosen page by page. The PDF's
+              own text layer is used wherever it can be trusted; a magazine-style page
+              can go to a document layout model; a page with no usable text (a scan, or
+              glyph noise from subset fonts) is read by a vision model (Gemini 2.5 Flash
+              on Vertex, Gemini 2.5 Pro fallback), and what comes back is checked before
+              it is believed. Every page read is cached in ai.page_transcriptions, so a
+              re-run never pays for it twice. Figures are cropped to S3 with alt text. A
+              lesson with more than 5% unreadable pages is held back as needs_review.
 chunk         blocks grouped under their heading; running heads and folios dropped,
               contents and index pages marked so search never returns them.
 embed         BGE-M3 dense + sparse, each chunk prefixed with its subject, lesson,
@@ -373,8 +489,24 @@ index         ai.chunks, ai.figures, the ai.vector_index manifest, Qdrant points
               ai.lecture_ingestion status row. Re-ingesting replaces a lesson in place.
 ```
 
-The platform triggers ingestion when a lesson is published (`POST /ai/ingest/lesson`),
-and it can be run from the command line (see [Running](#running)).
+Before the pipeline walks a book, every page is rendered once, on every core, and both of
+its model calls are made from that one image, many pages in flight
+(`ingestion/read_ahead.py`).
+
+The platform triggers ingestion when a lesson is published (`POST /ai/ingest/lesson`), and
+reports each run's status back to it (`PATCH /lessons/{id}/ingestion`). It can also be
+run three other ways:
+
+- **From the command line**, on one machine — see [Running](#running) and
+  [`docs/running-ingestion-on-your-own-machine.md`](docs/running-ingestion-on-your-own-machine.md).
+- **On GitHub's machines** — the `Ingest a book` workflow (`.github/workflows/ingest-book.yml`)
+  takes only a link to the book and its subject id, and splits the work: by default six
+  machines read the pages and eight embed the chunks, then one builds the index
+  (`ingestion/distributed.py`). A `preview` run lists the lessons it found and writes
+  nothing. `scripts/ingest_on_github.sh books.txt` sends a whole shelf. See
+  [`docs/ingesting-on-github-actions.md`](docs/ingesting-on-github-actions.md).
+- **On AWS** — `scripts/ingest_on_aws.sh`, with `Dockerfile.ingest` and
+  `infra/ingest-task-definition.json`.
 
 ---
 
@@ -386,6 +518,9 @@ and it can be run from the command line (see [Running](#running)).
 | `ai.user_memory` | conversation turns (quoted and folded), running summary, session state (subject, language) | agent |
 | `ai.adaptive_profile` | preferences a student stated, carried across conversations | agent |
 | `ai.mastery`, `ai.mastery_events`, `ai.mistake_tags` | per-skill mastery and its history | agent (grading) |
+| `ai.reports` | stored progress notes and class summaries | agent |
+| `ai.teacher_personas`, `ai.teacher_persona_exemplars` | persona versions, their cards and chosen examples | agent |
+| `ai.credit_wallets`, `ai.credit_ledger` | each user's plan, balance and append-only credit history | service |
 | `ai.artifacts` | rendered visuals | agent |
 | Qdrant `eduai_chunks_v2` / `eduai_topics` | chunk vectors (dense + sparse) and topic-label vectors | ingestion |
 | S3 | figure crops and rendered artifacts | both |
@@ -404,6 +539,13 @@ backend, which the service reads through `/api/ai-integration`.
 │   │                        transcript recovery when what we kept has expired
 │   ├── learner.py           what graded evidence says this student can do
 │   ├── profile.py           what carries across conversations, and what a student may erase
+│   ├── analytics.py         the student summary: standings, strengths, weak spots, review queue
+│   ├── class_analytics.py   a teacher's view of a class
+│   ├── recommend.py         what to practise next, and why
+│   ├── tagging.py           topic suggestions for questions written outside ingestion
+│   ├── credits/             plans, prices, wallets and the append-only ledger
+│   ├── persona/             teacher personas: material, build, store, voice in prompts
+│   ├── voice/               transcription and reading replies aloud
 │   ├── graph/
 │   │   ├── graph.py         compiles the graph; one adapter node per subgraph
 │   │   ├── nodes.py         classify · load_context · understand · converse · plan ·
@@ -424,19 +566,30 @@ backend, which the service reads through `/api/ai-integration`.
 │   ├── homework.py          reading questions off a photographed page
 │   └── errors.py            failures a turn reports
 ├── ingestion/               the offline pipeline (python -m ingestion)
-│   ├── layout/              page → typed blocks → chunks (tier router, text layer, vision)
+│   ├── layout/              page → typed blocks → chunks (tier router, text layer,
+│   │                        layout model, vision, page cache)
 │   ├── stages/              extract · chunk · embed · topics · dependencies · index
+│   ├── books.py             a book split into its lessons
+│   ├── lesson.py            one lesson, as every ingestion command describes it
+│   ├── read_ahead.py        every page read once, on every core, before the pipeline
+│   ├── distributed.py       one book across several machines: plan · read · prepare ·
+│   │                        embed · finish
 │   ├── prompts/
 │   └── stores.py            Postgres and Qdrant writers (dry-run fallback)
 ├── shared/                  imported by both halves
 │   ├── language/            the reply-language policy, detection, directives, verification
 │   ├── llm.py · structured.py · prompting.py   model access, schema-checked output, prompts
 │   ├── embeddings.py · lexical.py · matching.py · vectors.py · vector_store.py
-│   ├── postgres.py · storage.py · backend.py · vision.py
+│   ├── postgres.py · storage.py · backend.py · vision.py · gcp.py
+│   ├── speech.py · image_gen.py                voice provider, illustrations
 │   └── config.py · logging.py · metering.py · errors.py
-├── system/                  FastAPI service: routers, schemas, runtime, ingestion jobs
-├── scripts/                 bootstrap, ingest verification, re-embedding, evaluations
+├── system/                  FastAPI service: routers, schemas, runtime, ingestion jobs,
+│                            billing, status reports to the platform
+├── scripts/                 bootstrap, verify, ingestion (local, GitHub, AWS), evaluations
 ├── tests/unit/
+├── docs/                    backend contract, OpenAPI, schema requests, ingestion guides
+├── sdlc/ · .claude/         the developer and QA agents' change workflow
+├── .github/workflows/       deploy on push to main; ingest a book
 ├── config.yaml              every behavioural setting
 └── .env.example             secrets and connection strings
 ```
@@ -455,10 +608,17 @@ lists the rules this codebase holds itself to and the failure behind each one.
 | `config.yaml` | everything that changes behaviour | yes |
 
 The model is a config change: `llm.provider` and `llm.model` move the whole system, and
-`llm.overrides` sets a model per task. Today every task runs on Gemini 2.5 through
-OpenRouter (Flash for reading turns and writing answers, Flash-Lite for composition,
-conversation summaries and visual builders), vision on Qwen3-VL, and the evaluation
-judge on GPT-4.1.
+`llm.overrides` sets a model per task. Today everything that answers a user runs on
+Gemini 2.5 through OpenRouter (Flash for reading turns, writing answers, grading, reports
+and personas; Flash-Lite for composition, conversation summaries, speech scripts and
+visual builders). Ingestion bills to one account on Vertex: page reading on Gemini 2.5
+Flash with a Pro fallback, topics and prerequisites on Flash, and splitting a book into
+lessons on Gemini 2.5 Pro. Voice uses ElevenLabs (Scribe v2 to listen, Flash v2.5 to
+speak), illustrations `gpt-image-1`, and the evaluation judge GPT-4.1 — a different
+family from the model it marks.
+
+Features that need backend tables ship switched off and are turned on in `config.yaml`
+once the tables exist: `credits.enabled`, `persona.enabled` and `voice.speak.enabled`.
 
 `APP_ENV` selects an overlay from `environments:` in `config.yaml`:
 
@@ -470,7 +630,8 @@ judge on GPT-4.1.
 
 The settings most often tuned: `agent.min_score`, `agent.k`, `agent.expand`,
 `agent.scope.relevance_ratio`, `agent.conversation` (window, folding, TTL),
-`language.reply_follows`, `assessment.*` and `mastery.*`. Each threshold carries the
+`agent.beyond_lessons`, `language.reply_follows`, `assessment.*`, `mastery.*`,
+`recommend.*`, `class_analytics.*` and `credits.*`. Each threshold carries the
 measurement that set it.
 
 ---
@@ -492,7 +653,10 @@ the service token or its stores.
 **Ingestion from the command line:**
 
 ```bash
-# a local file
+# a whole book: split into its lessons, each created under the subject
+python -m ingestion path/to/book.pdf --subject-id <uuid> [--language en]
+
+# one lesson
 python -m ingestion path/to/lesson.pdf --lecture-id <uuid> --subject-id <uuid> \
     --lesson-title "The Water Cycle" --lesson-order 4 [--grade g8] [--subject-is-math]
 
@@ -535,10 +699,31 @@ not public.
 | `POST` | `/ai/chat` | One message → one reply, with any assessment, grade, visual, citations and prerequisites |
 | `POST` | `/ai/chat/stream` | The same turn as server-sent events: one `progress` per stage, then `result` |
 | `POST` | `/ai/grade` | Grade submitted answers and move mastery |
-| `GET` | `/ai/reports/{user_id}` | A progress report with its trend chart |
+| `GET` | `/ai/learners/{user_id}/summary` | A student's standing, strengths, weak spots, review queue and what to practise next |
+| `GET` | `/ai/reports/{user_id}` | Write and store a progress note (for the student or their parent) with its trend chart |
+| `GET` | `/ai/reports/{user_id}/latest` | The newest stored note, without writing a new one |
+| `POST` | `/ai/classes/analytics` | Analyse a class roster |
+| `POST` | `/ai/classes/report` | Write and store a teacher's summary of a class |
+| `GET` | `/ai/classes/{class_id}/report/latest` | The newest stored class summary |
+| `POST` | `/ai/topics/suggest` | Suggest syllabus topics for questions a teacher wrote |
 | `GET` | `/ai/memory/{user_id}` | What the tutor remembers about a student |
 | `DELETE` | `/ai/memory/{user_id}` | Destroy it, optionally for one conversation |
 | `POST` | `/ai/homework/capture` | Read the questions off a photographed homework page |
+| `GET` | `/ai/voice/capabilities` | Which voice features are on, for showing the mic and speaker buttons |
+| `POST` | `/ai/voice/transcribe` | Turn a recorded question into text |
+| `POST` | `/ai/voice/speak` | Read a tutor reply aloud |
+| `POST` | `/ai/personas/build` | Draft a new persona version from a teacher's material |
+| `GET` | `/ai/personas/{teacher_id}` | Every persona version a teacher has, and which one students hear |
+| `GET` | `/ai/personas/{teacher_id}/versions/{version}` | One version, with the examples chosen from the teacher's words |
+| `PUT` | `/ai/personas/{teacher_id}/versions/{version}/card` | Replace a version's card with the teacher's corrections |
+| `POST` | `/ai/personas/{teacher_id}/versions/{version}/activate` | Approve a version for the teacher's students |
+| `POST` | `/ai/personas/{teacher_id}/deactivate` | Go back to the default tutor |
+| `DELETE` | `/ai/personas/{teacher_id}` | Destroy every persona version and example held for a teacher |
+| `GET` | `/ai/credits/plans` | Plans and what each action costs |
+| `GET` | `/ai/credits/{user_id}` | A user's credit balance |
+| `GET` | `/ai/credits/{user_id}/ledger` | A user's credit history, newest first |
+| `POST` | `/ai/credits/{user_id}/grants` | Give a user extra credits that never expire |
+| `PUT` | `/ai/credits/{user_id}/plan` | Move a user to another plan |
 | `POST` | `/ai/ingest` | Queue a lesson from a source URI; returns `202` and a job id |
 | `POST` | `/ai/ingest/lesson` | Queue a lesson by platform id (fired on publish) |
 | `GET` | `/ai/ingest`, `/ai/ingest/{job_id}`, `/ai/ingest/lectures/{lecture_id}` | Recent jobs, one job, a lecture's latest job |
@@ -550,6 +735,9 @@ id is honoured):
 ```json
 {"error": {"code": "service_unavailable", "message": "…", "request_id": "…"}}
 ```
+
+A paid call that the account cannot cover answers `402 insufficient_credits`. Paid
+responses carry `usage` — what the model gateway billed for the call.
 
 The backend contract is in [`docs/BACKEND_INTEGRATION.md`](docs/BACKEND_INTEGRATION.md) and
 [`docs/openapi.json`](docs/openapi.json).
@@ -566,12 +754,26 @@ index and models:
 | `scripts/eval_retrieval.py` | whether retrieval finds the right lesson, and separates answerable from unanswerable questions |
 | `scripts/eval_rag.py` | context precision, context recall, faithfulness and answer relevance |
 | `scripts/eval_answers.py` | answer quality, judged by a model from another family |
-| `scripts/eval_conversations.py` | multi-turn behaviour: follow-ups, small talk, refusals, language — against a running service |
+| `scripts/eval_conversations.py` | multi-turn behaviour: follow-ups, re-teaching, teaching beyond the lesson, small talk, refusals, language — against a running service |
+| `scripts/eval_persona.py` | whether persona replies sound like the teacher, and whether they add claims the plain tutor does not make |
+| `scripts/e2e_features.py` | the real routes end to end against a deployed stack, once and with many students at once |
 
 ```bash
-pytest                 # the unit suite: no keys, no services
-ruff check .           # must not regress
+.venv/bin/python scripts/verify.py   # the same lint and suite CI runs; this is "done"
 ```
+
+`scripts/verify.py` keeps the unit run away from production. A bare `pytest` inherits
+`.env`, whose `DATABASE_URL` may point at real data.
+
+---
+
+## Deployment
+
+A push to `main` runs the lint and tests, builds the image (`Dockerfile`), pushes it to
+ECR and rolls the ECS service in `eu-central-1`
+(`.github/workflows/deploy.yml`). `/ready` answers `503` until the graph is compiled, so
+it is the deployment gate. Ingestion runs separately: on GitHub's machines through the
+`Ingest a book` workflow, or as an ECS task from `Dockerfile.ingest`.
 
 ---
 
@@ -597,10 +799,12 @@ ruff check .           # must not regress
   do not carry their parent heading, and on magazine-style pages can still hold
   fill-in answer keys and stray letters from decorative titles. Fixing it in the chunker
   needs a re-ingest.
-- **Topics are coarse on long documents.** A lesson gets 3–8 topics, so a whole book
-  ingested as one lesson maps most of its pages to a handful of skills, and prerequisite
-  edges are derived by a model without review.
+- **Topics are coarse on long lessons.** A lesson gets 3–8 topics, and prerequisite edges
+  are derived by a model without review.
 - **The platform does not yet pass structured citations through** to the frontend, and the
   frontend sends the study mode inside the message rather than as a field.
-- **Parents have no conversation memory**, and teacher and parent report scopes, classroom
-  scoping and session uploads are not built yet.
+- **Credits, personas and reading aloud are off** until the backend creates their tables
+  and the frontend shows them.
+- **Parents have no conversation memory**, and session uploads are not built yet.
+- **`needs_review` is reported to the platform as `ready`**, because its status enum has
+  no equivalent; what was indexed is usable.

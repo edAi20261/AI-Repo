@@ -612,7 +612,6 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
 
     lessons = finished["lessons"]
     assert _Catalog.registered == [(subject, ["Lesson 1", "Lesson 2"])]
-    # A book's lessons finish on parallel threads, so they settle in any order.
     assert sorted(_Catalog.settled) == sorted((lsn["lesson_id"], "ready") for lsn in lessons)
     for chunk in finished["chunks"]:
         owner = lessons[0] if chunk.page_from < 6 else lessons[1]
