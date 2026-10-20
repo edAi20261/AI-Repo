@@ -56,14 +56,14 @@ def _vision(config) -> str:
         from shared.vision import _api_key
 
         return f"{provider}, key present" if _api_key(config) else f"{provider}, NO KEY"
-    from shared.gcp import access_token, credential_source, project_of
+    from shared.gcp import access_token, billed_project, credential_source
 
     source = credential_source(config)
     if not source:
         raise RuntimeError(
             f"{config.get('vision.credentials_env')} is empty; Vertex needs a service account")
     token = access_token(source)
-    return f"vertex, project {project_of(source)}, token {len(token)} chars"
+    return f"vertex, project {billed_project(config, source)}, token {len(token)} chars"
 
 
 def _storage(config) -> str:
