@@ -318,16 +318,24 @@ ON CONFLICT (id) DO UPDATE SET
 
 _LOCK_SUBJECT = "SELECT pg_advisory_xact_lock(hashtext(%s))"
 
-_NEXT_ORDER = """
-SELECT COALESCE(MAX(order_index), -1) + 1 FROM content.lessons
-WHERE subject_id = %s AND NOT (id = ANY(%s::uuid[]))
+_SHOWN_IN_SUBJECT = """
+subject_id = %(subject)s AND status <> 'archived' AND source <> %(background_source)s
 """
 
-_FINISH_LESSON = """
+_NEXT_ORDER = f"""
+SELECT COALESCE(MAX(order_index), -1) + 1 FROM content.lessons
+WHERE {_SHOWN_IN_SUBJECT} AND NOT (id = ANY(%(ids)s::uuid[]))
+"""
+
+_PUBLISHES = "%(publish)s AND status = 'draft' AND source = %(shown_source)s"
+
+_FINISH_LESSON = f"""
 UPDATE content.lessons
-SET ingestion_status = %s, ingestion_error = %s, ingested_at = now(),
-    version = %s, updated_at = now()
-WHERE id = %s
+SET ingestion_status = %(settled)s, ingestion_error = %(error)s, ingested_at = now(),
+    version = %(version)s, updated_at = now(),
+    status = CASE WHEN {_PUBLISHES} THEN 'published' ELSE status END,
+    published_at = CASE WHEN {_PUBLISHES} THEN now() ELSE published_at END
+WHERE id = %(lesson_id)s
 """
 
 _EXISTING = "SELECT id::text FROM content.lessons WHERE id = ANY(%s::uuid[])"
@@ -355,7 +363,11 @@ class LessonCatalog:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(_LOCK_SUBJECT, (subject_id,))
-                cur.execute(_NEXT_ORDER, (subject_id, ids))
+                # A student sees a lesson's place among the lessons shown: the
+                # first book after twelve background books in a subject was
+                # numbered from 583.
+                cur.execute(_NEXT_ORDER, {"subject": subject_id, "ids": ids,
+                                          "background_source": self._sources[BACKGROUND]})
                 base = cur.fetchone()[0]
                 for lesson in lessons:
                     cur.execute(_UPSERT_LESSON, (
@@ -365,11 +377,15 @@ class LessonCatalog:
 
     def finished(self, lesson_id: str, *, status: str, errors: Sequence[str],
                  version: int) -> None:
-        settled = _INGESTION_STATUS.get(status, "ready")
-        error = "; ".join(errors) or None
+        # A lesson that needs review is kept from students until someone has
+        # looked; a teacher's draft or archive is never overridden.
+        params = {"settled": _INGESTION_STATUS.get(status, "ready"),
+                  "error": "; ".join(errors) or None, "version": version,
+                  "lesson_id": lesson_id, "publish": status == "ready",
+                  "shown_source": self._sources[SYLLABUS]}
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(_FINISH_LESSON, (settled, error, version, lesson_id))
+                cur.execute(_FINISH_LESSON, params)
             conn.commit()
 
     def stale(self, book_id: str, kept: int) -> list[str]:

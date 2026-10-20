@@ -35,21 +35,34 @@ _LESSON_ROWS = ("UPDATE content.lessons SET source = 'ai_generated', created_by 
                 "updated_at = now() WHERE id = ANY(%(ids)s::uuid[])")
 
 
+_LESSONS_PER_WRITE = 25
+
+
 def _qdrant(config, ids: list[str], apply: bool) -> dict[str, int]:
+    """Count, and on apply relabel, the points of these lessons.
+
+    The write client and a few lessons at a time: 1,812 lessons sent as one
+    request through the 5-second query client stopped with 4,516 of 27,748
+    chunk points and none of the topics relabelled."""
     from qdrant_client import models
 
-    from shared.vector_store import query_client
+    from shared.vector_store import upsert_client
 
-    client = query_client(config)
-    scope = models.Filter(must=[models.FieldCondition(
-        key="lecture_id", match=models.MatchAny(any=ids))])
+    client = upsert_client(config, config.secret("QDRANT_URL"))
+
+    def scope(lessons: list[str]):
+        return models.Filter(must=[models.FieldCondition(
+            key="lecture_id", match=models.MatchAny(any=lessons))])
+
     counts = {}
     for collection in (config.vector_store.get("collection"),
                        config.vector_store.get("topics_collection")):
-        counts[collection] = client.count(collection, count_filter=scope, exact=True).count
-        if apply and counts[collection]:
+        counts[collection] = client.count(collection, count_filter=scope(ids), exact=True).count
+        if not (apply and counts[collection]):
+            continue
+        for start in range(0, len(ids), _LESSONS_PER_WRITE):
             client.set_payload(collection, payload={"namespace": BACKGROUND},
-                               points=scope, wait=True)
+                               points=scope(ids[start:start + _LESSONS_PER_WRITE]), wait=True)
     return counts
 
 
