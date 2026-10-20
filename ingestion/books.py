@@ -111,7 +111,7 @@ def _spans(entries: Sequence[_Entry], first_page: int,
 
 
 def _oversized(entries: Sequence[_Entry], first_page: int, last_page: int,
-               ratio: float) -> list[str]:
+               ratio: float, min_pages: int) -> list[str]:
     spans = _spans(entries, first_page, last_page)
     lessons: dict[tuple[int, int], list[str]] = {}
     for entry, span in zip(entries, spans):
@@ -122,10 +122,11 @@ def _oversized(entries: Sequence[_Entry], first_page: int, last_page: int,
     typical = statistics.median(to - start + 1 for start, to in lessons)
     return [f"{' / '.join(titles)} (pages {start}-{to}, {to - start + 1} pages)"
             for (start, to), titles in lessons.items()
-            if to - start + 1 > ratio * typical]
+            if to - start + 1 > max(ratio * typical, min_pages)]
 
 
-def _validator(first_page: int, last_page: int, oversized_ratio: float):
+def _validator(first_page: int, last_page: int, oversized_ratio: float,
+               oversized_min_pages: int):
     def check(breakdown: LessonBreakdown) -> None:
         items = [item for unit in breakdown.units for item in unit.lessons]
         if not items and not breakdown.sections:
@@ -150,15 +151,12 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float):
         if any(b <= a for a, b in zip(section_starts, section_starts[1:])):
             raise ValueError("each section starts on its own page, after the one before "
                              f"it; got {section_starts}")
-        both = sorted(set(starts) & set(section_starts))
-        if both:
-            raise ValueError(f"pages {both} are given as the start of a lesson and of a "
-                             "section; a page starts one or the other")
         if any(not item.title for item in [*items, *breakdown.sections]):
             raise ValueError("every lesson and section needs its title as printed in the "
                              "book; a lesson whose pages show only its number is titled "
                              "with that number as printed")
-        long = _oversized(_entries(breakdown), first_page, last_page, oversized_ratio)
+        long = _oversized(_entries(breakdown), first_page, last_page, oversized_ratio,
+                          oversized_min_pages)
         if long:
             raise ValueError(
                 "these lessons run far longer than a lesson in this book usually does: "
@@ -194,7 +192,8 @@ def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Le
         breakdown = call_structured(
             LessonBreakdown, prompt, task=TASK, config=config, llm=llm,
             label="lesson_breakdown",
-            validate=_validator(numbers[0], numbers[-1], settings["oversized_lesson_ratio"]))
+            validate=_validator(numbers[0], numbers[-1], settings["oversized_lesson_ratio"],
+                                settings["oversized_lesson_min_pages"]))
     except StructuredValidationFailure as error:
         raise BreakdownFailed(f"could not split the book into lessons: {error}") from error
     shared = settings["shared_pages"][state.get("namespace") or SYLLABUS]
@@ -232,9 +231,9 @@ def _merged(entries: Sequence[_Entry]) -> list[_Entry]:
     merged: list[_Entry] = []
     for entry in entries:
         last = merged[-1] if merged else None
-        if last and not entry.section and not last.section \
-                and last.start_page == entry.start_page:
-            merged[-1] = replace(last, title=f"{last.title} / {entry.title}")
+        if last and last.start_page == entry.start_page:
+            merged[-1] = replace(last, title=f"{last.title} / {entry.title}",
+                                 section=last.section and entry.section)
         else:
             merged.append(entry)
     return merged

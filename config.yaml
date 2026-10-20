@@ -222,6 +222,10 @@ ingestion:
     # 12 Oct 2026, correctly split first and last lessons ran to at most 2.7x the
     # median; those that had taken in a term's revision or exams ran 4.0x-33.7x.
     oversized_lesson_ratio: 3.5
+    # ...and only past this many pages. In a 17-page notebook whose lessons run
+    # one page, a four-page lesson was sent back until the book was filed whole;
+    # the shortest lesson that had taken in a term's revision ran 40 pages.
+    oversized_lesson_min_pages: 20
     # Lessons of one book taken through topics, prerequisites and the index at
     # once. One at a time, a 36-lesson book's finish took 1h25m (~2.3 min a
     # lesson, nearly all of it model calls). Each worker holds at most one
