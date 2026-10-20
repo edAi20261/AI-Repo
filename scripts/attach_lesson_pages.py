@@ -3,10 +3,13 @@
 The lesson page shows a lesson's PDF attachment, and a lesson ingestion split
 out of a book had none: a student opened it to an empty page. This cuts each
 lesson's pages out of the book's PDF, stores them beside the book, and attaches
-them to the lesson. A lesson that already has an attachment is left alone.
+them to the lesson. A lesson that already has an attachment, and a lesson of
+the book that is not shown (its glossary or index, filed as background), is
+left alone.
 
 A lesson's pages run from the first page any of its passages came from to the
-page before the next lesson's; the last runs to the end of the book.
+page before the next lesson's, counting every lesson of the book, shown or not;
+the last runs to the end of the book.
 
     python -m scripts.attach_lesson_pages --source s3://bucket/book.pdf --uploader <user id>          # dry run
     python -m scripts.attach_lesson_pages --source s3://bucket/book.pdf --uploader <user id> --apply
@@ -33,8 +36,9 @@ _LESSONS = """
 SELECT l.id::text, l.subject_id::text, l.title,
        (SELECT min(c.page_from) FROM ai.chunks c WHERE c.lecture_id = l.id),
        EXISTS (SELECT 1 FROM content.lesson_attachments a WHERE a.lesson_id = l.id)
+       OR l.source <> %(shown_source)s
 FROM content.lessons l
-WHERE l.id = ANY(%(ids)s::uuid[]) AND l.source = %(shown_source)s AND l.status <> 'archived'
+WHERE l.id = ANY(%(ids)s::uuid[]) AND l.status <> 'archived'
 ORDER BY l.order_index
 """
 _MEDIA = """
@@ -93,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         spans = _spans(rows, book.page_count)
         todo = [(row, first, last) for row, first, last in spans if not row[4]]
         for (lesson_id, _, title, _, attached), first, last in spans:
-            state = "has one" if attached else "to attach"
+            state = "skipped" if attached else "to attach"
             print(f"{lesson_id}  p{first}-{last:<4} {state:<9}  {title[:70]}")
         print(f"{len(rows)} lessons, {len(todo)} to attach, "
               f"{len(rows) - len(spans)} with no passages to place")
