@@ -8,9 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from shared.config import Config
-
-DEV_ENVIRONMENTS = frozenset({"local", "test", "dev", "ci"})
+from shared.config import DEV_ENVIRONMENTS, Config
 
 # The platform owns this contract: PATCH a lesson's content.ingestion_status.
 DEFAULT_CALLBACK_PATH = "/lessons/{lesson_id}/ingestion"

@@ -1,10 +1,14 @@
 """topics stage — extract a lesson's skills, reuse ids on re-ingest, tag chunks.
 
 Runs after ``embed`` (reuses the embedder for labels and the chunk vectors for
-tagging): an LLM names 3-8 skills; each is matched one-to-one against this
-lecture's own existing topics by label cosine (a match reuses that topic_id so
-mastery history stays attached — invariant 11); each chunk is tagged with its
-closest topics. Writes ``ai.topics``. Stub returns none when no chat key is set.
+tagging): an LLM names 3-8 skills; labels that name the same skill twice are
+merged; each is matched one-to-one against this lecture's own existing topics,
+then against the subject's syllabus catalog, by label cosine (a match reuses
+that topic_id so mastery history stays attached — invariant 11, and a skill
+taught in two lessons stays one topic); each chunk is tagged with its closest
+topics. Writes ``ai.topics``. A lesson with text that ends with no topics is
+flagged ``needs_review``; a stub extractor outside a dev environment fails the
+run.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from __future__ import annotations
 import logging
 import uuid
 
+from shared.config import DEV_ENVIRONMENTS
 from shared.namespaces import SYLLABUS
 from shared.structured import StructuredOutputError
 
@@ -38,6 +43,11 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
         state.setdefault("stats", {})["topics"] = stats
         return state
 
+    if ctx.topic_extractor.is_stub and ctx.config.app_env not in DEV_ENVIRONMENTS:
+        raise RuntimeError(
+            f"No topic model configured for APP_ENV={ctx.config.app_env!r}: "
+            f"lesson {state['lecture_id']} would be indexed without topics.")
+
     try:
         raw = ctx.topic_extractor.extract(
             [c.text for c in chunks], _lesson_language(chunks))
@@ -46,18 +56,14 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
         # never produced a usable answer. Index the lesson without topic_ids and
         # flag it, rather than losing the extraction and the OCR behind it.
         logger.error("topic extraction failed", extra=exc.log_fields())
-        state["ingestion_status"] = "needs_review"
-        state.setdefault("errors", []).append(f"topic extraction failed: {exc}")
+        _flag(state, f"topic extraction failed: {exc}")
         raw = []
-    if not raw and not ctx.topic_extractor.is_stub:
-        # A valid but empty answer: the model read the lesson and named nothing.
-        state["ingestion_status"] = "needs_review"
-        state.setdefault("errors", []).append(
-            "topic extraction returned no topics for a non-empty lesson; "
-            "chunks indexed without topic_ids."
-        )
+    if not raw and ctx.topic_extractor.is_stub:
+        _flag(state, "no topic model is configured; chunks indexed without topic_ids.")
+    elif not raw:
+        _flag(state, "topic extraction returned no topics for a non-empty lesson; "
+                     "chunks indexed without topic_ids.")
     if not raw:
-        # Stub path (no chat key) or retries exhausted: leave topic_ids empty.
         state["topics"] = []
         state.setdefault("stats", {})["topics"] = stats
         return state
@@ -66,12 +72,20 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     reuse_threshold = cfg.get("reuse_threshold", 0.60)
     assign_threshold = cfg.get("assign_threshold", 0.45)
 
-    labels = [t["label"] for t in raw]
-    label_vecs = ctx.embedder.embed(labels)
-    # Match against THIS lecture's own existing topics so re-ingest reuses ids
-    # (lecture-scoped, not subject-wide: no cross-lecture merges).
-    existing = ctx.chunk_store.read_lecture_topics(state["lecture_id"])
-    reuse_ids = _match_one_to_one(label_vecs, existing, reuse_threshold)
+    raw, label_vecs = _merge_near_duplicates(
+        raw, ctx.embedder.embed([t["label"] for t in raw]), reuse_threshold)
+    own = ctx.chunk_store.read_lecture_topics(state["lecture_id"])
+    reuse_ids = _match_one_to_one(label_vecs, own, reuse_threshold)
+    if (state.get("namespace") or SYLLABUS) == SYLLABUS:
+        claimed = {tid for tid in reuse_ids if tid}
+        open_slots = [i for i, tid in enumerate(reuse_ids) if tid is None]
+        catalog = [entry for entry in ctx.chunk_store.read_topic_catalog(
+            state["subject_id"], include_background=False) if entry[0] not in claimed]
+        for i, tid in zip(open_slots, _match_one_to_one(
+                [label_vecs[i] for i in open_slots], catalog, reuse_threshold)):
+            if tid is not None:
+                reuse_ids[i] = tid
+    owners = ctx.chunk_store.read_topic_owners([tid for tid in reuse_ids if tid])
 
     topics: list[Topic] = []
     for item, vec, match_id in zip(raw, label_vecs, reuse_ids):
@@ -80,7 +94,7 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
             Topic(
                 label=item["label"],
                 subject_id=state["subject_id"],
-                lecture_id=state["lecture_id"],
+                lecture_id=owners.get(match_id) or state["lecture_id"],
                 description=item.get("description"),
                 bloom_level=item.get("bloom_level"),
                 topic_id=match_id if reused else str(uuid.uuid4()),
@@ -107,6 +121,8 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
         chunk.topic_ids = list(dict.fromkeys(chosen))
         if chunk.topic_ids:
             stats["chunks_tagged"] += 1
+    if not stats["chunks_tagged"]:
+        _flag(state, "no chunk of the lesson was tagged with a topic.")
 
     # Persist only genuinely new topics; reused ones keep their existing row.
     ctx.chunk_store.write_topics([t for t in topics if not t.reused])
@@ -126,6 +142,26 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     ]
     state.setdefault("stats", {})["topics"] = stats
     return state
+
+
+def _flag(state: IngestionState, reason: str) -> None:
+    state["ingestion_status"] = "needs_review"
+    state.setdefault("errors", []).append(reason)
+
+
+def _merge_near_duplicates(
+    items: list[dict], vecs: list[list[float]], threshold: float,
+) -> tuple[list[dict], list[list[float]]]:
+    """One topic per skill: a label within ``threshold`` of one already kept names
+    the same skill, and is folded into it rather than minted as a second topic."""
+    kept: list[dict] = []
+    kept_vecs: list[list[float]] = []
+    for item, vec in zip(items, vecs):
+        if any(_dot(vec, other) >= threshold for other in kept_vecs):
+            continue
+        kept.append(item)
+        kept_vecs.append(vec)
+    return kept, kept_vecs
 
 
 def _dot(a: list[float], b: list[float]) -> float:

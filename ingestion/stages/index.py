@@ -41,6 +41,11 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
     ctx.chunk_store.write_vector_index(chunks)
 
     # 5. Per-lecture tracking row: current status, counts and time (upsert).
+    if not chunk_ids:
+        if state.get("ingestion_status") in (None, "ready"):
+            state["ingestion_status"] = "needs_review"
+        state.setdefault("errors", []).append(
+            "no text was indexed: the lesson produced 0 chunks.")
     errors = state.get("errors", [])
     status = state.get("ingestion_status") or "ready"
     ctx.chunk_store.write_ingestion_record({

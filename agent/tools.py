@@ -633,27 +633,40 @@ def get_lesson_chunks(
     return _apply_labels(chunks, _citation_labels([c.chunk_id for c in chunks], config))
 
 
+_LECTURE_TOPICS_SQL = (
+    "SELECT t.topic_id::text, t.label, t.subject_id::text FROM ai.topics t "
+    "LEFT JOIN (SELECT u.topic_id, min(c.order_index) AS first_seen "
+    "FROM ai.chunks c CROSS JOIN LATERAL unnest(c.topic_ids) AS u(topic_id) "
+    "WHERE c.lecture_id::text = ANY(%s) GROUP BY u.topic_id) taught "
+    "ON taught.topic_id = t.topic_id "
+    "WHERE taught.topic_id IS NOT NULL OR t.lecture_id::text = ANY(%s) "
+    "ORDER BY taught.first_seen NULLS LAST, t.created_at LIMIT %s"
+)
+
+
 def get_lecture_topics(
     lecture_ids: Sequence[str],
     *,
     limit: int = 20,
     config: Config | None = None,
 ) -> list[ResolvedTopic]:
-    """Every topic belonging to ``lecture_ids``, in lesson order.
+    """Every topic ``lecture_ids`` teach, in lesson order.
 
     A lookup, not a search: ``score`` is 0.0. It is what a lesson is *about*
     when the request itself says nothing — "quiz me on this lesson" carries no
     subject matter for an embedding to match, and the lesson the student is
     sitting in is the answer.
+
+    The topics the lesson's text carries, then any the lesson owns that no
+    passage does: a skill taught in two lessons is one topic, owned by the
+    first, and the second lesson teaches it all the same.
     """
     if not lecture_ids:
         return []
     config = config or Config.load()
+    ids = [str(x) for x in lecture_ids]
     with connect(config) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT topic_id::text, label, subject_id::text FROM ai.topics "
-            "WHERE lecture_id::text = ANY(%s) ORDER BY created_at LIMIT %s",
-            ([str(x) for x in lecture_ids], limit))
+        cur.execute(_LECTURE_TOPICS_SQL, (ids, ids, limit))
         return [ResolvedTopic(topic_id=r[0], label=r[1] or "", score=0.0, subject_id=r[2])
                 for r in cur.fetchall()]
 
