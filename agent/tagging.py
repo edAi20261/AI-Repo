@@ -51,13 +51,22 @@ def suggest_topics(
     suggestions = [{
         "index": r["index"], "question_id": r["question_id"], "resolved": r["resolved"],
         "topics": [{"topic_id": h.topic_id, "label": h.label, "score": round(h.score, 4),
-                    "lecture_id": lectures.get(h.topic_id)} for h in r["hits"]],
+                    "lecture_id": lectures.get(h.topic_id)} for h in _unique(r["hits"])],
     } for r in rows]
     failed = sum(1 for r in rows if not r["resolved"])
     logger.info("suggest_topics", extra={
         "questions": len(rows), "failed": failed,
         "untagged": sum(1 for s in suggestions if s["resolved"] and not s["topics"])})
     return {"suggestions": suggestions, "degraded": failed > 0 or not lectures_ok}
+
+
+def _unique(hits: Sequence[Any]) -> list[Any]:
+    """One suggestion per topic, at its best score."""
+    best: dict[str, Any] = {}
+    for hit in hits:
+        if hit.topic_id not in best or hit.score > best[hit.topic_id].score:
+            best[hit.topic_id] = hit
+    return list(best.values())
 
 
 def _lectures_of(topic_ids: set[str], config: Config) -> tuple[dict[str, str], bool]:

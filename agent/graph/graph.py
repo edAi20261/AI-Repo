@@ -19,6 +19,7 @@ import re
 from typing import Optional
 
 from shared.backend import get_backend_client
+from shared.config import DEV_ENVIRONMENTS
 from shared.llm import llm_key_available, maybe_llm
 
 from .. import retrieval
@@ -43,16 +44,10 @@ from .subgraphs import (
 logger = logging.getLogger(__name__)
 
 
-# Environments where a missing LLM key is allowed (the nodes take the deterministic stub
-# path). Any other environment (e.g. production) must fail fast at startup instead of
-# silently stubbing answers to real users.
-_DEV_ENVS = {"local", "test", "dev", "ci"}
-
-
 def _require_llm_in_prod(config: Config) -> None:
     """Fail fast: a non-dev environment with no chat-model key would serve stub answers to
     real users. Refuse to compile instead (the stub path is dev/test only)."""
-    if config.app_env in _DEV_ENVS:
+    if config.app_env in DEV_ENVIRONMENTS:
         return
     if not llm_key_available(config, config.llm_for(None)):
         raise RuntimeError(

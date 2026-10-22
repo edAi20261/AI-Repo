@@ -76,6 +76,51 @@ def test_a_topic_inside_the_lesson_is_still_searched_for(monkeypatch):
     assert seen["searched"] == 1
 
 
+def _searches_find_nothing(monkeypatch, sg, *, within_scope=True):
+    seen = {"read": []}
+    monkeypatch.setattr(sg.retrieval, "retrieve",
+                        lambda *a, **k: [] if within_scope else [_chunk(1, score=0.6)])
+    monkeypatch.setattr(sg.retrieval, "answers_within_scope", lambda *a, **k: within_scope)
+    monkeypatch.setattr(sg.retrieval, "with_neighbours", lambda found, **k: found)
+
+    def lesson(lecture_id, namespaces, *, limit):
+        seen["read"].append(lecture_id)
+        return [_chunk(n) for n in range(2)]
+
+    monkeypatch.setattr(sg.retrieval, "whole_lesson", lesson)
+    return seen
+
+
+def test_a_summary_the_search_finds_nothing_for_reads_the_selected_lesson(monkeypatch):
+    """"Summarize it" in Subtraction scored under the floor against the lesson's
+    only passage, and the summary was refused as outside the lesson the student
+    had open, although the turn reading never marked it as about the whole lesson."""
+    from agent.graph.subgraphs import explain_summarize_sg as sg
+
+    seen = _searches_find_nothing(monkeypatch, sg)
+    chunks = sg._retrieve(_state(whole_lesson=False, mode="summarize"), config=None)["chunks"]
+
+    assert seen["read"] == [LESSON] and [c.chunk_id for c in chunks] == ["c0", "c1"]
+
+
+def test_a_question_judged_outside_the_lesson_is_still_refused(monkeypatch):
+    from agent.graph.subgraphs import explain_summarize_sg as sg
+
+    seen = _searches_find_nothing(monkeypatch, sg, within_scope=False)
+    chunks = sg._retrieve(_state(whole_lesson=False, mode="summarize"), config=None)["chunks"]
+
+    assert chunks == [] and seen["read"] == []
+
+
+def test_an_explanation_the_search_finds_nothing_for_is_not_given_the_whole_lesson(monkeypatch):
+    from agent.graph.subgraphs import explain_summarize_sg as sg
+
+    seen = _searches_find_nothing(monkeypatch, sg)
+    chunks = sg._retrieve(_state(whole_lesson=False, mode="explain"), config=None)["chunks"]
+
+    assert chunks == [] and seen["read"] == []
+
+
 def test_the_turn_reading_is_told_which_lesson_is_selected():
     from agent.graph.nodes import _session_facts
     from agent.models import SubjectFacts
@@ -115,3 +160,16 @@ def test_a_long_lesson_is_sampled_from_its_first_passage_to_its_last(fake_postgr
     orders = [c.order_index for c in chunks]
     assert orders[0] == 0 and orders[-1] == 29 and orders == sorted(orders) and len(orders) == 6
     assert "v.namespace = ANY" in db.sql[0]
+
+
+def test_a_lessons_topics_include_those_its_text_carries(fake_postgres):
+    """A topic reused from an earlier lesson is owned by that lesson; reading a
+    lesson's topics from the owner column alone left the second lesson with none,
+    and "quiz me on this lesson" there had nothing to ask about."""
+    from agent import tools
+
+    db = fake_postgres(fetchall=[[("t-sub", "Subtraction", "sub1")]])
+    topics = tools.get_lecture_topics([LESSON], config=_config())
+
+    assert [t.topic_id for t in topics] == ["t-sub"]
+    assert "unnest(c.topic_ids)" in db.sql[0] and "t.lecture_id::text = ANY" in db.sql[0]

@@ -78,6 +78,15 @@ class Calls:
             setattr(self, name, getattr(self, name) + 1)
 
 
+class Topics:
+    """A topic model: with none configured a lesson is indexed needs_review."""
+
+    is_stub = False
+
+    def extract(self, chunk_texts, language="en"):
+        return [{"label": "How tides rise and fall", "bloom_level": "understand"}]
+
+
 class Vision:
     is_stub = False
 
@@ -481,6 +490,7 @@ def test_a_book_run_across_machines_ends_in_the_index_one_machine_would_build(
     import ingestion.lesson as lesson
     from ingestion import new_state, run_ingestion
     from ingestion.context import PipelineContext
+    monkeypatch.setattr(context, "get_topic_extractor", lambda config: Topics())
 
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost")
     monkeypatch.setenv("QDRANT_URL", "dryrun")
@@ -531,7 +541,10 @@ def test_a_book_run_across_machines_ends_in_the_index_one_machine_would_build(
         ctx=PipelineContext.build(config), config=config)
 
     def index(state):
-        return [(c.text, c.page_from, c.embedding, c.sparse, c.topic_ids)
+        labels = {getattr(t, "topic_id", None) or t["topic_id"]: getattr(t, "label", None) or t["label"]
+                  for t in state["topics"]}
+        return [(c.text, c.page_from, c.embedding, c.sparse,
+                 [labels[topic] for topic in c.topic_ids])
                 for c in state["chunks"]]
 
     assert len(finished["chunks"]) >= 11, "a page went missing between machines"
@@ -548,6 +561,7 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
     import ingestion.lesson as lesson
     from ingestion.books import lessons_from
     from ingestion.schemas import LessonBreakdown, LessonItem, UnitItem
+    monkeypatch.setattr(context, "get_topic_extractor", lambda config: Topics())
 
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost")
     monkeypatch.setenv("QDRANT_URL", "dryrun")

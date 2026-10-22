@@ -122,3 +122,19 @@ def test_many_queries_share_one_embedding_batch_and_one_search(monkeypatch):
 
     assert _Embedder.calls == 1 and len(_Client.batches) == 1
     assert [[t.topic_id for t in hits] for hits in found] == [["t0"], ["t1"], ["t2"]]
+
+
+def test_a_topic_found_twice_for_one_question_is_suggested_once(monkeypatch):
+    """Two hits for the same topic showed the teacher the same skill twice, and the
+    save sent its id twice in the question's topic list."""
+    monkeypatch.setattr(tagging, "resolve_topics_many", lambda qs, sid=None, **k: [[
+        ResolvedTopic("t-sub", "Subtraction", 0.71),
+        ResolvedTopic("t-borrow", "Borrowing", 0.64),
+        ResolvedTopic("t-sub", "Subtraction", 0.69)]])
+    monkeypatch.setattr(tagging, "get_topic_lectures", lambda ids, **k: {})
+
+    out = tagging.suggest_topics([{"text": "15 - 7"}], "math", config=get_config())
+
+    topics = out["suggestions"][0]["topics"]
+    assert [t["topic_id"] for t in topics] == ["t-sub", "t-borrow"]
+    assert topics[0]["score"] == 0.71

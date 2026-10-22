@@ -268,6 +268,16 @@ ingestion:
     max_per_lecture: 8
     max_input_tokens: 12000      # above this, extract in batches and union (0 = single call)
     reuse_threshold: 0.60        # re-ingest reuses a lecture's own topic_id above this cosine similarity
+    # Two labels are one skill above this; below it they are neighbours, not
+    # twins. Pairs from different lessons of one subject, sampled across 25
+    # subjects of the production catalog:
+    #   0.85-0.90  "calculate angles at a point" / "define angles at a point",
+    #              "understand new vocabulary" / "apply new vocabulary"
+    #   0.90-0.95  "Create a descriptive paragraph" / "Write descriptive paragraphs"
+    #   0.95-1.00  "Apply triangle inequality theorem(s)"
+    # reuse_threshold (0.60) would have folded "Perform set operations" into
+    # "Perform basic subtraction".
+    merge_threshold: 0.92
     assign_threshold: 0.45       # tag a chunk with a topic above this similarity
   dependencies:
     max_out_degree: 5            # max prerequisites kept per topic
