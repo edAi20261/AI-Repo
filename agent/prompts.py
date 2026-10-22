@@ -126,23 +126,34 @@ future conversation, so leave every field null unless the student said it in so 
 
 CONVERSATION_SUMMARY_PROMPT = Prompt(
     name="CONVERSATION_SUMMARY_PROMPT",
-    # Nobody reads this but the next turn — and the next turn writes to a
-    # student. The summary is quoted at the head of every prompt that answers
-    # one, so the language it is written in goes on steering replies long after
-    # the turns it condensed have scrolled out. Left unpinned it came back in
-    # English for conversations that ended in Arabic: both summaries in
-    # production are English, over turns whose last three were ar, ar, ar.
-    audience=Audience.INTERNAL,
+    # The summary is read by the next turn, which writes to a student: it is
+    # quoted at the head of every prompt that answers one, so the language it is
+    # written in goes on steering replies long after the turns it condensed have
+    # scrolled out. Left unpinned it came back in English for conversations that
+    # ended in Arabic: both summaries in production were English, over turns
+    # whose last three were ar, ar, ar. The note is read by the student on their
+    # memory page, which showed the internal summary, headings and all, until
+    # the fold wrote one for them.
+    audience=Audience.STUDENT,
     language_rule=LanguageRule.CONTENT,
     template="""You keep a running summary of a tutoring conversation so later turns can
-continue it. Rewrite the summary from the existing one and the turns below, under these
-headings, leaving out any heading with nothing under it:
+continue it, and a short note that shows the student what you remember.
+
+summary: rewrite it from the existing one and the turns below, under these headings, leaving
+out any heading with nothing under it:
 - Goals: what the student is trying to learn or do
 - Covered: the concepts explained so far, with the specific terms, names and examples used
 - Preferences: how the student wants to be answered (language, depth, format)
 - Open: questions not yet answered, and where the student is still confused
 Keep entries from the existing summary unless the new turns contradict them. Prefer exact
-terms over paraphrase. Never add anything that was not said. Return only the summary.
+terms over paraphrase. Never add anything that was not said.
+
+note: one or two plain sentences, addressed to the student, saying what this conversation
+was about and what you will remember from it. No markdown, no list, no heading, no line
+breaks.
+
+Return JSON only, no prose. Fields:
+{schema}
 
 {language}
 A term the student met in another language stays in the language they met it in.

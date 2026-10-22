@@ -24,6 +24,7 @@ WHEN = datetime(2026, 9, 22, 15, 56, tzinfo=timezone.utc)
 HELD_ROWS = [
     ("conversation_turn", SESSION, '{"message":"q","reply":"a"}', WHEN, None),
     ("conversation_summary", SESSION, "Goals: understand evaporation", WHEN, None),
+    ("conversation_note", SESSION, "We talked about evaporation.", WHEN, None),
     ("conversation_turn", str(uuid.uuid4()), '{"message":"q2","reply":"a2"}', WHEN, None),
 ]
 
@@ -50,6 +51,19 @@ def test_the_summaries_are_shown_and_the_turns_are_not(fake_postgres):
     assert [s["summary"] for s in record["summaries"]] == ["Goals: understand evaporation"]
     assert record["stated_preferences"] == {"length": "short", "examples": True}
     assert "q" not in str(record["summaries"])
+
+
+def test_each_conversation_carries_the_plain_note_the_student_reads(fake_postgres):
+    """The memory page showed the tutor's internal summary, headings and all."""
+    older = str(uuid.uuid4())
+    rows = [*HELD_ROWS, ("conversation_summary", older, "Covered: fractions", WHEN, None)]
+    fake_postgres(fetchall=[rows], fetchone=[None])
+    record = held(USER, config=get_config())
+    by_conversation = {s["conversation_id"]: s for s in record["summaries"]}
+    assert by_conversation[SESSION]["note"] == "We talked about evaporation."
+    assert by_conversation[SESSION]["summary"] == "Goals: understand evaporation"
+    assert by_conversation[older]["note"] is None
+    assert len(record["summaries"]) == 2
 
 
 def test_a_student_nothing_is_held_for_reads_as_empty(fake_postgres):
@@ -95,6 +109,7 @@ def test_the_endpoint_returns_what_is_held(client, fake_postgres, monkeypatch):
     body = client.get(f"/ai/memory/{USER}", headers=_auth(client)).json()
     assert body["conversations"] == 2
     assert body["summaries"][0]["summary"] == "Goals: understand evaporation"
+    assert body["summaries"][0]["note"] == "We talked about evaporation."
     assert body["stated_preferences"]["length"] == "short"
     assert body["request_id"]
 

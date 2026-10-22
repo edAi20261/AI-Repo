@@ -38,6 +38,7 @@ FOLDED = "conversation_folded_turn"
 SUMMARY = "conversation_summary"
 STATE = "conversation_state"
 KINDS = (TURN, FOLDED, SUMMARY, STATE)
+NOTE = "conversation_note"
 
 REMEMBERING_TYPES = frozenset({"student", "teacher"})
 
@@ -125,9 +126,12 @@ class ConversationStore(ABC):
         """
 
     @abstractmethod
-    def fold(self, user_id, user_type, session_id, *, summary: str,
+    def fold(self, user_id, user_type, session_id, *, summary: str, note: str,
              folded: list[Turn], discard: list[Turn]) -> bool:
         """Record the rewritten summary and mark ``folded`` as covered by it.
+
+        ``note`` is the same fold put for the student, who is shown what is
+        remembered; it is never read back into a prompt.
 
         ``discard`` is the part of the folded past a later rewrite could no
         longer afford to read, and is the only thing here that destroys a turn.
@@ -178,15 +182,16 @@ class InMemoryConversationStore(ConversationStore):
         self.save_state(user_id, user_type, session_id, state)
         return True
 
-    def fold(self, user_id, user_type, session_id, *, summary, folded, discard) -> bool:
+    def fold(self, user_id, user_type, session_id, *, summary, note, folded, discard) -> bool:
         if not self.remembers(user_id, user_type, session_id):
             return False
         covered = {turn.id for turn in folded}
         gone = {turn.id for turn in discard}
         rows = self._rows[(user_id, session_id)]
         rows[:] = [(row[0], FOLDED if row[0] in covered else row[1], row[2])
-                   for row in rows if row[0] not in gone and row[1] != SUMMARY]
+                   for row in rows if row[0] not in gone and row[1] not in (SUMMARY, NOTE)]
         self._add(user_id, session_id, SUMMARY, summary)
+        self._add(user_id, session_id, NOTE, note)
         return True
 
     def _add(self, user_id, session_id, kind, fact) -> None:
@@ -252,7 +257,7 @@ class PostgresConversationStore(ConversationStore):
         ]
         return bool(self._run(statements, label="restore"))
 
-    def fold(self, user_id, user_type, session_id, *, summary, folded, discard) -> bool:
+    def fold(self, user_id, user_type, session_id, *, summary, note, folded, discard) -> bool:
         if not self.remembers(user_id, user_type, session_id):
             return False
         covered = [turn.id for turn in folded if turn.id]
@@ -264,6 +269,8 @@ class PostgresConversationStore(ConversationStore):
             (_DELETE_KIND, (user_id, session_id, SUMMARY)),
             (_INSERT, (user_id, user_type, summary, SUMMARY, session_id,
                        self._ttl_hours)),
+            (_DELETE_KIND, (user_id, session_id, NOTE)),
+            (_INSERT, (user_id, user_type, note, NOTE, session_id, self._ttl_hours)),
         ]
         return bool(self._run(statements, label="fold"))
 

@@ -518,6 +518,7 @@ agent:
     # is rewritten from what was said; over it, from the previous summary, and
     # detail starts decaying. ~60 turns at the median.
     rebuild_tokens: 12000
+    note_chars: 280            # the student-facing note on the memory page: one or two sentences
     connect_timeout_seconds: 2
     statement_timeout_ms: 500
     failure_threshold: 3
