@@ -133,6 +133,12 @@ class ChatResponse(Schema):
                      "(it cites the student's lessons), beyond (it teaches, inside the "
                      "subject, what the lessons leave out) or declined."),
     )
+    outside_lesson: bool = Field(
+        default=False,
+        description=("True when the student had a lesson selected and the question was "
+                     "declined because that lesson does not cover it. Show a notice that "
+                     "the question is outside the selected lesson."),
+    )
     persona_version: Optional[int] = Field(
         default=None,
         description="The version of the teacher's persona the reply was written in, if any.")
@@ -154,6 +160,7 @@ class ChatResponse(Schema):
             citations=[SourceRef.from_citation(c)
                        for c in state.get("published_citations") or []],
             answer_basis=[a["basis"] for a in state.get("answers") or [] if a.get("basis")],
+            outside_lesson=any(a.get("outside_lesson") for a in state.get("answers") or []),
             persona_version=_persona_version(state.get("style")),
         )
 

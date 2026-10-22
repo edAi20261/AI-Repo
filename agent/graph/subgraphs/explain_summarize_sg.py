@@ -90,6 +90,7 @@ class ExplainSummarizeState(TypedDict, total=False):
     explanation: str
     grounded: bool                  # answer used the context (inline [n] or a math figure); a decline is False
     basis: AnswerBasis              # lesson | beyond | declined
+    outside_lesson: bool            # declined because the selected lesson does not cover it
     citations: list[Citation]
     visual_spec: dict[str, Any]     # a figure request the parent's visual_sg renders
 
@@ -244,7 +245,8 @@ def _build_decline(llm):
             "mode": state.get("mode"), "chunks": 0, "lecture_id": scope.lecture_id,
             "scope_fit": state.get("scope_fit")})
         return {"explanation": _declined(scope, state, llm, _style(state)),
-                "citations": [], "grounded": False, "basis": "declined"}
+                "citations": [], "grounded": False, "basis": "declined",
+                "outside_lesson": scope.is_narrow and not state.get("whole_lesson")}
     return decline
 
 

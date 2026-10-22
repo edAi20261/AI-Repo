@@ -296,3 +296,61 @@ def test_a_subject_sent_on_the_turn_itself_still_wins():
     state = ChatRequest(user_id="u1", user_type="student", message="q", subject_id="maths",
                         study_scope={"subject_id": "arabic"}).to_state()
     assert state["subject_id"] == "maths"
+
+
+# --- telling the client the question was outside the lesson ----------------
+
+def _explained(monkeypatch, *, study_scope, whole_lesson=False, within=False, found=True):
+    from agent.config import get_config
+    from agent.graph.subgraphs import explain_summarize_sg as sg
+    from agent.models import RetrievedChunk
+
+    chunk = RetrievedChunk(chunk_id="c1", score=0.5, text="Napoleon was ...", topic_ids=[],
+                           page_from=1, page_to=1, heading_path=None, language="en",
+                           lecture_id=OTHER)
+    monkeypatch.setattr(sg.retrieval, "retrieve", lambda *a, **k: [chunk] if found else [])
+    monkeypatch.setattr(sg.retrieval, "whole_lesson", lambda *a, **k: [])
+    monkeypatch.setattr(sg.retrieval, "answers_within_scope", lambda *a, **k: within)
+    monkeypatch.setattr(sg.retrieval, "with_neighbours", lambda found, **k: found)
+    graph = sg.build_explain_sg(config=get_config(), llm=None)
+    return graph.invoke({
+        "query": "who was Napoleon?", "message": "who was Napoleon?", "language": "en",
+        "namespaces": ["syllabus"], "k": 8, "min_score": 0.47, "subject_id": "history",
+        "study_scope": study_scope, "whole_lesson": whole_lesson})
+
+
+def test_a_question_outside_the_selected_lesson_is_flagged_for_the_client(monkeypatch):
+    """The reply named the lesson, but nothing a client could read said the
+    question had fallen outside it, so no notice could be shown."""
+    out = _explained(monkeypatch, study_scope={"subject_id": "history", "lecture_id": LESSON,
+                                               "lesson_title": "Photosynthesis"})
+    assert out["basis"] == "declined" and out["outside_lesson"] is True
+
+
+def test_a_refusal_with_no_lesson_selected_is_not_outside_a_lesson(monkeypatch):
+    out = _explained(monkeypatch, found=False, study_scope={"subject_id": "history"})
+    assert out["basis"] == "declined" and not out.get("outside_lesson")
+
+
+def test_an_empty_lesson_read_as_a_whole_is_not_outside_itself(monkeypatch):
+    out = _explained(monkeypatch, whole_lesson=True,
+                     study_scope={"subject_id": "history", "lecture_id": LESSON})
+    assert out["basis"] == "declined" and not out.get("outside_lesson")
+
+
+def test_an_answer_inside_the_lesson_is_not_flagged(monkeypatch):
+    out = _explained(monkeypatch, within=True,
+                     study_scope={"subject_id": "history", "lecture_id": LESSON})
+    assert out["basis"] == "lesson" and not out.get("outside_lesson")
+
+
+def test_the_api_says_when_a_question_was_outside_the_lesson():
+    from shared.metering import Meter
+    from system.schemas.chat import ChatResponse
+
+    state = {"response": "That is outside Photosynthesis.", "language": "en",
+             "answers": [{"type": "explain", "text": "x", "basis": "declined",
+                          "outside_lesson": True}]}
+    assert ChatResponse.from_state(state, "req-1", Meter()).outside_lesson is True
+    state["answers"][0]["outside_lesson"] = False
+    assert ChatResponse.from_state(state, "req-1", Meter()).outside_lesson is False
