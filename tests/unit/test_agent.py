@@ -185,6 +185,78 @@ def test_a_reading_that_contradicts_itself_goes_back_to_the_model(monkeypatch):
                        language_request=LanguageRequest(action="set", code="it")))
 
 
+class _ModelThatTakesFeedback:
+    """Reads a request it cannot plan as needing the syllabus, as the production
+    model did, until the feedback it is given names a reading that is allowed."""
+
+    def __init__(self, message: str):
+        self.message = message
+        self.feedback: list[str] = []
+
+    def with_structured_output(self, schema, **kwargs):
+        return self
+
+    def invoke(self, messages):
+        from langchain_core.messages import AIMessage
+        last = messages[-1]
+        said = last.get("content", "") if isinstance(last, dict) else ""
+        if said:
+            self.feedback.append(said)
+        reading = _reading(needs_syllabus="needs_syllabus to false" not in said,
+                           tasks=[], student_words=self.message, message_language="en")
+        return {"raw": AIMessage(content="{}"), "parsed": reading, "parsing_error": None}
+
+
+def test_a_parent_asking_for_a_quiz_gets_a_reply_instead_of_a_failed_turn():
+    """Production: a parent pressed "Quiz me". Quizzes are not a parent task, the
+    model read the turn as needing the syllabus with no task it could name, the
+    retry told it only that tasks must not be empty, and the turn died with the
+    tutor unavailable. The feedback now names the reading that is allowed, and
+    the turn goes to converse, which says what a parent can do instead."""
+    model = _ModelThatTakesFeedback("Quiz me")
+    node = nmod.build_understand(get_config(), model, _Subjects())
+    out = node({"pathway": "parent", "message": "Quiz me", "history": "",
+                "conversation": {}})
+
+    assert out["turn_kind"] == "conversation"
+    assert out["planned_tasks"] == []
+    assert nmod._after_understand(out) == "converse"
+    assert "assessment" not in nmod.capabilities(get_config(), "parent")
+
+
+def test_a_request_no_task_can_serve_is_read_as_one_the_tutor_declines(monkeypatch):
+    """The reading the validator steers to has to be one the prompt allows."""
+    from agent.models import PlannedTask
+    _, captured = _understand(monkeypatch, _reading(needs_syllabus=False),
+                              state={"pathway": "parent"})
+    assert "none of the tasks above does" in captured["prompt"]
+    check = captured["validate"]
+    with pytest.raises(ValueError, match="needs_syllabus to false"):
+        check(_reading(tasks=[PlannedTask(type="assessment", query="fractions")],
+                       student_words="hi"))
+    check(_reading(needs_syllabus=False, student_words="hi"))
+
+
+def test_a_student_asking_for_a_quiz_still_has_to_be_given_one(monkeypatch):
+    from agent.models import PlannedTask
+    _, captured = _understand(monkeypatch, _reading(needs_syllabus=False))
+    check = captured["validate"]
+    check(_reading(tasks=[PlannedTask(type="assessment", query="fractions")],
+                   student_words="hi"))
+    with pytest.raises(ValueError):
+        check(_reading(needs_syllabus=True, tasks=[], student_words="hi"))
+
+
+def test_a_reply_to_a_request_the_role_cannot_make_offers_what_it_can_do():
+    from agent.prompts import CONVERSE_PROMPT
+    prompt = CONVERSE_PROMPT.render(
+        language="en", role="parent", tone="warm",
+        capabilities=nmod.capabilities(get_config(), "parent"),
+        history="", message="Quiz me", voice="")
+    assert '"explain"' in prompt and '"assessment"' not in prompt
+    assert "not something you can do for them here" in prompt
+
+
 def test_the_task_descriptions_route_by_intent_not_by_quoted_phrases():
     """The planner was told "how am I doing" -> report; a phrase list covers
     only the phrasings someone thought to write down."""
@@ -269,6 +341,92 @@ def test_inference_is_confined_to_the_student_s_subjects(monkeypatch):
 
     plan = nmod.build_plan(_SubjectCfg(), _Subjects(), _Client())
     assert plan(_plan_state(user_id="u1"))["subject_id"] == "enrolled"
+
+
+class _Enrolment:
+    def __init__(self):
+        self.asked = []
+
+    def get_student_subjects(self, uid):
+        self.asked.append(uid)
+        return [{"id": "enrolled"}]
+
+
+def test_a_parent_s_question_is_looked_for_among_their_child_s_subjects(monkeypatch):
+    """Only a student's own enrolment confined the vote, so a parent asking
+    about their child's work was answered from whichever book matched best."""
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [
+        _hit("other", 0.9), _hit("enrolled", 0.6)])
+    client = _Enrolment()
+    plan = nmod.build_plan(_SubjectCfg(), _Subjects(), client)
+    out = plan(_plan_state(pathway="parent", user_id="parent-1", child_id="child-1"))
+    assert out["subject_id"] == "enrolled"
+    assert client.asked == ["child-1"]
+    assert out["general_scope"] is False
+
+
+def test_a_parent_with_no_child_is_not_answered_from_a_guessed_book(monkeypatch):
+    """A parent's chat carries no subject, lesson or child. The subject was
+    voted for across the whole corpus, so the answer came from some other
+    class's book and read as if it were about their child's lessons."""
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [_hit("bio", 0.9)])
+    plan = nmod.build_plan(_SubjectCfg(default_subject_id="dflt"), _Subjects(), _Enrolment())
+    out = plan(_plan_state(pathway="parent", user_id="parent-1"))
+    assert "subject_id" not in out
+    assert out["general_scope"] is True
+
+
+def test_a_parent_with_a_lesson_open_is_not_a_general_turn(monkeypatch):
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [_hit("bio", 0.9)])
+    plan = nmod.build_plan(_SubjectCfg(), _Subjects())
+    out = plan(_plan_state(pathway="parent", study_scope={"lecture_id": "l1"}))
+    assert out["subject_id"] == "bio" and out["general_scope"] is False
+
+
+def test_a_student_s_subject_is_still_inferred_from_their_own_enrolment(monkeypatch):
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    monkeypatch.setattr(nmod, "rag_search", lambda *a, **k: [
+        _hit("other", 0.9), _hit("enrolled", 0.6)])
+    client = _Enrolment()
+    plan = nmod.build_plan(_SubjectCfg(), _Subjects(), client)
+    out = plan(_plan_state(user_id="u1", child_id="ignored"))
+    assert out["subject_id"] == "enrolled" and out["general_scope"] is False
+    assert client.asked == ["u1"]
+
+
+def test_a_general_answer_is_told_to_say_it_is_general():
+    from agent.graph.graph import _build_explain_summarize_adapter
+    from agent.prompts import GENERAL_SCOPE_INSTRUCTION
+    from agent.subjects import SubjectDirectory
+
+    class Recording:
+        def invoke(self, state):
+            self.state = state
+            return {"explanation": "x", "citations": [], "prereq_topics": []}
+
+    sends = nmod.dispatch({"tasks": [{"type": "explain", "params": {"query": "q"}}],
+                           "general_scope": True})
+    subgraph = Recording()
+    adapter = _build_explain_summarize_adapter(subgraph, "explain", get_config(),
+                                               SubjectDirectory(None), NO_VOICES)
+    adapter(sends[0].arg)
+    assert GENERAL_SCOPE_INSTRUCTION in subgraph.state["instructions"]
+    adapter({**sends[0].arg, "general_scope": False})
+    assert GENERAL_SCOPE_INSTRUCTION not in subgraph.state["instructions"]
+
+
+def test_a_child_is_named_only_by_a_parent():
+    from pydantic import ValidationError
+
+    from system.schemas.chat import ChatRequest
+
+    turn = ChatRequest(user_id="p1", user_type="parent", message="hi", child_id="c1")
+    assert turn.to_state()["child_id"] == "c1"
+    with pytest.raises(ValidationError):
+        ChatRequest(user_id="s1", user_type="student", message="hi", child_id="c1")
 
 
 def test_the_caller_s_subject_is_authoritative(monkeypatch):
