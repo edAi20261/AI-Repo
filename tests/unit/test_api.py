@@ -275,6 +275,20 @@ def test_chat_forwards_grade_reference(client):
     assert payload["grade_ref"] == {"assessment_id": "a-1", "kind": "quiz"}
 
 
+def test_check_my_work_carries_the_students_answers_to_the_graph(client):
+    """"Check my work" could not send the student's answers: grade_ref rejected any
+    field but the id and kind, so the tutor marked the chat sentence instead."""
+    submission = {"question": "2+2?", "student_answer": "5", "correct_answer": "4",
+                  "question_id": "q-1", "topic_id": "t-1", "lecture_id": "l-1",
+                  "type": "short_answer", "difficulty": "easy", "points": 1}
+    body = {**CHAT_BODY, "grade_ref": {"assessment_id": "a-1", "kind": "quiz",
+                                       "submissions": [submission]}}
+    response = client.post("/ai/chat", json=body, headers=auth())
+    assert response.status_code == 200
+    _, payload = client.runtime.calls[0]
+    assert payload["grade_ref"]["submissions"] == [submission]
+
+
 def test_chat_rejects_an_unknown_role(client):
     body = {**CHAT_BODY, "user_type": "principal"}
     response = client.post("/ai/chat", json=body, headers=auth())

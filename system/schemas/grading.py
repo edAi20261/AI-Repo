@@ -14,30 +14,7 @@ from pydantic import Field, model_validator
 from agent.models import ReviewedGrade
 from shared.metering import Meter
 
-from .common import Language, Schema, Usage
-
-QuestionType = Literal["mcq", "true_false", "short_answer", "essay"]
-Difficulty = Literal["easy", "medium", "hard"]
-
-
-class Submission(Schema):
-    question: str = Field(min_length=1)
-    student_answer: str
-    correct_answer: Optional[str] = Field(
-        default=None, description="Reference answer; used ahead of the syllabus when present."
-    )
-    question_id: Optional[str] = None
-    topic_id: Optional[str] = None
-    lecture_id: Optional[str] = None
-    type: Optional[QuestionType] = None
-    difficulty: Optional[Difficulty] = None
-    bloom: Optional[str] = None
-    points: Optional[float] = Field(default=None, ge=0)
-    known_score: Optional[float] = Field(
-        default=None, ge=0, le=1,
-        description="The platform already scored this answer (a fraction of full marks). "
-                    "It moves mastery as given and is not regraded by the model.",
-    )
+from .common import Language, Schema, Submission, Usage
 
 
 class GradeRequest(Schema):

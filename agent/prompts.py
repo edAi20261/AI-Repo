@@ -593,6 +593,8 @@ own knowledge — grade ONLY against what the block provides.
 {language}
 {instructions}
 Use "partial_score" for partial credit on short_answer/essay; for mcq/true_false it is 1 or 0.
+Write "feedback" and "explanation" TO the student, addressing them directly as "you" (in the
+reply language's own second person) — never about them as "the student" or in the third person.
 Mistake labels must be GENERAL and REUSABLE, naming the error TYPE so they group across many
 answers (e.g. "sign error", "missing unit", "confused cause and effect") — never answer-specific
 descriptions like "forgot the 2 in step 3".
@@ -603,6 +605,35 @@ Return JSON only, no prose. Fields:
 {schema}
 
 --- ANSWERS ---
+{items_block}""",
+)
+
+GRADE_WALKTHROUGH_PROMPT = Prompt(
+    name="GRADE_WALKTHROUGH_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""A student asked you to check their work on a saved assessment, but their own
+answers were not sent to you, so you cannot mark them. Instead, go through every question below
+with its correct answer, as a review.
+
+{language}
+{instructions}
+Speak TO the student, addressing them directly as "you" (in the reply language's own second
+person) — never about them as "the student" or in the third person.
+
+"note": one or two sentences saying plainly that you could not see their answers, so this is a
+walkthrough of every question with its correct answer rather than a mark.
+
+For each block, "explanation": two to four sentences on why the correct answer is right. Ground it
+ONLY in the block's correct answer and explanation — never outside facts or your own knowledge.
+Do not restate the question or the correct answer; they are shown beside your explanation.
+
+Explain EXACTLY {n} blocks, one per block, each carrying its block's id verbatim in "id".
+
+Return JSON only, no prose. Fields:
+{schema}
+
+--- QUESTIONS ---
 {items_block}""",
 )
 
