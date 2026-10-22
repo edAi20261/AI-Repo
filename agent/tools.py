@@ -340,16 +340,37 @@ def resolve_topics(
     ``agent.resolve_topics_qdrant`` is on; otherwise a Postgres brute-force over
     ``ai.topics.label_embedding`` (the default until the topics collection is populated
     at re-ingest)."""
+    return resolve_topics_many([query], subject_id, lecture_ids=lecture_ids, k=k,
+                               threshold=threshold, config=config)[0]
+
+
+def resolve_topics_many(
+    queries: Sequence[str],
+    subject_id: str | None = None,
+    *,
+    lecture_ids: Sequence[str] | None = None,
+    k: int = 5,
+    threshold: float = 0.40,
+    config: Config | None = None,
+) -> list[list[ResolvedTopic]]:
+    """:func:`resolve_topics` for many queries at once, in query order.
+
+    One embedding batch and one search round trip, rather than one of each per
+    query: a teacher's 20-question quiz made 20 of each in sequence, and under
+    load its topic suggestions passed CloudFront's 30 s limit.
+    """
+    if not queries:
+        return []
     config = config or Config.load()
-    vector = get_embedder(config).embed_query(query)
+    vectors = get_embedder(config).embed(list(queries))
     # TODO: once the topics collection is populated and validated, delete the brute-force
     # `_resolve_topics_pg` and this gate so the indexed path is the only one.
     if config.get("agent.resolve_topics_qdrant", True):
-        return _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config)
-    return _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config)
+        return _resolve_topics_qdrant(vectors, subject_id, lecture_ids, k, threshold, config)
+    return _resolve_topics_pg(vectors, subject_id, lecture_ids, k, threshold, config)
 
 
-def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config):
+def _resolve_topics_qdrant(vectors, subject_id, lecture_ids, k, threshold, config):
     """Indexed top-k over the Qdrant topics collection (label vectors + subject/lecture
     payload). Scalable — no full-catalog scan."""
     from qdrant_client import models
@@ -363,24 +384,26 @@ def _resolve_topics_qdrant(vector, subject_id, lecture_ids, k, threshold, config
             key="lecture_id", match=models.MatchAny(any=list(lecture_ids))))
     not_background = [models.FieldCondition(
         key="namespace", match=models.MatchValue(value=BACKGROUND))]
+    query_filter = models.Filter(must=must, must_not=not_background)
     client = query_client(config)
-    hits = client.query_points(
+    responses = client.query_batch_points(
         config.vector_store.get("topics_collection", "eduai_topics"),
-        query=vector, query_filter=models.Filter(must=must, must_not=not_background),
-        limit=k, score_threshold=threshold, with_payload=True,
-    ).points
-    return [
+        requests=[models.QueryRequest(query=vector, filter=query_filter, limit=k,
+                                      score_threshold=threshold, with_payload=True)
+                  for vector in vectors],
+    )
+    return [[
         ResolvedTopic(
             topic_id=(h.payload or {}).get("topic_id") or str(h.id),
             label=(h.payload or {}).get("label", ""),
             score=h.score,
             subject_id=(h.payload or {}).get("subject_id", ""),
         )
-        for h in hits
-    ]
+        for h in response.points
+    ] for response in responses]
 
 
-def _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config):
+def _resolve_topics_pg(vectors, subject_id, lecture_ids, k, threshold, config):
     """Brute-force cosine over ``ai.topics`` in Python. Correct but O(N) — the Qdrant
     path replaces it once the topics collection is populated (re-ingest)."""
     sql = ("SELECT topic_id::text, label, subject_id::text, label_embedding FROM ai.topics "
@@ -397,21 +420,22 @@ def _resolve_topics_pg(vector, subject_id, lecture_ids, k, threshold, config):
         cur.execute(sql, params)
         rows = cur.fetchall()
 
-    scored, mismatched = [], 0
-    for tid, label, sid, emb in rows:
-        if not emb:
-            continue
-        if len(emb) != len(vector):
-            mismatched += 1          # stale embedding (different model) — don't score it wrong
-            continue
-        scored.append(
-            ResolvedTopic(topic_id=tid, label=label, score=_dot(vector, emb), subject_id=sid))
+    dimension = len(vectors[0])
+    catalog = [(tid, label, sid, emb) for tid, label, sid, emb in rows
+               if emb and len(emb) == dimension]
+    mismatched = sum(1 for *_, emb in rows if emb and len(emb) != dimension)
     if mismatched:
         logger.warning("resolve_topics skipped %d topics with a mismatched-dimension "
                        "embedding (re-embed the topic catalog)", mismatched)
-    scored = [t for t in scored if t.score >= threshold]
-    scored.sort(key=lambda t: t.score, reverse=True)
-    return scored[:k]
+    resolved = []
+    for vector in vectors:
+        scored = [ResolvedTopic(topic_id=tid, label=label, score=_dot(vector, emb),
+                                subject_id=sid)
+                  for tid, label, sid, emb in catalog]
+        scored = [t for t in scored if t.score >= threshold]
+        scored.sort(key=lambda t: t.score, reverse=True)
+        resolved.append(scored[:k])
+    return resolved
 
 
 # --- get_topic_deps: a topic's prerequisites --------------------------------

@@ -14,7 +14,7 @@ from typing import Any
 
 from shared.config import Config
 
-from .tools import get_topic_lectures, resolve_topics
+from .tools import get_topic_lectures, resolve_topics_many
 
 logger = logging.getLogger(__name__)
 
@@ -34,18 +34,18 @@ def suggest_topics(
     config = config or Config.load()
     k = config.get("tagging.k", 3)
     threshold = config.get("tagging.threshold", 0.40)
-    rows: list[dict[str, Any]] = []
-    for index, question in enumerate(questions):
-        try:
-            hits = resolve_topics(question["text"], subject_id, lecture_ids=lecture_ids,
-                                  k=k, threshold=threshold, config=config)
-            resolved = True
-        except Exception:
-            logger.error("topic suggestion failed for a question", exc_info=True,
-                         extra={"index": index})
-            hits, resolved = [], False
-        rows.append({"index": index, "question_id": question.get("question_id"),
-                     "resolved": resolved, "hits": hits})
+    try:
+        found = resolve_topics_many([q["text"] for q in questions], subject_id,
+                                    lecture_ids=lecture_ids, k=k, threshold=threshold,
+                                    config=config)
+        resolved = True
+    except Exception:
+        logger.error("topic suggestion failed", exc_info=True,
+                     extra={"questions": len(questions)})
+        found, resolved = [[] for _ in questions], False
+    rows = [{"index": index, "question_id": question.get("question_id"),
+             "resolved": resolved, "hits": hits}
+            for index, (question, hits) in enumerate(zip(questions, found))]
 
     lectures, lectures_ok = _lectures_of({h.topic_id for r in rows for h in r["hits"]}, config)
     suggestions = [{

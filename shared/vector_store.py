@@ -13,6 +13,8 @@ answering a question is not.
 
 from __future__ import annotations
 
+import threading
+from functools import lru_cache
 from typing import Optional
 
 from .config import Config
@@ -20,15 +22,42 @@ from .config import Config
 
 def query_client(config: Config, *, timeout: Optional[float] = None):
     """A Qdrant client for the read path — bounded by the query budget."""
-    from qdrant_client import QdrantClient
-
     if timeout is None:
         timeout = config.get("vector_store.query_timeout_seconds")
-    return QdrantClient(
-        url=config.secret("QDRANT_URL", "http://localhost:6333"),
-        api_key=config.secret("QDRANT_API_KEY"),
-        timeout=timeout,
-    )
+    return _shared_client(config.secret("QDRANT_URL", "http://localhost:6333"),
+                          config.secret("QDRANT_API_KEY"), timeout,
+                          config.get("vector_store.max_concurrent_queries"))
+
+
+@lru_cache(maxsize=8)
+def _shared_client(url: str, api_key: Optional[str], timeout: float, concurrency: int):
+    """One client per process, so its connections are kept and reused.
+
+    A client built per search paid a TLS handshake each time: 0.38s for a
+    search that takes 0.13s on a warm connection, several times a turn.
+    """
+    from qdrant_client import QdrantClient
+
+    return _Bounded(QdrantClient(url=url, api_key=api_key, timeout=timeout),
+                    threading.BoundedSemaphore(concurrency))
+
+
+class _Bounded:
+    """A client whose calls wait for one of a fixed number of slots."""
+
+    def __init__(self, client, slots: threading.BoundedSemaphore) -> None:
+        self._client, self._slots = client, slots
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._client, name)
+        if not callable(attr):
+            return attr
+
+        def bounded(*args, **kwargs):
+            with self._slots:
+                return attr(*args, **kwargs)
+
+        return bounded
 
 
 def upsert_client(config: Config, location: str, *, timeout: Optional[float] = None):
