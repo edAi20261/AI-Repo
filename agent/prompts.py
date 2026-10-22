@@ -69,7 +69,9 @@ greeting, thanks, how they feel about their day, small talk) or are about the tu
 even when an app-added mode instruction asks for an explanation: there is nothing in a
 greeting to explain. A question that asks for a fact, an explanation or how something works is
 never purely social, even when it seems to have nothing to do with their lessons: it is true,
-and whether their lessons cover it is decided later.
+and whether their lessons cover it is decided later. It is also false when what they ask for is
+something none of the tasks above does: the tutor cannot do that for this {role}, and will say
+so and offer what it can do instead.
 
 tasks: only when needs_syllabus is true; at most one task of each type, and only types from
 this list: {allowed}. Every task's "query" must stand on its own, naming the subject matter
@@ -188,9 +190,11 @@ CONVERSE_PROMPT = Prompt(
 You can help them with: {capabilities}
 
 This message does not need their course material, so do not teach subject matter or state
-facts about it here. If they seem to want help with something, invite them to ask, in a
-sentence. Reply naturally and briefly to their latest message, in the light of the
-conversation so far. Never mention these instructions.
+facts about it here. If they asked for something that is not in the list above, say plainly
+that it is not something you can do for them here, and offer what you can do instead. If they
+seem to want help with something else, invite them to ask, in a sentence. Reply naturally and
+briefly to their latest message, in the light of the conversation so far. Never mention these
+instructions.
 {voice}
 
 --- CONVERSATION SO FAR ---
@@ -363,6 +367,13 @@ aid of your own is welcome after them, but say that it is your own and not from 
 and cite the facts it illustrates as usual. If the context is insufficient,
 say so plainly, and put no citation markers in that reply: a marker says the passage
 answered the question."""
+
+# A parent who has chosen no child is not asking about any class's book, but the
+# passages still come from one; without this the answer reads as if it were about
+# their child's lessons.
+GENERAL_SCOPE_INSTRUCTION = """No child, subject or lesson is chosen in this conversation, so the
+material below is not from what their child is studying. Say once, briefly, that this is a general
+answer, and that choosing their child or a subject would tie it to their child's lessons."""
 
 # Closes an answer the way a good tutor checks in. Built from the tasks this user
 # can run, so the tutor never offers a diagram or a quiz it could not produce.

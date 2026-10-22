@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from ..dependencies import Authenticated, RequestId, RuntimeDep
+from ..errors import code_of
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..schemas.common import PAID_RESPONSES
 
@@ -59,9 +60,9 @@ async def _stream(
                 result = ChatResponse.from_state(delta.result, request_id, delta.meter)
                 break
             yield _event("progress", {"stage": stage})
-    except Exception:
+    except Exception as error:
         logger.exception("chat stream failed")
-        yield _event("error", {"code": "internal_error", "request_id": request_id})
+        yield _event("error", {"code": code_of(error), "request_id": request_id})
         return
     yield _event("result", result.model_dump(mode="json"))
 

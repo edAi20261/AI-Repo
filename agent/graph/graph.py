@@ -28,6 +28,7 @@ from ..conversation import Conversation, ConversationStore, HistoryWindow
 from ..errors import TutorUnavailable
 from ..models import Style, SubjectFacts
 from ..persona.voice import PersonaDirectory, Voices
+from ..prompts import GENERAL_SCOPE_INSTRUCTION
 from ..scope import lecture_filter
 from ..state import MainState
 from ..subjects import SubjectDirectory
@@ -95,7 +96,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
             "style": payload.get("style") or Style(),
             "voice": voices.render(payload.get("style"), params.get("query", "")),
             "language": payload.get("language", "en"),
-            "instructions": _subject_instructions(facts, with_figure=with_figure),
+            "instructions": _answer_instructions(facts, payload, with_figure=with_figure),
             "subject_id": payload.get("subject_id"),
             "grade": payload.get("grade"),
             "k": k,
@@ -153,6 +154,14 @@ def _subject_facts(client, subject_id: Optional[str]) -> SubjectFacts:
         return SubjectFacts.model_validate(client.get_subject(subject_id) or {})
     except Exception:
         return SubjectFacts()
+
+
+def _answer_instructions(facts: SubjectFacts, payload: dict, *, with_figure: bool) -> str:
+    """The addendum for an explanation or summary: the subject's, and whether it is general."""
+    subject = _subject_instructions(facts, with_figure=with_figure)
+    if not payload.get("general_scope"):
+        return subject
+    return "\n".join(part for part in (subject, GENERAL_SCOPE_INSTRUCTION) if part)
 
 
 def _subject_instructions(facts: SubjectFacts, *, with_figure: bool = False) -> str:

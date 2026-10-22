@@ -648,6 +648,39 @@ def test_a_streamed_turn_past_the_timeout_is_abandoned(monkeypatch):
     anyio.run(run)
 
 
+def _streamed_error(failure: Exception) -> dict:
+    import json
+
+    from system.routers.chat import _stream
+
+    async def updates():
+        raise failure
+        yield
+
+    async def run():
+        return [event async for event in _stream(updates(), "req-1")]
+
+    (event,) = anyio.run(run)
+    name, data = event.strip().split("\n")
+    assert name == "event: error"
+    return json.loads(data.removeprefix("data: "))
+
+
+def test_a_streamed_failure_keeps_the_code_the_plain_endpoint_would_send():
+    """A parent's "Quiz me" failed with the tutor unavailable, and the stream
+    reported it as internal_error: every failure on the stream was, so the
+    platform could not tell a model outage from a bug, or retry the one worth
+    retrying."""
+    from agent.errors import TutorUnavailable
+    from agent.tools import AuthorizationError
+
+    assert _streamed_error(TutorUnavailable()) == {
+        "code": "service_unavailable", "request_id": "req-1"}
+    assert _streamed_error(UpstreamTimeoutError("late"))["code"] == "timeout"
+    assert _streamed_error(AuthorizationError("no"))["code"] == "forbidden"
+    assert _streamed_error(RuntimeError("bug"))["code"] == "internal_error"
+
+
 def test_a_service_pointed_at_an_empty_index_says_so(monkeypatch, caplog):
     """A whole afternoon of testing was spent against an empty index.
 

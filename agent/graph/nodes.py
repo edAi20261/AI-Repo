@@ -200,13 +200,18 @@ def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
 
 def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
     """The checks a schema cannot express, fed back to the model on a retry."""
+    available = ", ".join(allowed)
+    way_out = ("if none of them does what the message asks, the tutor cannot do it here: "
+               "set needs_syllabus to false and leave tasks empty")
+
     def check(reading: TurnUnderstanding) -> None:
         if reading.needs_syllabus and not reading.tasks:
-            raise ValueError("needs_syllabus is true, so tasks must hold at least one task")
+            raise ValueError("needs_syllabus is true, so tasks must hold at least one task "
+                             f"of these types: {available}; {way_out}")
         for task in reading.tasks:
             if task.type not in allowed:
                 raise ValueError(f"task type {task.type!r} is not available here; "
-                                 f"use only {', '.join(allowed)}")
+                                 f"use only {available}; {way_out}")
             if not (task.query or "").strip():
                 raise ValueError(f"the {task.type} task needs a query that names what it is about")
         if reading.continues_previous and reading.scope_fit == "outside":
@@ -479,11 +484,33 @@ def _assessment_type_mix(spec: AssessmentSpec, default: dict) -> dict:
     return mix or dict(default)
 
 
+def _learner_id(state) -> Optional[str]:
+    """The student whose subjects a turn is about: their own, or a parent's child."""
+    pathway = state.get("pathway")
+    if pathway == "student":
+        return state.get("user_id")
+    if pathway == "parent":
+        return state.get("child_id")
+    return None
+
+
+def _general_scope(state) -> bool:
+    """A parent turn tied to no child, subject or lesson.
+
+    A parent's chat carried none of them, so the subject was voted for across
+    every class's material: a parent's question was answered from whichever
+    book in the corpus matched it best, as if it were their child's.
+    """
+    return (state.get("pathway") == "parent" and not state.get("child_id")
+            and not state.get("study_scope") and not lecture_filter(state))
+
+
 def _enrolled_subjects(client, state) -> set | None:
-    if not (client and state.get("pathway") == "student" and state.get("user_id")):
+    learner_id = _learner_id(state)
+    if not (client and learner_id):
         return None
     try:
-        subjects = client.get_student_subjects(state["user_id"]) or []
+        subjects = client.get_student_subjects(learner_id) or []
     except Exception:
         logger.warning("enrolled-subjects lookup failed; inferring unconstrained",
                        exc_info=True)
@@ -498,7 +525,8 @@ def _resolve_subject(state, reading: TurnUnderstanding, conversation: Conversati
 
     What the caller sends wins; then the subject the conversation settled on,
     unless the student has moved to another or is no longer writing in its
-    language; then the subject whose material answers the question; the
+    language; then, except for a parent turn tied to no child or lesson, which
+    is left without one, the subject whose material answers the question; the
     configured default only as a last resort.
 
     The language clause is the one a two-language corpus needs. One English
@@ -513,6 +541,8 @@ def _resolve_subject(state, reading: TurnUnderstanding, conversation: Conversati
     if settled and not reading.changes_subject and not _wrong_language(
             settled, message_language, subjects):
         return settled, "conversation"
+    if _general_scope(state):
+        return None, "general"
     query = next((t["query"] for t in raw_tasks if t.get("query")), state.get("message", ""))
     inferred = _infer_subject(query, state.get("namespaces") or [], config,
                               _enrolled_subjects(client, state),
@@ -647,6 +677,7 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
             "learner": learner.render(),
             "language": decision.code,
             "language_decision": decision.model_dump(),
+            "general_scope": subject_source == "general",
         }
         if subject_id and subject_id != state.get("subject_id"):
             out["subject_id"] = subject_id
@@ -684,7 +715,8 @@ def dispatch(state) -> list:
     ctx = {k: state.get(k) for k in
            ("namespaces", "style", "language", "subject_id", "lecture_ids", "grade",
             "user_id", "session_id", "pathway", "study_scope", "message",
-            "history", "learner", "previous_chunk_ids", "conversation")}
+            "history", "learner", "previous_chunk_ids", "conversation",
+            "general_scope")}
     sends = []
     for task in state.get("tasks", []):
         node = _ADAPTER.get(task.get("type"))

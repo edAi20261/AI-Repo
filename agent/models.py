@@ -402,7 +402,8 @@ class TurnUnderstanding(_ReadsNullWords):
                     "the app put in front of them.")
     needs_syllabus: bool = Field(
         description="true when answering needs the student's course material; false only "
-                    "for a purely social message or one about the tutor itself.")
+                    "for a purely social message, one about the tutor itself, or one asking "
+                    "for something none of the available tasks does.")
     tasks: list[PlannedTask] = Field(
         default_factory=list,
         description="The tasks to run, at most one per type. Empty when needs_syllabus is false.")
