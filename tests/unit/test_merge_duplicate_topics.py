@@ -122,3 +122,22 @@ def test_the_index_follows_the_database():
     assert client.payloads == [("chunks", {"topic_ids": ["t1"]}, ["c1", "c2"]),
                                ("chunks", {"topic_ids": ["t1", "t2"]}, ["c3"])]
     assert client.deleted == [("topics", ["11111111-1111-1111-1111-111111111111"])]
+
+
+def test_neighbouring_skills_from_two_lessons_stay_two_topics():
+    """At ingestion's reuse threshold (0.60) the dry run on Maths Grade 7A folded
+    "Perform set operations" and "Write subtraction sentences" into "Perform
+    basic subtraction": neighbours, not the same skill. Labels for one skill
+    reworded sit above 0.92; neighbouring skills sit in 0.75-0.90."""
+    from shared.config import get_config
+
+    threshold = get_config().get("ingestion.topics.merge_threshold")
+    neighbour = [0.8, 0.6]
+    reworded = [0.95, (1 - 0.95 ** 2) ** 0.5]
+    topics = [_topic("basic", [1.0, 0.0], "lec-1"), _topic("sentences", neighbour, "lec-2"),
+              _topic("basic-again", reworded, "lec-2")]
+
+    groups = group_topics(topics, threshold)
+
+    assert [(g["canonical"]["topic_id"], [m["topic_id"] for m in g["merged"]])
+            for g in groups] == [("basic", ["basic-again"])]

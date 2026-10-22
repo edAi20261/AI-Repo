@@ -70,10 +70,11 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
 
     cfg = ctx.config.get("ingestion.topics", {})
     reuse_threshold = cfg.get("reuse_threshold", 0.60)
+    merge_threshold = cfg["merge_threshold"]
     assign_threshold = cfg.get("assign_threshold", 0.45)
 
     raw, label_vecs = _merge_near_duplicates(
-        raw, ctx.embedder.embed([t["label"] for t in raw]), reuse_threshold)
+        raw, ctx.embedder.embed([t["label"] for t in raw]), merge_threshold)
     own = ctx.chunk_store.read_lecture_topics(state["lecture_id"])
     reuse_ids = _match_one_to_one(label_vecs, own, reuse_threshold)
     if (state.get("namespace") or SYLLABUS) == SYLLABUS:
@@ -82,7 +83,7 @@ def run(state: IngestionState, ctx: PipelineContext) -> IngestionState:
         catalog = [entry for entry in ctx.chunk_store.read_topic_catalog(
             state["subject_id"], include_background=False) if entry[0] not in claimed]
         for i, tid in zip(open_slots, _match_one_to_one(
-                [label_vecs[i] for i in open_slots], catalog, reuse_threshold)):
+                [label_vecs[i] for i in open_slots], catalog, merge_threshold)):
             if tid is not None:
                 reuse_ids[i] = tid
     owners = ctx.chunk_store.read_topic_owners([tid for tid in reuse_ids if tid])

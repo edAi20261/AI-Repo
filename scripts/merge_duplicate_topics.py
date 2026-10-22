@@ -2,7 +2,7 @@
 
 Every lesson minted its own topics, so a skill taught in three lessons was three
 topics, and a student's mastery of it was split three ways. Topics whose labels
-are as close as ingestion's reuse threshold are one skill: the oldest is kept,
+are as close as ingestion's merge threshold are one skill: the oldest is kept,
 and every passage, figure, index row, question, prerequisite edge and mastery
 record that named another is moved onto it before the others are deleted.
 
@@ -218,14 +218,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--threshold", type=float,
                         help="label similarity to merge at, for this dry run; "
-                             "ingestion.topics.reuse_threshold when not given")
+                             "ingestion.topics.merge_threshold when not given")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     config = get_config()
 
     if not args.apply:
         threshold = (args.threshold if args.threshold is not None
-                     else config.get("ingestion.topics.reuse_threshold"))
+                     else config.get("ingestion.topics.merge_threshold"))
         plan = _plan(config, args.subjects, threshold)
         args.plan.write_text(json.dumps(plan, ensure_ascii=False, indent=1))
         merged = 0
