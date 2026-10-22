@@ -12,7 +12,13 @@ class RememberedSummary(BaseModel):
     """One conversation as the tutor summarised it to itself."""
 
     conversation_id: Optional[str] = None
-    summary: str
+    note: Optional[str] = Field(
+        default=None,
+        description=("What the tutor remembers from this conversation, in one or two plain "
+                     "sentences for the student. Show this. Null for a conversation "
+                     "summarised before notes were written."))
+    summary: str = Field(
+        description="The tutor's own working summary, written for the next turn's prompt.")
     written_at: Optional[datetime] = None
     expires_at: Optional[datetime] = Field(
         default=None,

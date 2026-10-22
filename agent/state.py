@@ -28,6 +28,7 @@ class MainState(TypedDict, total=False):
     subject_id: Optional[str]       # the subject this turn is about (scopes retrieval)
     lecture_ids: Optional[list[str]]  # optional lecture scope; None -> whole subject
     study_scope: Optional[dict[str, Any]]  # the UI selection this turn is bounded by
+    child_id: Optional[str]         # the parent's child this turn is about
     grade: Optional[str]            # academic grade/year level (NOT a grading result — see grade_result)
     grade_ref: Optional[dict[str, Any]]  # structured {assessment_id, kind} from the frontend for a grade turn
     teacher_id: Optional[str]
@@ -57,6 +58,7 @@ class MainState(TypedDict, total=False):
     # -- plan --
     tasks: list[Task]
     learner: str
+    general_scope: bool             # a parent turn tied to no child, subject or lesson
 
     # -- subgraph fan-in (reducer-merged) --
     answers: Annotated[list[dict[str, Any]], operator.add]

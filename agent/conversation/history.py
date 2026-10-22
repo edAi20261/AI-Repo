@@ -21,10 +21,11 @@ from typing import Optional
 
 from langchain_core.messages import HumanMessage
 
+from shared.structured import StructuredOutputError, call_structured, schema_hint
 from shared.tokens import clip_to_tokens, count_tokens
 
 from ..prompts import CONVERSATION_SUMMARY_PROMPT
-from .records import Conversation, Turn
+from .records import Conversation, ConversationSummary, Turn
 from .store import ConversationStore
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,10 @@ DEFAULT_REPLY_TOKENS = 600
 # from the conversation and starts folding its own summary forward, so this is
 # the point where memory begins to decay rather than merely shorten.
 DEFAULT_REBUILD_TOKENS = 12000
+DEFAULT_NOTE_CHARS = 280
+MAX_NOTE_LINES = 2
+MARKDOWN_OPENERS = ("#", "*", "-", "+", ">", "|")
+MARKDOWN_MARKS = ("**", "__", "`", "](")
 
 NO_HISTORY = "(this is the first message of the conversation)"
 
@@ -63,6 +68,7 @@ class HistoryWindow:
     history_tokens: int = DEFAULT_HISTORY_TOKENS
     reply_tokens: int = DEFAULT_REPLY_TOKENS
     rebuild_tokens: int = DEFAULT_REBUILD_TOKENS
+    note_chars: int = DEFAULT_NOTE_CHARS
 
     @classmethod
     def from_config(cls, config) -> HistoryWindow:
@@ -73,6 +79,7 @@ class HistoryWindow:
             history_tokens=settings.get("history_tokens", DEFAULT_HISTORY_TOKENS),
             reply_tokens=settings.get("reply_tokens", DEFAULT_REPLY_TOKENS),
             rebuild_tokens=settings.get("rebuild_tokens", DEFAULT_REBUILD_TOKENS),
+            note_chars=settings.get("note_chars", DEFAULT_NOTE_CHARS),
         )
 
     def render(self, conversation: Conversation, *, carried_over: str = "",
@@ -131,6 +138,23 @@ class HistoryWindow:
             spent += cost
         return kept
 
+    def check_fold(self, fold: ConversationSummary) -> None:
+        """The note is shown to the student as it is, so it has to read as plain words."""
+        if not fold.summary.strip():
+            raise ValueError("summary is empty")
+        note = fold.note.strip()
+        if not note:
+            raise ValueError("note is empty")
+        if len(note) > self.note_chars:
+            raise ValueError(f"note is {len(note)} characters; keep it under "
+                             f"{self.note_chars}, one or two sentences")
+        if note.count("\n") >= MAX_NOTE_LINES:
+            raise ValueError("note must be one or two sentences, not a list")
+        lines = [line.lstrip() for line in note.splitlines()]
+        if any(line.startswith(MARKDOWN_OPENERS) for line in lines) or any(
+                mark in note for mark in MARKDOWN_MARKS):
+            raise ValueError("note must be plain text: no markdown, bullets or headings")
+
 
 def fold_if_due(
     store: ConversationStore,
@@ -141,6 +165,7 @@ def fold_if_due(
     user_type: Optional[str],
     session_id: Optional[str],
     language: str,
+    config=None,
 ) -> bool:
     """Fold the oldest turns into the running summary when the window is full.
 
@@ -171,18 +196,22 @@ def fold_if_due(
     prompt = CONVERSATION_SUMMARY_PROMPT.render(
         language=language,
         summary=summary_before,
-        transcript=window.transcript(material))
+        transcript=window.transcript(material),
+        schema=schema_hint(ConversationSummary))
     try:
-        summary = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()
+        fold = call_structured(ConversationSummary, [HumanMessage(content=prompt)],
+                               task="conversation_summary", config=config, llm=llm,
+                               label="conversation_summary", validate=window.check_fold)
+    except StructuredOutputError as exc:
+        logger.warning("conversation summary failed; keeping the turns",
+                       extra=exc.log_fields())
+        return False
     except Exception:
         logger.warning("conversation summary failed; keeping the turns", exc_info=True)
         return False
-    if not summary:
-        logger.warning("conversation summary came back empty; keeping the turns")
-        return False
 
-    done = store.fold(user_id, user_type, session_id,
-                      summary=summary, folded=folding, discard=discard)
+    done = store.fold(user_id, user_type, session_id, summary=fold.summary.strip(),
+                      note=fold.note.strip(), folded=folding, discard=discard)
     logger.info("conversation folded", extra={
         "turns": len(folding), "rewritten_from_conversation": from_conversation,
         "kept_raw": len(keeping), "dropped": len(discard),

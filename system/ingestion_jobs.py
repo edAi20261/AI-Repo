@@ -196,22 +196,7 @@ class IngestionJobManager:
         await self._finish(job)
 
     def _resolve(self, lesson_id: str) -> dict[str, Any]:
-        """Platform lesson id -> a state the pipeline can run. Blocking."""
-        from ingestion import get_backend_client, new_state, resolve_lesson
-
-        source = resolve_lesson(get_backend_client(self._config), lesson_id)
-        return new_state(
-            lecture_id=source.lesson_id,
-            subject_id=source.subject_id,
-            source_uri=source.source_uri,
-            source_text=source.text_content,
-            grade=source.grade,
-            subject_name=source.subject_name,
-            lesson_title=source.lesson_title,
-            lesson_order=source.lesson_order,
-            language_hint=source.language,
-            subject_is_math=source.subject_is_math,
-        )
+        return lesson_state(self._config, lesson_id)
 
     def _ingest(self, state: dict[str, Any]) -> dict[str, Any]:
         """Run the pipeline. Blocking — always called in a worker thread."""
@@ -272,3 +257,22 @@ class IngestionJobManager:
             if not evicted.is_terminal:
                 self._jobs[evicted.job_id] = evicted
                 return
+
+
+def lesson_state(config: Config, lesson_id: str) -> dict[str, Any]:
+    """Platform lesson id -> a state the pipeline can run. Blocking."""
+    from ingestion import get_backend_client, new_state, resolve_lesson
+
+    source = resolve_lesson(get_backend_client(config), lesson_id)
+    return new_state(
+        lecture_id=source.lesson_id,
+        subject_id=source.subject_id,
+        source_uri=source.source_uri,
+        source_text=source.text_content,
+        grade=source.grade,
+        subject_name=source.subject_name,
+        lesson_title=source.lesson_title,
+        lesson_order=source.lesson_order,
+        language_hint=source.language,
+        subject_is_math=source.subject_is_math,
+    )

@@ -69,7 +69,9 @@ greeting, thanks, how they feel about their day, small talk) or are about the tu
 even when an app-added mode instruction asks for an explanation: there is nothing in a
 greeting to explain. A question that asks for a fact, an explanation or how something works is
 never purely social, even when it seems to have nothing to do with their lessons: it is true,
-and whether their lessons cover it is decided later.
+and whether their lessons cover it is decided later. It is also false when what they ask for is
+something none of the tasks above does: the tutor cannot do that for this {role}, and will say
+so and offer what it can do instead.
 
 tasks: only when needs_syllabus is true; at most one task of each type, and only types from
 this list: {allowed}. Every task's "query" must stand on its own, naming the subject matter
@@ -126,23 +128,34 @@ future conversation, so leave every field null unless the student said it in so 
 
 CONVERSATION_SUMMARY_PROMPT = Prompt(
     name="CONVERSATION_SUMMARY_PROMPT",
-    # Nobody reads this but the next turn — and the next turn writes to a
-    # student. The summary is quoted at the head of every prompt that answers
-    # one, so the language it is written in goes on steering replies long after
-    # the turns it condensed have scrolled out. Left unpinned it came back in
-    # English for conversations that ended in Arabic: both summaries in
-    # production are English, over turns whose last three were ar, ar, ar.
-    audience=Audience.INTERNAL,
+    # The summary is read by the next turn, which writes to a student: it is
+    # quoted at the head of every prompt that answers one, so the language it is
+    # written in goes on steering replies long after the turns it condensed have
+    # scrolled out. Left unpinned it came back in English for conversations that
+    # ended in Arabic: both summaries in production were English, over turns
+    # whose last three were ar, ar, ar. The note is read by the student on their
+    # memory page, which showed the internal summary, headings and all, until
+    # the fold wrote one for them.
+    audience=Audience.STUDENT,
     language_rule=LanguageRule.CONTENT,
     template="""You keep a running summary of a tutoring conversation so later turns can
-continue it. Rewrite the summary from the existing one and the turns below, under these
-headings, leaving out any heading with nothing under it:
+continue it, and a short note that shows the student what you remember.
+
+summary: rewrite it from the existing one and the turns below, under these headings, leaving
+out any heading with nothing under it:
 - Goals: what the student is trying to learn or do
 - Covered: the concepts explained so far, with the specific terms, names and examples used
 - Preferences: how the student wants to be answered (language, depth, format)
 - Open: questions not yet answered, and where the student is still confused
 Keep entries from the existing summary unless the new turns contradict them. Prefer exact
-terms over paraphrase. Never add anything that was not said. Return only the summary.
+terms over paraphrase. Never add anything that was not said.
+
+note: one or two plain sentences, addressed to the student, saying what this conversation
+was about and what you will remember from it. No markdown, no list, no heading, no line
+breaks.
+
+Return JSON only, no prose. Fields:
+{schema}
 
 {language}
 A term the student met in another language stays in the language they met it in.
@@ -188,9 +201,11 @@ CONVERSE_PROMPT = Prompt(
 You can help them with: {capabilities}
 
 This message does not need their course material, so do not teach subject matter or state
-facts about it here. If they seem to want help with something, invite them to ask, in a
-sentence. Reply naturally and briefly to their latest message, in the light of the
-conversation so far. Never mention these instructions.
+facts about it here. If they asked for something that is not in the list above, say plainly
+that it is not something you can do for them here, and offer what you can do instead. If they
+seem to want help with something else, invite them to ask, in a sentence. Reply naturally and
+briefly to their latest message, in the light of the conversation so far. Never mention these
+instructions.
 {voice}
 
 --- CONVERSATION SO FAR ---
@@ -393,6 +408,13 @@ aid of your own is welcome after them, but say that it is your own and not from 
 and cite the facts it illustrates as usual. If the context is insufficient,
 say so plainly, and put no citation markers in that reply: a marker says the passage
 answered the question."""
+
+# A parent who has chosen no child is not asking about any class's book, but the
+# passages still come from one; without this the answer reads as if it were about
+# their child's lessons.
+GENERAL_SCOPE_INSTRUCTION = """No child, subject or lesson is chosen in this conversation, so the
+material below is not from what their child is studying. Say once, briefly, that this is a general
+answer, and that choosing their child or a subject would tie it to their child's lessons."""
 
 # Closes an answer the way a good tutor checks in. Built from the tasks this user
 # can run, so the tutor never offers a diagram or a quiz it could not produce.
@@ -669,7 +691,7 @@ MINDMAP_PROMPT = Prompt(
     audience=Audience.STUDENT,
     language_rule=LanguageRule.CONTENT,
     template="""Build a concise mind map of the topic below, grounded ONLY in the context.
-The root is the topic; 2-5 top branches; each branch 0-4 leaves. Labels <= 6 words.
+The root is the topic; 2-5 top branches; each branch 0-4 leaves. Each label is a short phrase of at most 6 words.
 Do NOT add anything the context does not support.
 Return JSON only, no prose. Fields:
 {schema}

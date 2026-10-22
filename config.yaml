@@ -268,6 +268,16 @@ ingestion:
     max_per_lecture: 8
     max_input_tokens: 12000      # above this, extract in batches and union (0 = single call)
     reuse_threshold: 0.60        # re-ingest reuses a lecture's own topic_id above this cosine similarity
+    # Two labels are one skill above this; below it they are neighbours, not
+    # twins. Pairs from different lessons of one subject, sampled across 25
+    # subjects of the production catalog:
+    #   0.85-0.90  "calculate angles at a point" / "define angles at a point",
+    #              "understand new vocabulary" / "apply new vocabulary"
+    #   0.90-0.95  "Create a descriptive paragraph" / "Write descriptive paragraphs"
+    #   0.95-1.00  "Apply triangle inequality theorem(s)"
+    # reuse_threshold (0.60) would have folded "Perform set operations" into
+    # "Perform basic subtraction".
+    merge_threshold: 0.92
     assign_threshold: 0.45       # tag a chunk with a topic above this similarity
   dependencies:
     max_out_degree: 5            # max prerequisites kept per topic
@@ -525,6 +535,7 @@ agent:
     # is rewritten from what was said; over it, from the previous summary, and
     # detail starts decaying. ~60 turns at the median.
     rebuild_tokens: 12000
+    note_chars: 280            # the student-facing note on the memory page: one or two sentences
     connect_timeout_seconds: 2
     statement_timeout_ms: 500
     failure_threshold: 3
@@ -723,7 +734,11 @@ render:
   # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.
   # User-agnostic: student, teacher and parent all use the same renderers.
   chart: { width: 8.0, height: 5.0, dpi: 120 }   # matplotlib figure size (inches) + dpi
-  mindmap: { width: 900, height: 600 }           # SVG canvas (px)
+  mindmap:
+    width: 900                                    # minimum SVG canvas (px); grows to fit depth and leaves
+    height: 600
+    line_chars: 18                                # graphemes per wrapped line in a 150px box at 13px
+    max_label_chars: 90                           # a label past this is cut with an ellipsis; well above the prompt's six words
   pdf: { page: A4 }
   flashcards: { count: 8 }                        # cards a topic-built (no-quiz) flashcard set targets
   math: { samples: 200 }                          # points sampled per function when plotting expr+domain

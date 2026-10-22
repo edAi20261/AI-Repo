@@ -6,6 +6,7 @@ vision JSON parsing and factory, the backend resolver, and one end-to-end run.
 
 from __future__ import annotations
 
+import copy
 import os
 
 import pytest
@@ -35,6 +36,7 @@ from ingestion.stages.topics import _match_one_to_one, run as run_topics
 from ingestion.stores import DryRunChunkStore
 from ingestion.layout.blocks import Block
 from ingestion.utils.normalise import collapse_repeated_marks, normalise_text
+from shared.namespaces import BACKGROUND
 from shared.tokens import count_tokens
 
 
@@ -1061,14 +1063,102 @@ def test_topics_extraction_failure_is_flagged_not_lost():
     assert st["topics"] == []
 
 
-def test_topics_stub_empty_stays_silent():
-    cfg = _config()
-    emb = HashEmbedder(dimension=64)
-    ex = _CountingExtractor([[]], is_stub=True)  # stub: no key, no retries, no flag
-    st = run_topics(_topics_state(emb), _FakeCtx(cfg, ex, emb, DryRunChunkStore()))
+def _config_for(app_env):
+    base = _config()
+    return Config(copy.deepcopy(base._data), app_env)
 
-    assert ex.calls == 1
-    assert st.get("ingestion_status") != "needs_review"
+
+def test_a_lesson_read_with_no_topic_model_is_flagged_in_development():
+    """Subtraction was re-ingested with no topic model: its passage carried no
+    topic, the lesson was recorded ready, and "quiz me" found nothing to ask."""
+    emb = HashEmbedder(dimension=64)
+    ex = _CountingExtractor([[]], is_stub=True)
+    st = run_topics(_topics_state(emb),
+                    _FakeCtx(_config_for("local"), ex, emb, DryRunChunkStore()))
+
+    assert st["ingestion_status"] == "needs_review"
+    assert any("no topic model" in e for e in st["errors"])
+
+
+def test_a_deployed_run_with_no_topic_model_fails_instead_of_indexing_untagged_text():
+    emb = HashEmbedder(dimension=64)
+    ex = _CountingExtractor([[]], is_stub=True)
+    with pytest.raises(RuntimeError, match="No topic model"):
+        run_topics(_topics_state(emb),
+                   _FakeCtx(_config_for("production"), ex, emb, DryRunChunkStore()))
+    assert ex.calls == 0
+
+
+def test_topics_no_chunk_tagged_is_flagged():
+    """Topics named for a lesson whose passages were never embedded tag nothing,
+    which leaves the lesson as untagged as having no topics at all."""
+    emb = HashEmbedder(dimension=64)
+    st = new_state(lecture_id="lec-1", subject_id="sub-1", source_uri="x.pdf")
+    st["chunks"] = [Chunk(lecture_id="lec-1", text="text", heading_path="", page_from=1,
+                          page_to=1, language="en", order_index=0, subject_id="sub-1")]
+    ex = _FakeExtractor([{"label": "Fractions", "description": "d", "bloom_level": "apply"}])
+    st = run_topics(st, _FakeCtx(_config(), ex, emb, DryRunChunkStore()))
+
+    assert st["ingestion_status"] == "needs_review"
+    assert any("tagged" in e for e in st["errors"])
+
+
+def test_one_extraction_naming_a_skill_twice_makes_one_topic():
+    emb = HashEmbedder(dimension=64)
+    store = DryRunChunkStore()
+    ex = _FakeExtractor([
+        {"label": "Subtraction", "description": "d", "bloom_level": "apply"},
+        {"label": "Subtraction", "description": "again", "bloom_level": "apply"},
+        {"label": "Place value", "description": "d", "bloom_level": "apply"}])
+    st = _topics_state(emb)
+    st = run_topics(st, _FakeCtx(_config(), ex, emb, store))
+
+    assert [t["label"] for t in st["topics"]] == ["Subtraction", "Place value"]
+    assert [t["label"] for t in store.topics] == ["Subtraction", "Place value"]
+
+
+def test_a_skill_another_lesson_of_the_subject_teaches_reuses_its_topic():
+    """2,949 labels repeated across lessons of one subject: each lesson minted its
+    own "Subtraction", and a student's mastery of it was split between them."""
+    emb = HashEmbedder(dimension=64)
+    catalog_vec = emb.embed(["Subtraction"])[0]
+    asked = {}
+
+    class _StoreWithCatalog(DryRunChunkStore):
+        def read_topic_catalog(self, subject_id, *, include_background=True):
+            asked["include_background"] = include_background
+            return [("topic-of-lesson-1", "Subtraction", catalog_vec)]
+
+        def read_topic_owners(self, topic_ids):
+            return {"topic-of-lesson-1": "lec-earlier"}
+
+    store = _StoreWithCatalog()
+    ex = _FakeExtractor([{"label": "Subtraction", "description": "d", "bloom_level": "apply"}])
+    ctx = _FakeCtx(_config(), ex, emb, store)
+    st = run_topics(_topics_state(emb), ctx)
+
+    assert st["topics"][0]["topic_id"] == "topic-of-lesson-1"
+    assert st["topics"][0]["reused"] is True
+    assert store.topics == []
+    assert st["chunks"][0].topic_ids == ["topic-of-lesson-1"]
+    assert asked["include_background"] is False
+    assert ctx.vector_store.topic_points[0]["payload"]["lecture_id"] == "lec-earlier"
+
+
+def test_a_background_book_does_not_take_over_syllabus_topics():
+    emb = HashEmbedder(dimension=64)
+    vec = emb.embed(["Subtraction"])[0]
+
+    class _StoreWithCatalog(DryRunChunkStore):
+        def read_topic_catalog(self, subject_id, *, include_background=True):
+            return [("syllabus-topic", "Subtraction", vec)]
+
+    ex = _FakeExtractor([{"label": "Subtraction", "description": "d", "bloom_level": "apply"}])
+    st = _topics_state(emb)
+    st["namespace"] = BACKGROUND
+    st = run_topics(st, _FakeCtx(_config(), ex, emb, _StoreWithCatalog()))
+
+    assert st["topics"][0]["topic_id"] != "syllabus-topic"
 
 
 def test_reingest_replaces_not_duplicates():
@@ -1129,8 +1219,31 @@ def test_index_records_needs_review_status():
 
     rec = cs.ingestion_records[0]
     assert rec["status"] == "needs_review"
-    assert rec["needs_review_reason"] == "1 page(s) were unreadable"
+    assert rec["needs_review_reason"].startswith("1 page(s) were unreadable; ")
     assert rec["chunk_count"] == 0
+
+
+def test_a_lesson_that_indexes_no_text_is_not_ready():
+    """Three lessons were recorded ready with 0 chunks: nothing in them could be
+    searched, summarized or quizzed on, and nothing said so."""
+    from ingestion.stages.index import run as run_index
+    from ingestion.stores import DryRunChunkStore, DryRunVectorStore
+
+    cs = DryRunChunkStore()
+
+    class _Ctx:
+        chunk_store = cs
+        vector_store = DryRunVectorStore()
+        config = _config()
+
+    st = new_state(lecture_id="lec-0", subject_id="s", source_uri="x.pdf")
+    st["chunks"] = []
+    st["ingestion_status"] = "ready"
+    run_index(st, _Ctx())
+
+    rec = cs.ingestion_records[0]
+    assert rec["status"] == "needs_review"
+    assert "0 chunks" in rec["needs_review_reason"]
 
 
 def test_figure_bbox_scaling():
@@ -1437,3 +1550,51 @@ def test_a_connection_left_idle_through_a_rate_limit_is_checked_before_reuse():
 
     store = PostgresChunkStore("postgresql://test:test@localhost:5432/test")
     assert store._engine.pool._pre_ping
+
+
+class _RecordingEngine:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def begin(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _conn():
+            engine = self
+
+            class _Conn:
+                def execute(self, statement, params=None):
+                    engine.calls.append((str(statement), params))
+                    return iter(engine.rows)
+
+            yield _Conn()
+
+        return _conn()
+
+
+def test_a_reingest_matches_against_the_topics_the_lessons_text_carries():
+    """A lesson whose passages carry a topic another lesson owns re-ingested
+    without seeing it, and minted a second topic for the same skill."""
+    from ingestion.stores import PostgresChunkStore
+
+    store = PostgresChunkStore("postgresql://test:test@localhost:5432/test")
+    store._engine = _RecordingEngine([("t-sub", "Subtraction", [0.1, 0.2])])
+
+    assert store.read_lecture_topics("lec-2") == [("t-sub", "Subtraction", [0.1, 0.2])]
+    sql, params = store._engine.calls[0]
+    assert "unnest(topic_ids) FROM ai.chunks WHERE lecture_id = :lecture_id" in sql
+    assert params == {"lecture_id": "lec-2"}
+
+
+def test_a_reused_topic_keeps_the_lesson_that_owns_it():
+    from ingestion.stores import PostgresChunkStore
+
+    store = PostgresChunkStore("postgresql://test:test@localhost:5432/test")
+    store._engine = _RecordingEngine([("t-sub", "lec-1")])
+
+    assert store.read_topic_owners([]) == {}
+    assert store._engine.calls == []
+    assert store.read_topic_owners(["t-sub"]) == {"t-sub": "lec-1"}
+    assert store._engine.calls[0][1] == {"topic_ids": ["t-sub"]}

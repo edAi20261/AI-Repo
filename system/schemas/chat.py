@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from agent.models import AnswerBasis
 from agent.scope import StudyScope
@@ -30,6 +30,14 @@ class ChatRequest(Schema):
         description=("What the student has selected in the UI. With a lecture_id the "
                      "turn answers from that lesson only, and a question outside it is "
                      "refused by name rather than as a missing-material message."),
+    )
+    child_id: Optional[str] = Field(
+        default=None,
+        description=("A parent's child this turn is about, already checked against the "
+                     "parent's links. The subject of a question is then looked for "
+                     "among the child's subjects. Only with user_type parent. A parent "
+                     "turn with no child, subject or study_scope is answered as a general "
+                     "answer, and says so."),
     )
     session_id: Optional[str] = Field(
         default=None, description="Conversation id; also the ephemeral upload namespace."
@@ -60,6 +68,12 @@ class ChatRequest(Schema):
                      "interface or UI language here."),
     )
 
+    @model_validator(mode="after")
+    def _child_belongs_to_a_parent(self) -> ChatRequest:
+        if self.child_id and self.user_type != "parent":
+            raise ValueError("child_id is sent only with user_type parent")
+        return self
+
     def to_state(self) -> dict[str, Any]:
         """Project onto the graph's ``MainState`` input keys."""
         state: dict[str, Any] = {
@@ -69,6 +83,7 @@ class ChatRequest(Schema):
             "subject_id": self.subject_id or (self.study_scope.subject_id
                                               if self.study_scope else None),
             "lecture_ids": self.lecture_ids,
+            "child_id": self.child_id,
             "session_id": self.session_id,
             "grade": self.grade,
             "teacher_id": self.teacher_id,
@@ -135,6 +150,12 @@ class ChatResponse(Schema):
                      "(it cites the student's lessons), beyond (it teaches, inside the "
                      "subject, what the lessons leave out) or declined."),
     )
+    outside_lesson: bool = Field(
+        default=False,
+        description=("True when the student had a lesson selected and the question was "
+                     "declined because that lesson does not cover it. Show a notice that "
+                     "the question is outside the selected lesson."),
+    )
     persona_version: Optional[int] = Field(
         default=None,
         description="The version of the teacher's persona the reply was written in, if any.")
@@ -156,6 +177,7 @@ class ChatResponse(Schema):
             citations=[SourceRef.from_citation(c)
                        for c in state.get("published_citations") or []],
             answer_basis=[a["basis"] for a in state.get("answers") or [] if a.get("basis")],
+            outside_lesson=any(a.get("outside_lesson") for a in state.get("answers") or []),
             persona_version=_persona_version(state.get("style")),
         )
 

@@ -40,6 +40,7 @@ caller is allowed to do, so a wrong role grants the wrong capabilities.
 | `message` | yes | 1–8000 chars |
 | `subject_id` | no | scopes the search. Inferred from the message if omitted |
 | `lecture_ids` | no | narrows to specific lessons |
+| `child_id` | no | `user_type: parent` only (`422` otherwise). The child the parent is asking about, checked against `ParentStudent` before it is sent. The subject of a question is then looked for among the child's subjects. A parent turn with no `child_id`, `subject_id` or `study_scope` is answered as a general answer and says so |
 | `session_id` | no | Conversation id. **Now carries the standing answer language**: stable for a conversation, new for a new one |
 | `grade` | no | academic year, e.g. `g8` |
 | `language` | no | Fallback only — the message decides. Never send the UI language |
@@ -96,7 +97,10 @@ with its correct answer and says so, in `grade_result.walkthrough`.
 ### Streaming (optional)
 
 `POST /ai/chat/stream` — same body, `text/event-stream` back. A `progress` event
-per stage, then one `result` event carrying the body above. Useful if you want
+per stage, then one `result` event carrying the body above. A turn that fails
+after the stream opened ends with one `error` event, `{code, request_id}`, whose
+`code` is the one `POST /ai/chat` would answer with (see Errors):
+`service_unavailable` and `timeout` are worth a retry, `internal_error` is a bug. Useful if you want
 the UI to show activity; the plain endpoint is simpler to start with.
 
 ---

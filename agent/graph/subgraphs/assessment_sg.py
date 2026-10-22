@@ -274,6 +274,9 @@ def _retrieve_batch(state: AssessmentState) -> dict:
     by_topic: dict[str, list] = {}
     fallbacks = named = 0
     labels: dict[str, str] | None = None
+    lesson_ids = state.get("lecture_ids") or []
+    lesson = lesson_ids[0] if len(lesson_ids) == 1 else None
+    whole: list | None = None
     for topic in topics:
         chunks = retrieval.retrieve(
             state.get("query") or "",
@@ -305,12 +308,21 @@ def _retrieve_batch(state: AssessmentState) -> dict:
                     lecture_ids=state.get("lecture_ids") or None, k=k,
                     min_score=state.get("min_score", DEFAULT_MIN_SCORE))
                 named += 1
+        # A lesson whose passages carry no topic, or a request that names no
+        # subject matter, finds nothing by text or by tag; inside one lesson the
+        # lesson itself is what to ask from.
+        if not chunks and lesson:
+            if whole is None:
+                whole = retrieval.whole_lesson(
+                    lesson, namespaces, limit=max(k, len(state.get("coverage", []))))
+            chunks = whole
         by_topic[topic or ""] = chunks
     empty = sum(1 for chunks in by_topic.values() if not chunks)
     log = logger.warning if empty else logger.info
     log("retrieve_batch", extra={
         "topics": len(by_topic), "chunks": sum(len(v) for v in by_topic.values()),
-        "topic_fallbacks": fallbacks, "found_by_name": named, "topics_without_passages": empty})
+        "topic_fallbacks": fallbacks, "found_by_name": named,
+        "read_whole_lesson": whole is not None, "topics_without_passages": empty})
     return {"chunks_by_topic": by_topic}
 
 

@@ -333,6 +333,59 @@ def test_a_quiz_in_a_lesson_uses_that_lesson_when_the_request_names_no_topic(mon
     assert out["assessment"]["items"][0]["topic_id"] == "t9"
 
 
+def _nothing_found_by_text_or_tag(monkeypatch):
+    from agent.models import ResolvedTopic
+
+    monkeypatch.setattr(qmod, "resolve_topics", lambda *a, **k: [])
+    monkeypatch.setattr(
+        qmod, "get_lecture_topics",
+        lambda lecture_ids, **k: [ResolvedTopic("t-sub", "Subtraction", 0.0, "sub1")])
+    monkeypatch.setattr(qmod.retrieval, "retrieve", lambda *a, **k: [])
+    monkeypatch.setattr(qmod, "get_topic_chunks", lambda *a, **k: [])
+    monkeypatch.setattr(qmod, "get_topic_labels", lambda ids, **k: {"t-sub": "Subtraction"})
+    read = {"lessons": []}
+
+    def whole_lesson(lecture_id, namespaces, *, limit):
+        read["lessons"].append(lecture_id)
+        return [RetrievedChunk(
+            chunk_id="c-sub", score=0.0, text="15 - 7 = 8", lecture_id=lecture_id,
+            topic_ids=[], page_from=1, page_to=1, heading_path=None, language="en")]
+
+    monkeypatch.setattr(qmod.retrieval, "whole_lesson", whole_lesson)
+    return read
+
+
+def test_a_quiz_on_a_lesson_whose_text_carries_no_topic_reads_the_lesson(monkeypatch):
+    """"Quiz me on this lesson" in Subtraction returned no questions: its passage
+    carried no topic after a re-ingest, its topics pointed at no text, and the
+    request scored 0.40-0.45 against the passage, under the 0.47 floor."""
+    read = _nothing_found_by_text_or_tag(monkeypatch)
+
+    graph = build_assessment_sg(config=get_config(), llm=None)
+    out = graph.invoke({
+        "query": "quiz me on this lesson", "subject_id": "sub1", "lecture_ids": ["lec-sub"],
+        "namespaces": ["syllabus"], "language": "en", "item_source": "generated",
+        "type_mix": {"mcq": 1}, "k_per_topic": 1, "adaptive": False,
+    })
+
+    assert read["lessons"] == ["lec-sub"]
+    item = out["assessment"]["items"][0]
+    assert item["topic_id"] == "t-sub" and item["lecture_id"] == "lec-sub"
+
+
+def test_a_quiz_over_several_lessons_does_not_read_any_one_of_them_whole(monkeypatch):
+    read = _nothing_found_by_text_or_tag(monkeypatch)
+
+    graph = build_assessment_sg(config=get_config(), llm=None)
+    graph.invoke({
+        "query": "quiz me", "subject_id": "sub1", "lecture_ids": ["lec-a", "lec-b"],
+        "namespaces": ["syllabus"], "language": "en", "item_source": "generated",
+        "type_mix": {"mcq": 1}, "k_per_topic": 1, "adaptive": False,
+    })
+
+    assert read["lessons"] == []
+
+
 def test_a_quiz_across_a_whole_subject_still_needs_the_request_to_resolve(monkeypatch):
     """Without a lesson there is no lesson to fall back to — resolution still rules."""
     monkeypatch.setattr(qmod, "resolve_topics", lambda *a, **k: [])

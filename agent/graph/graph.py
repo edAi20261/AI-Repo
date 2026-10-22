@@ -19,6 +19,7 @@ import re
 from typing import Optional
 
 from shared.backend import get_backend_client
+from shared.config import DEV_ENVIRONMENTS
 from shared.llm import llm_key_available, maybe_llm
 
 from .. import retrieval
@@ -27,6 +28,7 @@ from ..conversation import Conversation, ConversationStore, HistoryWindow
 from ..errors import TutorUnavailable
 from ..models import Style, SubjectFacts
 from ..persona.voice import PersonaDirectory, Voices
+from ..prompts import GENERAL_SCOPE_INSTRUCTION
 from ..scope import lecture_filter
 from ..state import MainState
 from ..subjects import SubjectDirectory
@@ -43,16 +45,10 @@ from .subgraphs import (
 logger = logging.getLogger(__name__)
 
 
-# Environments where a missing LLM key is allowed (the nodes take the deterministic stub
-# path). Any other environment (e.g. production) must fail fast at startup instead of
-# silently stubbing answers to real users.
-_DEV_ENVS = {"local", "test", "dev", "ci"}
-
-
 def _require_llm_in_prod(config: Config) -> None:
     """Fail fast: a non-dev environment with no chat-model key would serve stub answers to
     real users. Refuse to compile instead (the stub path is dev/test only)."""
-    if config.app_env in _DEV_ENVS:
+    if config.app_env in DEV_ENVIRONMENTS:
         return
     if not llm_key_available(config, config.llm_for(None)):
         raise RuntimeError(
@@ -100,7 +96,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
             "style": payload.get("style") or Style(),
             "voice": voices.render(payload.get("style"), params.get("query", "")),
             "language": payload.get("language", "en"),
-            "instructions": _subject_instructions(facts, with_figure=with_figure),
+            "instructions": _answer_instructions(facts, payload, with_figure=with_figure),
             "subject_id": payload.get("subject_id"),
             "grade": payload.get("grade"),
             "k": k,
@@ -135,6 +131,7 @@ def _build_explain_summarize_adapter(compiled, mode: str, config: Config,
                 "topic_labels": params.get("topic_labels", []),
                 "grounded": result.get("grounded", True),
                 "basis": result.get("basis", "lesson"),
+                "outside_lesson": bool(result.get("outside_lesson")),
             }],
             "citations": citations,
             "prereq_topics": result.get("prereq_topics", []),
@@ -158,6 +155,14 @@ def _subject_facts(client, subject_id: Optional[str]) -> SubjectFacts:
         return SubjectFacts.model_validate(client.get_subject(subject_id) or {})
     except Exception:
         return SubjectFacts()
+
+
+def _answer_instructions(facts: SubjectFacts, payload: dict, *, with_figure: bool) -> str:
+    """The addendum for an explanation or summary: the subject's, and whether it is general."""
+    subject = _subject_instructions(facts, with_figure=with_figure)
+    if not payload.get("general_scope"):
+        return subject
+    return "\n".join(part for part in (subject, GENERAL_SCOPE_INSTRUCTION) if part)
 
 
 def _subject_instructions(facts: SubjectFacts, *, with_figure: bool = False) -> str:

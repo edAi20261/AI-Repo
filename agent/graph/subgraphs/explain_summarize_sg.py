@@ -90,6 +90,7 @@ class ExplainSummarizeState(TypedDict, total=False):
     explanation: str
     grounded: bool                  # answer used the context (inline [n] or a math figure); a decline is False
     basis: AnswerBasis              # lesson | beyond | declined
+    outside_lesson: bool            # declined because the selected lesson does not cover it
     citations: list[Citation]
     visual_spec: dict[str, Any]     # a figure request the parent's visual_sg renders
 
@@ -127,6 +128,7 @@ def _retrieve(state: ExplainSummarizeState, config) -> dict:
         min_score=state.get("min_score", DEFAULT_MIN_SCORE),
         topic_filter=state.get("topic_filter", "hard"),
     )
+    outside = False
     if found and scope.is_narrow and not foundation:
         ratio = state.get("scope_relevance_ratio") or DEFAULT_SCOPE_RATIO
         if not retrieval.answers_within_scope(
@@ -135,13 +137,21 @@ def _retrieve(state: ExplainSummarizeState, config) -> dict:
         ):
             logger.info("question falls outside the selected lesson", extra={
                 "lecture_id": scope.lecture_id, "scoped_best": round(found[0].score, 3)})
-            found = []
+            found, outside = [], True
     found = retrieval.with_neighbours(
         found,
         anchors=state.get("expand_anchors", 0),
         window=state.get("expand_window", 0),
         limit=state.get("context_limit", k),
     )
+    # A summary of the selected lesson that the turn reading did not mark as
+    # being about the whole lesson still has the lesson to summarize: "summarize
+    # it" scores under the floor against every passage, and a lesson whose
+    # passages carry no topic finds nothing by tag.
+    if (not found and not outside and not foundation and scope.is_narrow
+            and state.get("mode") == "summarize" and state.get("scope_fit") != "outside"):
+        found = retrieval.whole_lesson(scope.lecture_id, state["namespaces"],
+                                       limit=state.get("context_limit", k))
     carried = _carried_passages(state.get("previous_chunk_ids") or [])
     if not carried:
         return {"chunks": found}
@@ -244,7 +254,8 @@ def _build_decline(llm):
             "mode": state.get("mode"), "chunks": 0, "lecture_id": scope.lecture_id,
             "scope_fit": state.get("scope_fit")})
         return {"explanation": _declined(scope, state, llm, _style(state)),
-                "citations": [], "grounded": False, "basis": "declined"}
+                "citations": [], "grounded": False, "basis": "declined",
+                "outside_lesson": scope.is_narrow and not state.get("whole_lesson")}
     return decline
 
 

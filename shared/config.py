@@ -27,6 +27,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_CONFIG = _REPO_ROOT / "config.yaml"
 _DEFAULT_ENV = _REPO_ROOT / ".env"
 
+DEV_ENVIRONMENTS = frozenset({"local", "test", "dev", "ci"})
+
 
 def _as_pasted(name: str, value: str) -> str:
     """A secret's value, from the ways a person pastes one.
@@ -68,6 +70,10 @@ class Config:
     def __init__(self, data: Mapping[str, Any], app_env: str) -> None:
         self._data = dict(data)
         self.app_env = app_env
+
+    @property
+    def is_dev(self) -> bool:
+        return self.app_env in DEV_ENVIRONMENTS
 
     # -- construction --------------------------------------------------------
 

@@ -58,8 +58,14 @@ class ChunkStore(ABC):
 
     @abstractmethod
     def read_lecture_topics(self, lecture_id: str) -> list[tuple[str, str, list[float]]]:
-        """Existing ``(topic_id, label, label_embedding)`` for one lecture — what
-        re-ingest matches new topics against to reuse a ``topic_id``."""
+        """Existing ``(topic_id, label, label_embedding)`` for one lecture — the
+        topics its chunks carry and the topics it owns. What re-ingest matches new
+        topics against to reuse a ``topic_id``."""
+
+    @abstractmethod
+    def read_topic_owners(self, topic_ids: Sequence[str]) -> dict[str, str]:
+        """``topic_id -> lecture_id`` of the lesson that owns each topic. A topic
+        reused by another lesson keeps its owner, so mastery stays where it was."""
 
     @abstractmethod
     def write_topics(self, topics: Sequence[Topic]) -> None:
@@ -143,6 +149,13 @@ _SELECT_LECTURE_TOPICS = """
 SELECT topic_id, label, label_embedding
 FROM ai.topics
 WHERE lecture_id = :lecture_id
+   OR topic_id IN (SELECT unnest(topic_ids) FROM ai.chunks WHERE lecture_id = :lecture_id)
+"""
+
+_SELECT_TOPIC_OWNERS = """
+SELECT topic_id, lecture_id
+FROM ai.topics
+WHERE topic_id::text = ANY(:topic_ids) AND lecture_id IS NOT NULL
 """
 
 _DELETE_LECTURE_DEPS = """
@@ -278,6 +291,15 @@ class PostgresChunkStore(ChunkStore):
             result = conn.execute(text(_SELECT_LECTURE_TOPICS), {"lecture_id": lecture_id})
             return [(str(tid), label, list(emb)) for tid, label, emb in result if emb]
 
+    def read_topic_owners(self, topic_ids: Sequence[str]) -> dict[str, str]:
+        from sqlalchemy import text
+
+        if not topic_ids:
+            return {}
+        with self._engine.begin() as conn:
+            result = conn.execute(text(_SELECT_TOPIC_OWNERS), {"topic_ids": list(topic_ids)})
+            return {str(tid): str(lecture_id) for tid, lecture_id in result}
+
     def write_topics(self, topics: Sequence[Topic]) -> None:
         import json
 
@@ -376,6 +398,9 @@ class DryRunChunkStore(ChunkStore):
 
     def read_lecture_topics(self, lecture_id: str) -> list[tuple[str, str, list[float]]]:
         return []  # no persistent catalog in dry-run
+
+    def read_topic_owners(self, topic_ids: Sequence[str]) -> dict[str, str]:
+        return {}
 
     def write_topics(self, topics: Sequence[Topic]) -> None:
         self.topics.extend(

@@ -41,6 +41,7 @@ __all__ = [
     "UnauthorizedError",
     "UnprocessableError",
     "UpstreamTimeoutError",
+    "code_of",
     "register_exception_handlers",
 ]
 
@@ -54,6 +55,19 @@ def _envelope(code: str, message: str, details: dict[str, Any] | None = None) ->
     return {"error": body}
 
 
+def code_of(error: Exception) -> str:
+    """The ``code`` a failure is reported with, wherever it is reported.
+
+    A stream has sent its status line before the turn fails, so its error event
+    carries only this; it must be the code the plain endpoint answers with.
+    """
+    if isinstance(error, ServiceError):
+        return error.code
+    if isinstance(error, AuthorizationError):
+        return "forbidden"
+    return "internal_error"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ServiceError)
     async def _service_error(_: Request, exc: ServiceError) -> JSONResponse:
@@ -61,14 +75,14 @@ def register_exception_handlers(app: FastAPI) -> None:
             logger.error("service error: %s", exc.message, exc_info=exc)
         return JSONResponse(
             status_code=exc.status_code,
-            content=_envelope(exc.code, exc.message, exc.details),
+            content=_envelope(code_of(exc), exc.message, exc.details),
         )
 
     @app.exception_handler(AuthorizationError)
     async def _authorization_error(_: Request, exc: AuthorizationError) -> JSONResponse:
         return JSONResponse(
             status_code=403,
-            content=_envelope("forbidden", str(exc) or "Not permitted for this role."),
+            content=_envelope(code_of(exc), str(exc) or "Not permitted for this role."),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -87,7 +101,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         logger.error("unhandled error", exc_info=exc)
         return JSONResponse(
             status_code=500,
-            content=_envelope("internal_error", "An unexpected error occurred."),
+            content=_envelope(code_of(exc), "An unexpected error occurred."),
         )
 
 
