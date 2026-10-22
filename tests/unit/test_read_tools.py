@@ -274,6 +274,53 @@ def test_the_latest_report_says_whether_newer_evidence_has_arrived(fake_postgres
                       "payload": {"narrative": "ok"}, "newer_evidence": 3, "stale": True}
 
 
+def test_a_rendered_chart_is_written_into_the_stored_report(fake_postgres):
+    """The chart was rendered after the report was stored and only sent back once, so a
+    refresh served the report without it."""
+    import json
+
+    from agent.tools import attach_report_visual
+
+    cur = FakePostgres(rowcount=1)
+    conn = fake_postgres(cur)
+    visual = {"kind": "chart", "artifact_id": "a1", "s3_uri": "s3://b/trend.png"}
+    assert attach_report_visual("r1", visual, config=get_config()) is True
+
+    sql, args = cur.statements[0]
+    assert sql.startswith("UPDATE ai.reports SET artifact_refs = array_append(")
+    assert "jsonb_build_object('visual', %s::jsonb)" in sql
+    assert args[0] == "a1" and json.loads(args[1]) == visual and args[2] == "r1"
+    assert conn.committed
+
+
+def test_attaching_a_chart_to_a_missing_report_says_so(fake_postgres):
+    from agent.tools import attach_report_visual
+
+    cur = FakePostgres(rowcount=0)
+    fake_postgres(cur)
+    assert attach_report_visual("gone", {"kind": "chart", "s3_uri": "s3://b/t.png"},
+                                config=get_config()) is False
+    sql, args = cur.statements[0]
+    assert "artifact_refs" not in sql and args[1] == "gone"
+
+
+def test_the_latest_report_for_a_subject_is_that_subjects(fake_postgres):
+    """A teacher looks at one student in one subject; the newest report of another
+    subject is not an answer."""
+    from datetime import datetime, timezone
+
+    from agent.tools import get_latest_report
+
+    at = datetime(2026, 10, 22, 8, 0, tzinfo=timezone.utc)
+    cur = FakePostgres(fetchone=[("r1", at, {"subject_id": "math"}, 0)])
+    fake_postgres(cur)
+    get_latest_report("teacher", user_id="u1", subject_id="math", config=get_config())
+
+    sql, args = cur.statements[0]
+    assert "r.payload_json->>'subject_id' = %s" in sql
+    assert args == ("teacher", "u1", "math")
+
+
 def test_no_stored_report_is_none_not_an_empty_report(fake_postgres):
     from agent.tools import get_latest_report
 

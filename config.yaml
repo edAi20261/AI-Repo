@@ -764,6 +764,10 @@ report:
   weak_topic_limit: 5
   strength_limit: 3   # strong topics a note may praise
   prereq_depth: 2
+  # A teacher's note on one student in one subject is built either way; it is stored
+  # only once the backend's migration adds 'teacher' to ai.report_scope, since an
+  # insert of an unknown enum value fails. Turn on after that migration ships.
+  teacher_scope_stored: false
   trend:
     window: 50        # newest N mastery_events read for the trend
     min_events: 4     # below this the trend direction is 'insufficient'

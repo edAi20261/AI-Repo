@@ -19,6 +19,7 @@ from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
 
+from shared.language import name_of
 from shared.structured import align_by_id, call_structured, schema_hint
 
 from ... import retrieval
@@ -54,6 +55,7 @@ class AssessmentState(TypedDict, total=False):
     # language is the SUBJECT's language when known (set by the assessment adapter),
     # else the turn language.
     language: str
+    reply_language: str              # the student's: the intro is addressed to them
     instructions: str                # subject-specific prompt addendum (e.g. math), or ""
     grade: str | None
     user_id: str | None
@@ -68,6 +70,7 @@ class AssessmentState(TypedDict, total=False):
     coverage: list[dict[str, Any]]   # [{topic_id, type}]
     chunks_by_topic: dict[str, list]
     items: list[AssessmentItem]      # typed, DB-shaped; dumped to dicts in `assessment`
+    intro: str                       # one line above the quiz, in the reply language
     degraded: bool                   # true when the generation LLM call failed
     assessment: dict[str, Any]
 
@@ -376,12 +379,14 @@ def _build_generate(llm, config):
             items = _stub_items(bound)
         else:
             try:
-                items = _batch_generate(llm, bound, state, config)
+                items, intro = _batch_generate(llm, bound, state, config)
             except Exception:
                 # Runtime failure: degrade rather than emit placeholder questions.
                 logger.error("assessment generation failed; degrading", exc_info=True)
                 return {"items": [], "degraded": True}
-        logger.info("generate", extra={"items": len(items), "calls": 0 if llm is None else 1})
+            logger.info("generate", extra={"items": len(items), "calls": 1})
+            return {"items": items, "intro": intro}
+        logger.info("generate", extra={"items": len(items), "calls": 0})
         return {"items": items}
 
     return _generate
@@ -389,12 +394,13 @@ def _build_generate(llm, config):
 
 def _batch_generate(
     llm, bound: list[tuple[dict, object]], state: AssessmentState, config=None,
-) -> list[AssessmentItem]:
+) -> tuple[list[AssessmentItem], str]:
     """Generate the whole assessment in ONE LLM call (much faster than per-item, and the
     model sees all items so it avoids duplicates). The batch is a validated ``DraftBatch``
     via structured output (JSON-parse fallback); items map back to slots by position, each
-    validated into a typed ``AssessmentItem`` (invalid dropped). A real call failure
-    propagates so the generate node degrades (no placeholder items)."""
+    validated into a typed ``AssessmentItem`` (invalid dropped), alongside the batch's
+    one-line intro. A real call failure propagates so the generate node degrades (no
+    placeholder items)."""
     blocks = [
         f"Block id={_block_id(i)}: type={slot['type']}, "
         f"difficulty={slot.get('difficulty', 'medium')}\n"
@@ -404,6 +410,7 @@ def _batch_generate(
     prompt_text = ASSESSMENT_BATCH_PROMPT.render(
         schema=schema_hint(DraftBatch),
         language=state.get("language", "en"),
+        intro_language=name_of(state.get("reply_language") or state.get("language", "en")),
         instructions=state.get("instructions", ""),
         query=state.get("query", ""),
         n=len(bound),
@@ -423,7 +430,7 @@ def _batch_generate(
         item = _build_item(_slot_base(slot, chunk), draft.model_dump())
         if item is not None:
             items.append(item)
-    return items
+    return items, batch.intro.strip()
 
 
 def _block_id(index: int) -> str:
@@ -484,6 +491,7 @@ def _validate(state: AssessmentState) -> dict:
         # subject_id stamps the whole assessment -> quizzes.subject_id on save; each item
         # carries its own topic_id + lecture_id (invariant 12). Items are DB-shaped dicts.
         "subject_id": state.get("subject_id"),
+        "intro": state.get("intro", "") if kept else "",
         "items": [it.model_dump() for it in kept],
         "count": len(kept),
         "type_mix": actual,

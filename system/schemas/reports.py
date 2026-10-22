@@ -14,6 +14,7 @@ from .common import Schema, Usage, Visual
 class ReportResponse(Schema):
     request_id: str
     scope: str = "student_progress"
+    subject_id: Optional[str] = None
     available: bool = Field(description="False when there is not yet enough graded work.")
     narrative: str = ""
     claims: list[dict[str, Any]] = Field(

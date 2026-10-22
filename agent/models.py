@@ -471,6 +471,10 @@ class ItemDraft(BaseModel):
 
 class DraftBatch(BaseModel):
     """A whole assessment drafted in one pass — the structured-output schema."""
+    intro: str = Field(
+        default="",
+        description="One short sentence to the student introducing these questions, "
+                    "without repeating any of them.")
     items: list[ItemDraft] = Field(default_factory=list)
 
 

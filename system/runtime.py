@@ -24,7 +24,7 @@ from agent.class_analytics import class_analytics
 from agent.credits import Action
 from agent.graph import build_graph
 from agent.graph.grade import run_grade, run_reviewed
-from agent.graph.report import run_class_report, run_report
+from agent.graph.report import run_class_report, run_report, stored_scopes
 from agent.graph.subgraphs import build_visual_sg
 from agent.homework import HomeworkCapture, MarkedHomework, capture, mark
 from agent.models import PersonaCard
@@ -34,7 +34,7 @@ from agent.persona.store import PersonaStore
 from agent.persona.voice import PersonaDirectory
 from agent.tagging import suggest_topics
 from agent.voice.service import Heard, ensure_speaking, hear, speak
-from agent.tools import get_latest_report
+from agent.tools import attach_report_visual, get_latest_report
 from shared.config import Config
 from shared.metering import Meter, start_meter
 
@@ -179,9 +179,16 @@ class AgentRuntime:
                                    subject_ids=payload.get("subject_ids"), config=self._config)
 
     async def latest_report(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+        if payload.get("user_id") and payload["scope"] not in stored_scopes(self._config):
+            return None
         return await self._offload(get_latest_report, payload["scope"],
                                    user_id=payload.get("user_id"),
-                                   class_id=payload.get("class_id"), config=self._config)
+                                   class_id=payload.get("class_id"),
+                                   subject_id=payload.get("subject_id"), config=self._config)
+
+    async def attach_report_visual(self, report_id: str, visual: dict[str, Any]) -> bool:
+        return await self._offload(attach_report_visual, report_id, visual,
+                                   config=self._config)
 
     async def class_report(self, payload: dict[str, Any], *,
                            billed_user_id: str) -> Metered:

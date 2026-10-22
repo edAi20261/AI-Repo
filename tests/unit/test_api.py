@@ -33,6 +33,10 @@ class StubRuntime:
         self.config = get_config()
         self.homework = HomeworkCapture()
         self.marked = MarkedHomework()
+        self.stored_report: dict = {}
+        self.attached: list[tuple[str, dict]] = []
+        self.attach_error: Exception | None = None
+        self.render_error: Exception | None = None
 
     async def chat(self, payload):
         self.calls.append(("chat", payload))
@@ -72,6 +76,7 @@ class StubRuntime:
             "trend": {"direction": "up", "count": 6},
             "degraded": False,
             "visual_spec": {"kind": "chart", "params": {}},
+            **self.stored_report,
         }, Meter())
 
     async def capture_homework(self, content, *, language, billed_user_id):
@@ -131,7 +136,15 @@ class StubRuntime:
 
     async def render(self, specs, **_):
         self.calls.append(("render", {"specs": specs}))
-        return [{"kind": "chart", "s3_uri": "s3://bucket/trend.png"}]
+        if self.render_error:
+            raise self.render_error
+        return [{"kind": "chart", "artifact_id": "a1", "s3_uri": "s3://bucket/trend.png"}]
+
+    async def attach_report_visual(self, report_id, visual):
+        if self.attach_error:
+            raise self.attach_error
+        self.attached.append((report_id, visual))
+        return True
 
 
 class StubJobs:
@@ -336,6 +349,83 @@ def test_the_latest_report_is_served_with_its_freshness(client):
 def test_no_stored_report_is_a_404_not_an_empty_report(client):
     response = client.get("/ai/reports/nobody/latest", headers=auth())
     assert response.status_code == 404
+
+
+def test_a_stored_report_keeps_the_chart_it_was_built_with(client):
+    """The chart was rendered for the fresh response only, so a refresh served the
+    stored report without it."""
+    client.runtime.stored_report = {"report_id": "r1", "persisted": True}
+    response = client.get("/ai/reports/u-1", params={"billed_user_id": "u-1"},
+                          headers=auth())
+
+    assert response.status_code == 200
+    assert response.json()["visual"]["s3_uri"] == "s3://bucket/trend.png"
+    assert client.runtime.attached == [
+        ("r1", {"kind": "chart", "artifact_id": "a1", "s3_uri": "s3://bucket/trend.png"})]
+
+
+def test_a_report_that_was_not_stored_gets_no_chart_attached(client):
+    client.runtime.stored_report = {"persisted": False}
+    response = client.get("/ai/reports/u-1", params={"billed_user_id": "u-1"},
+                          headers=auth())
+    assert response.status_code == 200 and response.json()["persisted"] is False
+    assert client.runtime.attached == []
+
+
+def test_a_chart_that_fails_to_render_or_attach_leaves_the_report(client):
+    client.runtime.stored_report = {"report_id": "r1", "persisted": True}
+    client.runtime.attach_error = RuntimeError("database unreachable")
+    attach_failed = client.get("/ai/reports/u-1", params={"billed_user_id": "u-1"},
+                               headers=auth())
+    assert attach_failed.status_code == 200
+    assert attach_failed.json()["persisted"] is True
+    assert attach_failed.json()["visual"]["s3_uri"] == "s3://bucket/trend.png"
+
+    client.runtime.attach_error = None
+    client.runtime.render_error = RuntimeError("renderer down")
+    render_failed = client.get("/ai/reports/u-1", params={"billed_user_id": "u-1"},
+                               headers=auth())
+    assert render_failed.status_code == 200
+    assert render_failed.json()["visual"] is None and render_failed.json()["persisted"] is True
+    assert client.runtime.attached == []
+
+
+def test_a_teacher_report_is_for_one_subject(client):
+    """The teacher drawer showed the student's own note across every subject."""
+    missing = client.get("/ai/reports/u-1", params={"scope": "teacher", "billed_user_id": "t-1"},
+                         headers=auth())
+    assert missing.status_code == 422
+    assert client.runtime.billed == []
+
+    client.get("/ai/reports/u-1", params={"scope": "teacher", "subject_id": "math",
+                                          "billed_user_id": "t-1"}, headers=auth())
+    assert client.runtime.calls[0][1]["scope"] == "teacher"
+    assert client.runtime.calls[0][1]["subject_id"] == "math"
+
+
+def test_the_latest_teacher_report_is_asked_for_by_subject(client):
+    assert client.get("/ai/reports/u-1/latest", params={"scope": "teacher"},
+                      headers=auth()).status_code == 422
+    client.get("/ai/reports/u-1/latest", params={"scope": "teacher", "subject_id": "math"},
+               headers=auth())
+    assert client.runtime.calls[-1] == ("latest_report", {"user_id": "u-1", "scope": "teacher",
+                                                          "subject_id": "math"})
+
+
+def test_no_teacher_report_is_looked_up_before_the_database_can_hold_one(monkeypatch):
+    """Casting 'teacher' to ai.report_scope fails while the enum lacks it, which would
+    turn "none yet" into a 500."""
+    monkeypatch.setenv("APP_ENV", "test")
+    from system.runtime import AgentRuntime
+
+    runtime = AgentRuntime(get_config(reload=True), None, None, billing=Billing(None),
+                           max_concurrency=2, timeout=5)
+
+    async def run():
+        return await runtime.latest_report({"user_id": "u-1", "scope": "teacher",
+                                            "subject_id": "math"})
+
+    assert anyio.run(run) is None
 
 
 # --- learners ---------------------------------------------------------------

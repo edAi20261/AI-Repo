@@ -384,3 +384,72 @@ def test_a_class_report_asked_for_without_a_language_is_still_written(monkeypatc
         {"class_id": "c1", "user_ids": ["s1", "s2"], "language": None}, config=get_config())
     assert result["narrative"] == "Both students find Fractions hard."
     assert result["persisted"] is True
+
+
+def test_a_teacher_report_speaks_about_the_student_in_one_subject(monkeypatch):
+    """A teacher opening a student saw the student's own note, written to "you" and
+    across every subject, with nothing saying which subject it was about."""
+    seen = {}
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "tq", "score": 0.3, "attempts": 4, "status": "weak"}],
+           trend={"direction": "flat", "count": 4, "events": []},
+           deps=[], labels={"tq": "Quadratics"})
+    monkeypatch.setattr(rmod, "get_mastery",
+                        lambda uid, **k: seen.update(k) or [
+                            {"topic_id": "tq", "score": 0.3, "attempts": 4,
+                             "status": "weak"}])
+    writer = _Writer({"claims": [{"text": "The student needs work on Quadratics.",
+                                  "evidence": ["E1"]}]})
+    sg = build_report_sg(config=get_config(), llm=writer)
+    result = sg.invoke({"scope": "teacher", "user_id": "u1", "subject_id": "math",
+                        "language": "en"})["result"]
+
+    assert result["scope"] == "teacher" and result["subject_id"] == "math"
+    assert result["narrative"] == "The student needs work on Quadratics."
+    assert seen["subject_id"] == "math"
+    assert "teacher" in writer.prompts[0].lower()
+    assert "third person" in writer.prompts[0]
+
+
+def test_a_teacher_report_needs_its_subject(monkeypatch):
+    import pytest
+
+    from agent.graph import report as report_mod
+
+    monkeypatch.setattr(report_mod, "save_report",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("stored")))
+    with pytest.raises(ValueError):
+        report_mod.run_report({"user_id": "u1", "scope": "teacher"}, config=get_config())
+
+
+def _teacher_report(monkeypatch, config):
+    from agent.graph import report as report_mod
+
+    _patch(monkeypatch,
+           mastery=[{"topic_id": "t1", "score": 0.2, "attempts": 4, "status": "weak"}],
+           trend={"direction": "flat", "count": 4, "events": []},
+           deps=[], labels={"t1": "Fractions"})
+    saved = {}
+    monkeypatch.setattr(report_mod, "save_report",
+                        lambda scope, payload, **k: saved.update(scope=scope, payload=payload)
+                        or {"report_id": "r7", "generated_at": "2026-10-22T08:00:00+00:00"})
+    monkeypatch.setattr(report_mod, "maybe_llm", lambda config, task: None)
+    result = report_mod.run_report({"user_id": "u1", "scope": "teacher", "subject_id": "math"},
+                                   config=config)
+    return result, saved
+
+
+def test_a_teacher_report_is_not_stored_until_the_database_accepts_its_scope(monkeypatch):
+    """ai.report_scope has no 'teacher' value yet, so an insert would fail; the report
+    is built and returned, and says it was not stored."""
+    result, saved = _teacher_report(monkeypatch, get_config())
+    assert result["persisted"] is False and "report_id" not in result
+    assert saved == {}
+
+
+def test_a_teacher_report_is_stored_with_its_subject_once_the_scope_exists(monkeypatch):
+    config = get_config()
+    config.override("report.teacher_scope_stored", True)
+    result, saved = _teacher_report(monkeypatch, config)
+    assert result["persisted"] is True and result["report_id"] == "r7"
+    assert saved["scope"] == "teacher" and saved["payload"]["subject_id"] == "math"
