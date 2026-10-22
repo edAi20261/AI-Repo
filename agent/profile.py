@@ -37,7 +37,7 @@ from typing import Optional
 
 from shared.postgres import connect
 
-from .conversation.store import FOLDED, SUMMARY, TURN
+from .conversation.store import FOLDED, NOTE, SUMMARY, TURN
 from .models import StatedPreference
 
 logger = logging.getLogger(__name__)
@@ -289,7 +289,7 @@ def held(user_id: str, *, config=None) -> dict:
     which is the part nobody could see until now, and the part somebody will
     eventually ask to be shown.
     """
-    summaries, conversations, preferences = [], set(), None
+    summaries, notes, conversations, preferences = [], {}, set(), None
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute(_HELD, (user_id,))
         for kind, conversation_id, fact, created_at, expires_at in cur.fetchall():
@@ -298,10 +298,14 @@ def held(user_id: str, *, config=None) -> dict:
             if kind == SUMMARY:
                 summaries.append({"conversation_id": conversation_id, "summary": fact,
                                   "written_at": created_at, "expires_at": expires_at})
+            elif kind == NOTE:
+                notes[conversation_id] = fact
         cur.execute(_STATED, (user_id,))
         row = cur.fetchone()
     if row:
         preferences = _stated_from_row(row).model_dump(exclude_none=True)
+    for summary in summaries:
+        summary["note"] = notes.get(summary["conversation_id"])
     return {
         "user_id": user_id,
         "conversations": len(conversations),

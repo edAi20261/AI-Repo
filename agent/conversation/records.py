@@ -67,6 +67,15 @@ class SessionState(BaseModel):
     pending: Optional[PendingAssessment] = None
 
 
+class ConversationSummary(BaseModel):
+    """One fold: the summary the next turn reads, and the note the student reads."""
+
+    summary: str = Field(description="The running summary, under the headings asked for.")
+    note: str = Field(description=(
+        "One or two plain sentences telling the student what the tutor remembers "
+        "from this conversation. No markdown, no list, no heading."))
+
+
 class Conversation(BaseModel):
     """Everything remembered for one session: state, the folded past, the recent turns.
 

@@ -1126,7 +1126,8 @@ def build_persist(config, store: ConversationStore, window: HistoryWindow, summa
             # whichever one the model reaches for.
             fold_if_due(store, window, summary_llm, user_id=user_id,
                         user_type=pathway, session_id=session_id,
-                        language=turn.language or state.get("language") or "en")
+                        language=turn.language or state.get("language") or "en",
+                        config=config)
         # Outlives the conversation, so it is written whether or not this one is
         # remembered: a preference stated in a session nobody keeps is still a
         # preference the student stated.

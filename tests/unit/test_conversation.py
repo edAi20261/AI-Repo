@@ -9,6 +9,7 @@ had nothing left to be about.
 
 from __future__ import annotations
 
+import json
 import uuid
 
 from agent import retrieval as rmod
@@ -21,7 +22,7 @@ from agent.conversation import (
     Turn,
     fold_if_due,
 )
-from agent.conversation.store import PostgresConversationStore
+from agent.conversation.store import NOTE, PostgresConversationStore
 from agent.graph import nodes as nmod
 from agent.models import Citation, PrereqTopic, ResolvedTopic, RetrievedChunk
 from shared.tokens import count_tokens
@@ -71,7 +72,7 @@ def test_folding_takes_old_turns_out_of_the_window_but_keeps_them():
     for index in range(4):
         store.append(USER, "student", SESSION, _turn(f"q{index}"))
     old = store.load(USER, SESSION).turns[:2]
-    store.fold(USER, "student", SESSION, summary="Covered: q0, q1", folded=old, discard=[])
+    store.fold(USER, "student", SESSION, summary="Covered: q0, q1", note="n", folded=old, discard=[])
     loaded = store.load(USER, SESSION)
     assert loaded.summary == "Covered: q0, q1"
     assert [t.message for t in loaded.turns] == ["q2", "q3"]
@@ -84,7 +85,7 @@ def test_only_a_discarded_turn_is_destroyed():
     for index in range(4):
         store.append(USER, "student", SESSION, _turn(f"q{index}"))
     turns = store.load(USER, SESSION).turns
-    store.fold(USER, "student", SESSION, summary="s", folded=turns[:2], discard=turns[:1])
+    store.fold(USER, "student", SESSION, summary="s", note="n", folded=turns[:2], discard=turns[:1])
     loaded = store.load(USER, SESSION)
     assert [t.message for t in loaded.folded] == ["q1"]
     assert [t.message for t in loaded.turns] == ["q2", "q3"]
@@ -159,7 +160,7 @@ def test_a_folded_turn_is_held_but_not_quoted_back_into_the_window():
     store.append(USER, "student", SESSION, _turn("long ago"))
     store.append(USER, "student", SESSION, _turn("just now"))
     turns = store.load(USER, SESSION).turns
-    store.fold(USER, "student", SESSION, summary="Covered: long ago",
+    store.fold(USER, "student", SESSION, summary="Covered: long ago", note="n",
                folded=turns[:1], discard=[])
     conversation = store.load(USER, SESSION)
     assert [t.message for t in conversation.folded] == ["long ago"]
@@ -176,17 +177,23 @@ def test_folding_waits_until_the_window_is_full():
 
 
 class _Summariser:
-    def __init__(self, reply=None, error=False):
-        self.reply, self.error, self.prompt = reply, error, None
+    def __init__(self, reply=None, error=False, note="We talked about evaporation.",
+                 replies=None):
+        self.error, self.prompt, self.calls = error, None, 0
+        self.replies = replies or [json.dumps({"summary": reply, "note": note})]
 
     def invoke(self, messages):
         self.prompt = messages[0].content
         if self.error:
             raise RuntimeError("model unavailable")
+        content = self.replies[min(self.calls, len(self.replies) - 1)]
+        self.calls += 1
 
         class _Msg:
-            content = self.reply
-        return _Msg()
+            pass
+        message = _Msg()
+        message.content = content
+        return message
 
 
 def _fold(store, window, llm, language="en"):
@@ -208,6 +215,37 @@ def test_old_turns_are_folded_into_a_running_summary():
     assert "question 0" in llm.prompt
     loaded = store.load(USER, SESSION)
     assert loaded.summary == "Covered: a and b" and len(loaded.turns) == 2
+
+
+def _note_of(store):
+    return [fact for _, kind, fact in store._rows[(USER, SESSION)] if kind == NOTE]
+
+
+def test_a_fold_keeps_a_plain_note_for_the_student_beside_the_summary():
+    """The memory page showed the internal summary, headings and bullets included."""
+    store = _conversation_of(InMemoryConversationStore(), 4)
+    llm = _Summariser("Goals:\n- evaporation", note="We worked on evaporation and condensation.")
+    assert _fold(store, HistoryWindow(recent_turns=2, fold_after=3), llm)
+    assert _note_of(store) == ["We worked on evaporation and condensation."]
+    assert store.load(USER, SESSION).summary == "Goals:\n- evaporation"
+
+
+def test_a_markdown_note_is_sent_back_to_be_rewritten():
+    store = _conversation_of(InMemoryConversationStore(), 4)
+    llm = _Summariser(replies=[
+        json.dumps({"summary": "Covered: a", "note": "- **Evaporation**\n- Condensation"}),
+        json.dumps({"summary": "Covered: a", "note": "We covered evaporation."})])
+    assert _fold(store, HistoryWindow(recent_turns=2, fold_after=3), llm)
+    assert llm.calls == 2
+    assert _note_of(store) == ["We covered evaporation."]
+
+
+def test_a_note_that_never_becomes_plain_folds_nothing():
+    store = _conversation_of(InMemoryConversationStore(), 4)
+    window = HistoryWindow(recent_turns=2, fold_after=3, note_chars=40)
+    llm = _Summariser("Covered: a", note="word " * 30)
+    assert not _fold(store, window, llm)
+    assert not _note_of(store) and len(store.load(USER, SESSION).turns) == 4
 
 
 def test_a_failed_summary_keeps_every_turn():
