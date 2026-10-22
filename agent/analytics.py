@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from shared.config import Config
+from shared.postgres import one_connection
 
 from .mastery import RetentionParams
 from .recommend import RecommendParams, TopicStanding, recommend, review_due
@@ -37,6 +38,20 @@ _JUDGED = ("strong", "developing", "weak")
 
 
 def learner_summary(
+    user_id: str,
+    *,
+    subject_ids: Sequence[str] | None = None,
+    lecture_ids: Sequence[str] | None = None,
+    now: Optional[datetime] = None,
+    config: Config | None = None,
+) -> dict[str, Any]:
+    config = config or Config.load()
+    with one_connection(config):
+        return _summary(user_id, subject_ids=subject_ids, lecture_ids=lecture_ids,
+                        now=now, config=config)
+
+
+def _summary(
     user_id: str,
     *,
     subject_ids: Sequence[str] | None = None,

@@ -143,7 +143,7 @@ class LanguagePolicy:
             return self._decide("ar", "script", script=writing_system)
 
         detection = detect(text or "", self.supported)
-        if detection and is_trustworthy(
+        if detection and self.supports(detection.code) and is_trustworthy(
             detection,
             text or "",
             min_chars=DOCUMENT_MIN_CHARS,

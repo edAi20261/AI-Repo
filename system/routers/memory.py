@@ -19,9 +19,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 
-from agent.profile import forget, held
-
-from ..dependencies import Authenticated, RequestId
+from ..dependencies import Authenticated, RequestId, RuntimeDep
 from ..schemas.common import ERROR_RESPONSES
 from ..schemas.memory import ForgetResponse, MemoryResponse
 
@@ -37,8 +35,9 @@ router = APIRouter(
     response_model=MemoryResponse,
     summary="What the tutor remembers about a student",
 )
-async def read_memory(user_id: str, request_id: RequestId) -> MemoryResponse:
-    record = held(user_id)
+async def read_memory(user_id: str, runtime: RuntimeDep,
+                      request_id: RequestId) -> MemoryResponse:
+    record = await runtime.memory(user_id)
     logger.info("memory read", extra={"conversations": record["conversations"],
                                       "summaries": len(record["summaries"])})
     return MemoryResponse(**record, request_id=request_id)
@@ -51,13 +50,14 @@ async def read_memory(user_id: str, request_id: RequestId) -> MemoryResponse:
 )
 async def forget_memory(
     user_id: str,
+    runtime: RuntimeDep,
     request_id: RequestId,
     conversation_id: Optional[str] = Query(
         default=None,
         description=("Forget one conversation. Omit to forget the student entirely, "
                      "which also destroys the preferences they stated.")),
 ) -> ForgetResponse:
-    destroyed = forget(user_id, conversation_id=conversation_id)
+    destroyed = await runtime.forget_memory(user_id, conversation_id=conversation_id)
     logger.info("memory forgotten", extra={"conversation_id": conversation_id, **destroyed})
     return ForgetResponse(user_id=user_id, conversation_id=conversation_id,
                           request_id=request_id, **destroyed)
