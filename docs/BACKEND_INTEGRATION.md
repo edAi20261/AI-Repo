@@ -44,6 +44,7 @@ caller is allowed to do, so a wrong role grants the wrong capabilities.
 | `grade` | no | academic year, e.g. `g8` |
 | `language` | no | Fallback only — the message decides. Never send the UI language |
 | `teacher_id` | no | The teacher of the class the student takes this subject in (`Class.teacherId` for the student's `ClassStudent` row). When that teacher has an approved persona, the tutor explains the way they do. See §6 |
+| `grade_ref` | no | "Check my work" on a saved quiz or homework the student already submitted: `{ "assessment_id", "kind": "quiz \| homework", "submissions": [...] }`. See below |
 | `persona_version` | no | A teacher previewing an unapproved version. Send it only with `user_type: teacher` and `user_id` equal to `teacher_id`, or the turn is refused with `422` |
 
 Unknown fields are rejected with `422` — deliberate, so a typo surfaces instead
@@ -77,6 +78,17 @@ label that bubble as the AI tutor in the teacher's style, never as the teacher.
 turn made, retries included. It is for metering, never for the student — store
 it beside the credit charge so the price table can be checked against the bill.
 The streamed `result` event carries it too.
+
+**Check my work.** A turn with `grade_ref` reviews work the platform already
+marked, so it never writes mastery — that attempt's evidence was recorded when
+`/ai/grade` marked it. Load the student's attempt for `assessment_id` and send
+its answers as `grade_ref.submissions`, each built exactly as for `/ai/grade`
+(`toSubmission()`): `question`, `student_answer`, and `correct_answer`,
+`question_id`, `topic_id`, `lecture_id`, `type`, `difficulty`, `bloom`,
+`points`, `known_score` where known. Every answer then comes back explained in
+`grade_result.graded`, answers with a `known_score` included. Without
+`submissions` the tutor cannot see the answers: it goes through every question
+with its correct answer and says so, in `grade_result.walkthrough`.
 
 **Set the timeout to at least 120s.** A turn makes about three model calls. The
 10s you use for the ingestion trigger will cut off every real answer.

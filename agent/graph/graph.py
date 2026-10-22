@@ -267,6 +267,15 @@ def _answered_questions(payload, spec: dict, answer: str) -> list[dict]:
     return submissions
 
 
+def _for_review(submissions: list[dict]) -> list[dict]:
+    """A review explains every answer, so none is taken as already scored.
+
+    An answer carrying the platform's score is not regraded, and so comes back with
+    no feedback: a student checking a marked quiz saw a score and nothing about why.
+    """
+    return [{k: v for k, v in s.items() if k != "known_score"} for s in submissions]
+
+
 def _build_grade_adapter(compiled, config: Config, subjects: SubjectDirectory):
     """Chat 'grade me this' path. Normalizes the turn into grade_sg's private state:
     structured ``submissions`` when the request carries them, else a single inline item
@@ -279,19 +288,26 @@ def _build_grade_adapter(compiled, config: Config, subjects: SubjectDirectory):
         spec = params.get("grade") or {}
         facts = subjects.facts(payload.get("subject_id"))
         answer = params.get("query", "")
-        # Inline "grade my answer": the message is both the question and the student's answer.
-        submissions = (params.get("submissions")
-                       or _answered_questions(payload, spec, answer)
-                       or [{"question": answer, "student_answer": answer}])
+        # A review of marked work: the chat message is a request, never an answer, and the
+        # attempt's evidence was written when it was marked, so nothing is recorded again.
+        review = bool(params.get("review"))
+        if review:
+            submissions = _for_review(params.get("submissions") or [])
+        else:
+            # Inline "grade my answer": the message is both the question and the student's answer.
+            submissions = (params.get("submissions")
+                           or _answered_questions(payload, spec, answer)
+                           or [{"question": answer, "student_answer": answer}])
         # A student chat grade is self-practice (source=practice) even if it references a
         # quiz; a teacher grading in chat is assigned work (source=quiz/homework by kind).
         is_student = payload.get("pathway") == "student"
         source = "practice" if is_student else _kind_source(spec.get("kind"), g)
         result = compiled.invoke({       # (1) translate in
             "submissions": submissions,
+            "review": review,
             "subject_id": payload.get("subject_id"),
             "lecture_ids": lecture_filter(payload),
-            "user_id": payload.get("user_id") if is_student else None,
+            "user_id": payload.get("user_id") if is_student and not review else None,
             "language": payload.get("language", "en"),
             "instructions": _subject_instructions(facts),
             "kind": spec.get("kind"),

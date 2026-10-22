@@ -555,9 +555,12 @@ class GradeDraft(BaseModel):
         default=None, ge=0.0, le=1.0,
         description="Credit earned: 1 = fully correct, 0 = wrong or blank.")
     feedback: Optional[str] = Field(
-        default=None, description="One or two sentences to the student.")
+        default=None,
+        description=("One or two sentences spoken to the student as \"you\", never about "
+                     "them in the third person."))
     explanation: Optional[str] = Field(
-        default=None, description="The correct reasoning, grounded in the block.")
+        default=None,
+        description="The correct reasoning, grounded in the block, addressed to the student.")
     mistakes: list[str] = Field(
         default_factory=list,
         description="1-3 short, reusable error labels for a wrong answer; empty when correct.")
@@ -571,6 +574,26 @@ class GradeDraft(BaseModel):
 class GradeBatch(BaseModel):
     """A whole submission graded in one pass — the structured-output schema."""
     items: list[GradeDraft] = Field(default_factory=list)
+
+
+class WalkthroughStep(BaseModel):
+    """Why one question's correct answer is right, as the model writes it."""
+    id: str = Field(default="", description="The block id being explained, copied verbatim.")
+    explanation: str = Field(
+        min_length=1,
+        description=("Why the correct answer is right, spoken to the student as \"you\", "
+                     "grounded only in the block."))
+
+
+class Walkthrough(BaseModel):
+    """A saved assessment reviewed without the student's answers — the structured-output
+    schema. ``note`` is what tells the student their own answers were not available."""
+    note: str = Field(
+        min_length=1,
+        description=("One or two sentences to the student as \"you\": their own answers "
+                     "were not available, so this goes through every question with its "
+                     "correct answer instead of marking it."))
+    items: list[WalkthroughStep] = Field(default_factory=list)
 
 
 # --- render artifacts -------------------------------------------------------

@@ -793,7 +793,7 @@
                                 "type": "null"
                             }
                         ],
-                        "description": "Set when the turn grades a saved assessment."
+                        "description": "Set when the student checks work on a saved assessment they already submitted. The turn reviews it and records no mastery."
                     },
                     "language": {
                         "anyOf": [
@@ -960,6 +960,22 @@
                             "homework"
                         ],
                         "title": "Kind"
+                    },
+                    "submissions": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "$ref": "#/components/schemas/Submission"
+                                },
+                                "type": "array",
+                                "maxItems": 200
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Submissions",
+                        "description": "The student's answers to this assessment, one per question, in the shape POST /ai/grade takes. Without them the turn walks through every question with its correct answer and says the student's own answers were not available."
                     }
                 },
                 "additionalProperties": false,
@@ -969,7 +985,7 @@
                     "kind"
                 ],
                 "title": "GradeReference",
-                "description": "Points a grading turn at a saved assessment so its answer key is used."
+                "description": "Points a grading turn at a saved assessment so its answer key is used.\n\nA turn carrying one is the student reviewing work the platform already marked,\nso it records nothing: that attempt's evidence was written when it was marked."
             },
             "GradeRequest": {
                 "properties": {
