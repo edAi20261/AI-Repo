@@ -860,12 +860,32 @@ def test_a_visual_is_linked_by_its_mark():
     assert nmod._visual_line([{"kind": "slides", "text": "S"}]) == "S"
 
 
-def test_a_quiz_shows_its_questions_without_their_answers():
-    block = nmod._assessment_block({"items": [
+def test_a_quiz_reply_introduces_the_questions_without_printing_them():
+    """The reply listed every question and the quiz card under it listed them again,
+    so a student saw each question twice."""
+    compose = nmod.build_compose(get_config(), None, NO_VOICES)
+    assessment = {"intro": "Here are two questions on evaporation.", "items": [
         {"question": "What is evaporation?", "answer": "gas",
-         "options": [{"text": "gas", "is_correct": True}, {"text": "ice"}]}]})
-    assert "1. What is evaporation?" in block and "a) gas" in block and "b) ice" in block
-    assert "is_correct" not in block
+         "options": [{"text": "gas", "is_correct": True}, {"text": "ice"}]},
+        {"question": "Does ice float?", "answer": "true"}]}
+
+    alone = compose({"answers": [], "assessment": assessment, "language": "en"})
+    beside = compose({"answers": [{"type": "explain", "text": "Water turns to gas.",
+                                   "task_id": "a", "grounded": True}],
+                      "assessment": assessment, "language": "en"})
+
+    for out in (alone, beside):
+        assert "Here are two questions on evaporation." in out["response"]
+        assert "What is evaporation?" not in out["response"]
+        assert "Does ice float?" not in out["response"]
+    assert alone["response"] == "Here are two questions on evaporation."
+
+
+def test_a_quiz_without_an_intro_still_has_a_reply():
+    compose = nmod.build_compose(get_config(), None, NO_VOICES)
+    out = compose({"answers": [], "language": "en",
+                   "assessment": {"items": [{"question": "Does ice float?"}]}})
+    assert out["response"] == nmod.QUIZ_MARK
 
 
 def test_a_visual_that_failed_alone_fails_the_turn():

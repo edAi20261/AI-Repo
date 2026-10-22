@@ -7,8 +7,8 @@ cause, and narrates; it moves no mastery. The finished report is stored in
 structured path (returns the full payload); the chat 'how am
 I doing' turn uses the report_adapter, which surfaces only the narrative + trend chart.
 
-Only ``student_progress`` is served today; other scopes return an ``available: False``
-shell (they need classroom/parent scope — Sprint 3).
+``student_progress``, ``parent`` and ``teacher`` are served; ``teacher`` is about one
+subject, so it needs ``subject_id``. Other scopes return an ``available: False`` shell.
 """
 
 from __future__ import annotations
@@ -27,7 +27,16 @@ from .subgraphs.report_sg import class_evidence, narrate_claims
 
 logger = logging.getLogger(__name__)
 
-_STORED_SCOPES = {"student_progress", "parent"}
+_STORED_SCOPES = frozenset({"student_progress", "parent"})
+SUBJECT_SCOPES = frozenset({"teacher"})
+
+
+def stored_scopes(config: Config) -> frozenset[str]:
+    """The student scopes ``ai.reports`` can hold. ``teacher`` waits for the backend's
+    migration adding it to ``ai.report_scope``: until then an insert would fail."""
+    if config.get("report.teacher_scope_stored"):
+        return _STORED_SCOPES | {"teacher"}
+    return _STORED_SCOPES
 
 
 def run_report(payload: dict[str, Any], *, config: Optional[Config] = None) -> dict:
@@ -35,15 +44,18 @@ def run_report(payload: dict[str, Any], *, config: Optional[Config] = None) -> d
     ``{scope, available, narrative, weak_topics[], root_cause, trend, degraded}`` plus a
     ``visual_spec`` (trend chart) when there are enough points.
 
-    Payload: ``user_id``, ``scope?`` (default ``student_progress``), ``subject_id?``,
-    ``lecture_ids?``, ``language?``.
+    Payload: ``user_id``, ``scope?`` (default ``student_progress``), ``subject_id``
+    (required for ``teacher``, else optional), ``lecture_ids?``, ``language?``.
 
     A degraded report is returned but not stored: it would become the latest one and
     shadow a good report. ``persisted`` says whether this one was stored."""
     config = config or get_config()
+    scope = payload.get("scope") or "student_progress"
+    if scope in SUBJECT_SCOPES and not payload.get("subject_id"):
+        raise ValueError(f"a {scope} report is about one subject: subject_id is required.")
     sg = build_report_sg(config=config, llm=maybe_llm(config, "report"))
     state = sg.invoke({
-        "scope": payload.get("scope") or "student_progress",
+        "scope": scope,
         "user_id": payload.get("user_id"),
         "subject_id": payload.get("subject_id"),
         "lecture_ids": payload.get("lecture_ids") or None,
@@ -64,7 +76,7 @@ def _language(payload: dict[str, Any], config: Config) -> str:
 
 def _store(result: dict[str, Any], user_id: Optional[str], config: Config) -> dict[str, Any]:
     scope = result.get("scope")
-    if not user_id or scope not in _STORED_SCOPES or result.get("degraded"):
+    if not user_id or scope not in stored_scopes(config) or result.get("degraded"):
         return {"persisted": False}
     try:
         return {**save_report(scope, dict(result), user_id=user_id, config=config),

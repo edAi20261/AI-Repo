@@ -9,8 +9,8 @@ deepest weak prerequisite = the cause, not the symptom). Only ``narrate`` uses t
 LLM: it is given numbered evidence and every claim it writes must cite it, or the
 claim is sent back. A report moves no mastery.
 
-``student_progress`` addresses the student and ``parent`` the student's parent, from
-the same evidence. A class summary is built from ``class_analytics`` by
+``student_progress`` addresses the student, ``parent`` the student's parent and
+``teacher`` their teacher about one subject, from the same evidence. A class summary is built from ``class_analytics`` by
 ``run_class_report``; ``at_risk`` and ``homework_batch`` stay shelled here.
 """
 
@@ -24,13 +24,14 @@ from langchain_core.messages import HumanMessage
 from shared.structured import call_structured, schema_hint
 
 from ...models import ReportNarrative
-from ...prompts import REPORT_PARENT_PROMPT, REPORT_STUDENT_PROMPT
+from ...prompts import REPORT_PARENT_PROMPT, REPORT_STUDENT_PROMPT, REPORT_TEACHER_PROMPT
 from ...tools import get_mastery, get_mastery_trend, get_topic_deps, get_topic_labels
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED = {"student_progress", "parent"}
-_PROMPTS = {"student_progress": REPORT_STUDENT_PROMPT, "parent": REPORT_PARENT_PROMPT}
+_PROMPTS = {"student_progress": REPORT_STUDENT_PROMPT, "parent": REPORT_PARENT_PROMPT,
+            "teacher": REPORT_TEACHER_PROMPT}
+_SUPPORTED = set(_PROMPTS)
 # A class summary is run_class_report's (it needs the roster the caller holds); at-risk
 # students are part of that analysis rather than a report of their own.
 _SHELLED = {"class_analytics", "at_risk", "homework_batch"}
@@ -302,7 +303,8 @@ def _build_narrate(llm, config):
                 degraded = True
 
         result = {
-            "scope": scope, "available": bool(state.get("evidence")),
+            "scope": scope, "subject_id": state.get("subject_id"),
+            "available": bool(state.get("evidence")),
             "narrative": narrative, "claims": claims,
             "weak_topics": weak_topics, "strengths": strengths, "root_cause": root_cause,
             "trend": {"direction": trend.get("direction", "insufficient"),

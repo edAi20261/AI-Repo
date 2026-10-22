@@ -745,6 +745,7 @@ PREREQUISITES_MARK = "🧩"
 CORRECT_ANSWER_MARK = "→"
 REASON_MARK = "💡"
 REUSED_MARK = "📖"
+QUIZ_MARK = "📝"
 VISUAL_MARKS = {
     "mindmap": "🧠", "chart": "📊", "math": "📈", "geometry": "📐",
     "flashcards": "🗂️", "pdf": "📄", "image": "🖼️", "figure": "🖼️",
@@ -774,19 +775,14 @@ def _prereq_line(prereqs: list[PrereqTopic]) -> str:
     return f"{PREREQUISITES_MARK} {', '.join(labels)}" if labels else ""
 
 
-def _assessment_block(assessment: dict) -> str:
-    """The questions themselves, numbered, without their answers.
-
-    A line announcing a quiz was a sentence in some language, and the questions
-    it announced were not on the screen: the platform does not render the
-    structured assessment. The questions are already in the student's language.
-    """
-    lines = []
-    for index, item in enumerate(assessment.get("items") or [], 1):
-        lines.append(f"{index}. {item.get('question', '')}")
-        for position, option in enumerate(item.get("options") or []):
-            lines.append(f"   {chr(ord('a') + position)}) {option.get('text', '')}")
-    return "\n".join(lines)
+def _assessment_intro(assessment: dict) -> str:
+    """The line above a quiz. The questions are on the quiz card the platform renders
+    from ``assessment.items``; printing them here as well showed every one twice."""
+    intro = (assessment.get("intro") or "").strip()
+    if not intro:
+        logger.warning("quiz returned without an intro; showing its mark",
+                       extra={"items": len(assessment.get("items") or [])})
+    return intro or QUIZ_MARK
 
 
 def _visual_line(visuals: list) -> str:
@@ -965,7 +961,7 @@ def build_compose(config, llm, voices: Voices):
             if _has_grade(grade_result):
                 parts.append(_grade_line(grade_result))
             if assessment.get("items"):
-                parts.append(_assessment_block(assessment))
+                parts.append(_assessment_intro(assessment))
             if visuals:
                 parts.append(_visual_line(visuals))
             response = "\n\n".join(p for p in parts if p)
@@ -1000,7 +996,7 @@ def build_compose(config, llm, voices: Voices):
         #     parts.append(_prereq_line(prereqs))
         # parts.append(_sources_block(citations))
         if assessment.get("items"):
-            parts.append(_assessment_block(assessment))
+            parts.append(_assessment_intro(assessment))
         if _has_grade(grade_result):
             parts.append(_grade_line(grade_result))
         if visuals:

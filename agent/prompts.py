@@ -272,6 +272,36 @@ Return JSON matching this schema:
 )
 
 
+REPORT_TEACHER_PROMPT = Prompt(
+    name="REPORT_TEACHER_PROMPT",
+    audience=Audience.STUDENT,
+    language_rule=LanguageRule.REPLY,
+    template="""Write a short note for a teacher about one of their students in one subject,
+as a list of claims.
+{language}
+Each claim is one sentence and lists the ids of the evidence below that it rests on.
+Use ONLY this evidence: never invent a topic, a number, or a cause, and never cite an
+id that is not listed.
+
+Evidence about the student in this subject:
+{evidence_block}
+
+Guidance:
+- Address the teacher and refer to the student in the third person ("the student"),
+  never as "you": two to five claims.
+- Lead with what needs the teacher's attention, then what is going well when strengths
+  are listed.
+- If a weak prerequisite is listed as the likely root cause, say that reteaching it
+  first should help with the topics built on it.
+- Reflect the trend honestly without overstating it.
+- Do NOT quote raw scores as numbers; describe them (strong, shaky, needs work).
+- With too little practice to judge, say so plainly.
+
+Return JSON matching this schema:
+{schema}""",
+)
+
+
 REPORT_CLASS_PROMPT = Prompt(
     name="REPORT_CLASS_PROMPT",
     audience=Audience.STUDENT,
@@ -554,6 +584,10 @@ states…".
 Quiz the SUBJECT MATTER, never the lesson's structure. Do NOT write a question about the lesson
 objectives, learning outcomes, what "students will be able to" do, the lesson title, unit/lesson
 numbers, or any instructional/meta text — ask about the concepts and facts themselves.
+
+Also write "intro": one short sentence to the student, written in {intro_language} whatever
+language the items are in, saying what these questions cover. The questions are shown below it,
+so never repeat, number or list them in the intro.
 
 Return JSON only, no prose. Fields:
 {schema}

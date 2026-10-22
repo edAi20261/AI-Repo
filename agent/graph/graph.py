@@ -199,6 +199,7 @@ def _build_assessment_adapter(compiled, config: Config, subjects: SubjectDirecto
             "subject_id": payload.get("subject_id"),
             "namespaces": payload.get("namespaces") or ["syllabus"],
             "language": language,
+            "reply_language": payload.get("language", "en"),
             "instructions": _subject_instructions(facts),
             "grade": payload.get("grade"),
             "user_id": payload.get("user_id"),

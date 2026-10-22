@@ -1511,28 +1511,56 @@ def save_report(
     return {"report_id": report_id, "generated_at": generated_at.isoformat()}
 
 
+def attach_report_visual(
+    report_id: str,
+    visual: Mapping[str, Any],
+    *,
+    config: Config | None = None,
+) -> bool:
+    """Add a rendered chart to a stored report, so serving it later shows the chart
+    built with it. False when no report has that id."""
+    artifact_id = visual.get("artifact_id")
+    refs = ("artifact_refs = array_append(coalesce(artifact_refs, '{}'), %s::uuid), "
+            if artifact_id else "")
+    args = ((artifact_id,) if artifact_id else ()) + (
+        json.dumps(dict(visual), ensure_ascii=False, default=str), report_id)
+    with connect(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE ai.reports SET {refs}"
+                "payload_json = payload_json || jsonb_build_object('visual', %s::jsonb) "
+                "WHERE report_id = %s::uuid",
+                args)
+            attached = cur.rowcount == 1
+        conn.commit()
+    return attached
+
+
 def get_latest_report(
     scope: str,
     *,
     user_id: str | None = None,
     class_id: str | None = None,
+    subject_id: str | None = None,
     config: Config | None = None,
 ) -> dict[str, Any] | None:
     """The newest stored report for ``user_id`` or ``class_id``, or None when there is
-    none. ``newer_evidence`` counts the student's graded answers since it was written;
-    it is None for a class report, whose roster this service does not hold."""
+    none; with ``subject_id``, the newest one built for that subject. ``newer_evidence``
+    counts the student's graded answers since it was written; it is None for a class
+    report, whose roster this service does not hold."""
     if not user_id and not class_id:
         raise ValueError("a report belongs to a user or a class.")
     owner, value = ("r.user_id", user_id) if user_id else ("r.class_id", class_id)
     newer = ("(SELECT count(*) FROM ai.mastery_events e "
              "WHERE e.user_id = r.user_id AND e.created_at > r.generated_at)"
              if user_id else "NULL")
+    subject = " AND r.payload_json->>'subject_id' = %s" if subject_id else ""
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT r.report_id::text, r.generated_at, r.payload_json, {newer} "
-            f"FROM ai.reports r WHERE r.scope = %s::ai.report_scope AND {owner} = %s "
-            "ORDER BY r.generated_at DESC LIMIT 1",
-            (scope, value))
+            f"FROM ai.reports r WHERE r.scope = %s::ai.report_scope AND {owner} = %s"
+            f"{subject} ORDER BY r.generated_at DESC LIMIT 1",
+            (scope, value, subject_id) if subject_id else (scope, value))
         row = cur.fetchone()
     if row is None:
         return None

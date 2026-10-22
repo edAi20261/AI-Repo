@@ -91,7 +91,7 @@ def test_batch_generate_maps_items_and_multicorrect():
     c = _chunk()
     bound = [({"type": "mcq", "topic_id": "tA", "difficulty": "easy"}, c),
              ({"type": "true_false", "topic_id": "tB", "difficulty": "hard"}, c)]
-    items = _batch_generate(llm, bound, {"language": "en", "query": "fire"})
+    items, _ = _batch_generate(llm, bound, {"language": "en", "query": "fire"})
     assert len(items) == 2
     assert items[0].topic_id == "tA" and items[0].lecture_id == "lec1"
     assert items[0].answer == ["A", "B"]              # multi-correct answer preserved
@@ -120,8 +120,41 @@ def test_batch_generate_uses_structured_output():
             raise AssertionError("plain invoke should not run on the structured path")
 
     bound = [({"type": "mcq", "topic_id": "tA", "difficulty": "easy"}, _chunk())]
-    items = _batch_generate(_StructLLM(), bound, {"language": "en", "query": "x"})
+    items, _ = _batch_generate(_StructLLM(), bound, {"language": "en", "query": "x"})
     assert len(items) == 1 and items[0].type == "mcq" and items[0].topic_id == "tA"
+
+
+def test_a_quiz_comes_with_an_intro_in_the_students_language():
+    """The reply printed every question while the platform showed them again on the
+    quiz card. The reply now carries one line instead, written for the student even
+    when the questions follow the subject's language."""
+    from agent.graph.subgraphs.assessment_sg import _batch_generate
+
+    prompts = []
+
+    class _Recording(_BatchLLM):
+        def invoke(self, msgs):
+            prompts.append(msgs[0].content)
+            return super().invoke(msgs)
+
+    llm = _Recording(
+        '{"intro": " Here are questions on fire. ", "items": ['
+        '{"id": "b1", "question": "Q1", "type": "true_false", "answer": "true"}]}')
+    bound = [({"type": "true_false", "topic_id": "tA", "difficulty": "easy"}, _chunk())]
+    items, intro = _batch_generate(
+        llm, bound, {"language": "en", "reply_language": "ar", "query": "fire"})
+
+    assert len(items) == 1 and intro == "Here are questions on fire."
+    assert "written in Arabic" in prompts[0]
+
+
+def test_the_assessment_hands_its_intro_to_the_reply():
+    out = qmod._validate({"items": [_item()], "intro": "Three questions on fire.",
+                          "type_mix": {"short_answer": 1}})
+    assert out["assessment"]["intro"] == "Three questions on fire."
+    empty = qmod._validate({"items": [], "intro": "Three questions on fire.",
+                            "type_mix": {"short_answer": 1}})
+    assert empty["assessment"]["intro"] == ""
 
 
 def test_an_mcq_answered_by_letter_is_rejected_not_saved():
