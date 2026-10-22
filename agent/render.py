@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import unicodedata
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -277,60 +278,146 @@ def gen_mindmap(
     """A left-to-right mind-map tree as SVG. ``outline``: ``{label, children: [{label,
     children: [...]}, ...]}`` (any depth). Deterministic layout — no image model."""
     config = config or Config.load()
-    r = config.get("render.mindmap", {}) or {}
-    svg = _mindmap_svg(outline, r.get("width", 900), r.get("height", 600))
+    r = config.section("render.mindmap")
+    svg = _mindmap_svg(outline, r["width"], r["height"],
+                       line_chars=r["line_chars"], max_label_chars=r["max_label_chars"])
     return _persist(svg.encode("utf-8"), "mindmap",
                     user_id=user_id, conversation_id=conversation_id, config=config)
 
 
-def _leaf_count(node: Mapping[str, Any]) -> int:
-    kids = node.get("children") or []
-    return 1 if not kids else sum(_leaf_count(k) for k in kids)
-
-
 _BOX_W = 150
+_LINE_H = 16
+_BOX_PAD = 8
+_ROW_GAP = 10
+_COL_GAP = 40
+_MARGIN = 20
+_ELLIPSIS = "\u2026"
 
 
-def _mindmap_svg(root: Mapping[str, Any], width: int, height: int) -> str:
-    total_leaves = max(1, _leaf_count(root))
-    depth = _depth(root)
-    col_w = (width - 40 - _BOX_W) / max(1, depth - 1)
-    row_h = (height - 40) / total_leaves
-    ys: dict[int, float] = {}
-    cursor = [0]
-
-    def assign_y(node) -> float:
-        kids = node.get("children") or []
-        if not kids:
-            y = 20 + (cursor[0] + 0.5) * row_h
-            cursor[0] += 1
+def _graphemes(text: str) -> list[str]:
+    clusters: list[str] = []
+    for ch in text:
+        if clusters and (_extends_cluster(ch) or clusters[-1].endswith("\u200d")):
+            clusters[-1] += ch
         else:
-            y = sum(assign_y(k) for k in kids) / len(kids)
-        ys[id(node)] = y
-        return y
+            clusters.append(ch)
+    return clusters
 
-    assign_y(root)
+
+def _extends_cluster(ch: str) -> bool:
+    code = ord(ch)
+    return (unicodedata.category(ch) in ("Mn", "Me", "Mc") or code == 0x200D
+            or 0xFE00 <= code <= 0xFE0F or 0x1F3FB <= code <= 0x1F3FF
+            or 0xE0020 <= code <= 0xE007F)
+
+
+def _is_rtl(text: str) -> bool:
+    for ch in text:
+        bidi = unicodedata.bidirectional(ch)
+        if bidi in ("R", "AL"):
+            return True
+        if bidi == "L":
+            return False
+    return False
+
+
+def _wrap_label(label: str, line_chars: int, max_label_chars: int) -> list[str]:
+    clusters = _graphemes(" ".join(label.split()))
+    if len(clusters) > max_label_chars:
+        clusters = [*_graphemes("".join(clusters[:max_label_chars - 1]).rstrip()), _ELLIPSIS]
+    lines: list[str] = []
+    current: list[str] = []
+    for word in _graphemes_by_word(clusters):
+        while len(word) > line_chars:
+            if current:
+                lines.append("".join(current))
+                current = []
+            lines.append("".join(word[:line_chars]))
+            word = word[line_chars:]
+        if current and len(current) + 1 + len(word) > line_chars:
+            lines.append("".join(current))
+            current = []
+        current = [*current, " ", *word] if current else list(word)
+    if current or not lines:
+        lines.append("".join(current))
+    return lines
+
+
+def _graphemes_by_word(clusters: list[str]) -> list[list[str]]:
+    words: list[list[str]] = [[]]
+    for c in clusters:
+        if c.isspace():
+            words.append([])
+        else:
+            words[-1].append(c)
+    return [w for w in words if w]
+
+
+def _box_h(lines: list[str]) -> float:
+    return len(lines) * _LINE_H + 2 * _BOX_PAD
+
+
+def _mindmap_svg(root: Mapping[str, Any], width: int, height: int, *,
+                 line_chars: int, max_label_chars: int) -> str:
+    depth = _depth(root)
+    labels: dict[int, list[str]] = {}
+    bands: dict[int, float] = {}
+
+    def measure(node) -> float:
+        labels[id(node)] = _wrap_label(str(node.get("label", "")), line_chars, max_label_chars)
+        kids = node.get("children") or []
+        stacked = sum(measure(k) for k in kids) + _ROW_GAP * max(0, len(kids) - 1)
+        bands[id(node)] = max(_box_h(labels[id(node)]), stacked)
+        return bands[id(node)]
+
+    total = measure(root)
+    height = max(height, int(total + 2 * _MARGIN + 0.5))
+    width = max(width, 2 * _MARGIN + _BOX_W + (depth - 1) * (_BOX_W + _COL_GAP))
+    col_w = (width - 2 * _MARGIN - _BOX_W) / max(1, depth - 1)
+    ys: dict[int, float] = {}
+
+    def place(node, top: float) -> None:
+        band = bands[id(node)]
+        ys[id(node)] = top + band / 2
+        kids = node.get("children") or []
+        stacked = sum(bands[id(k)] for k in kids) + _ROW_GAP * max(0, len(kids) - 1)
+        cursor = top + (band - stacked) / 2
+        for k in kids:
+            place(k, cursor)
+            cursor += bands[id(k)] + _ROW_GAP
+
+    place(root, _MARGIN + (height - 2 * _MARGIN - total) / 2)
     boxes: list[str] = []
     lines: list[str] = []
 
     def draw(node, d: int):
-        x = 20 + d * col_w
+        x = _MARGIN + d * col_w
         y = ys[id(node)]
         for k in node.get("children") or []:
-            kx, ky = 20 + (d + 1) * col_w, ys[id(k)]
+            kx, ky = _MARGIN + (d + 1) * col_w, ys[id(k)]
             lines.append(f'<line x1="{x + _BOX_W:.1f}" y1="{y:.1f}" x2="{kx:.1f}" '
                          f'y2="{ky:.1f}" stroke="#9aa5b1" stroke-width="1.5"/>')
             draw(k, d + 1)
-        boxes.append(
-            f'<rect x="{x:.1f}" y="{y - 16:.1f}" width="{_BOX_W}" height="32" rx="6" '
-            'fill="#eaf2fb" stroke="#1f4e79"/>'
-            f'<text x="{x + 8:.1f}" y="{y + 5:.1f}" font-family="sans-serif" '
-            f'font-size="13">{_esc(str(node.get("label", "")))[:22]}</text>')
+        boxes.append(_mindmap_box(labels[id(node)], x, y))
 
     draw(root, 0)
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
             f'viewBox="0 0 {width} {height}"><rect width="{width}" height="{height}" '
             f'fill="white"/>{"".join(lines)}{"".join(boxes)}</svg>')
+
+
+def _mindmap_box(label_lines: list[str], x: float, y: float) -> str:
+    h = _box_h(label_lines)
+    top = y - h / 2
+    rtl = _is_rtl("".join(label_lines))
+    tx = x + _BOX_W - _BOX_PAD if rtl else x + _BOX_PAD
+    anchor = ' direction="rtl" text-anchor="end"' if rtl else ""
+    spans = "".join(
+        f'<tspan x="{tx:.1f}" y="{top + _BOX_PAD + (i + 1) * _LINE_H - 4:.1f}">{_esc(line)}</tspan>'
+        for i, line in enumerate(label_lines))
+    return (f'<rect x="{x:.1f}" y="{top:.1f}" width="{_BOX_W}" height="{h:.1f}" rx="6" '
+            'fill="#eaf2fb" stroke="#1f4e79"/>'
+            f'<text font-family="sans-serif" font-size="13"{anchor}>{spans}</text>')
 
 
 def _depth(node: Mapping[str, Any]) -> int:

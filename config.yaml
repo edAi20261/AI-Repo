@@ -716,7 +716,11 @@ render:
   # Deterministic educational visuals (agent/render.py) -> uploader -> ai.artifacts.
   # User-agnostic: student, teacher and parent all use the same renderers.
   chart: { width: 8.0, height: 5.0, dpi: 120 }   # matplotlib figure size (inches) + dpi
-  mindmap: { width: 900, height: 600 }           # SVG canvas (px)
+  mindmap:
+    width: 900                                    # minimum SVG canvas (px); grows to fit depth and leaves
+    height: 600
+    line_chars: 18                                # graphemes per wrapped line in a 150px box at 13px
+    max_label_chars: 90                           # a label past this is cut with an ellipsis; well above the prompt's six words
   pdf: { page: A4 }
   flashcards: { count: 8 }                        # cards a topic-built (no-quiz) flashcard set targets
   math: { samples: 200 }                          # points sampled per function when plotting expr+domain

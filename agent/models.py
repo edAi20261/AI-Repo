@@ -583,7 +583,7 @@ class Flashcard(BaseModel):
 
 class MindmapNode(BaseModel):
     """One node of a mind map. Children recurse to the depth the prompt asks for."""
-    label: str = Field(description="Short node label, a few words.")
+    label: str = Field(description="Short node label, at most 6 words.")
     children: list[MindmapNode] = Field(
         default_factory=list, description="Sub-branches of this node.")
 

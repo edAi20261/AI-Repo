@@ -604,7 +604,7 @@ MINDMAP_PROMPT = Prompt(
     audience=Audience.STUDENT,
     language_rule=LanguageRule.CONTENT,
     template="""Build a concise mind map of the topic below, grounded ONLY in the context.
-The root is the topic; 2-5 top branches; each branch 0-4 leaves. Labels <= 6 words.
+The root is the topic; 2-5 top branches; each branch 0-4 leaves. Each label is a short phrase of at most 6 words.
 Do NOT add anything the context does not support.
 Return JSON only, no prose. Fields:
 {schema}
