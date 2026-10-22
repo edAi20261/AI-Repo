@@ -7,8 +7,10 @@ half-configured service.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -97,16 +99,27 @@ def create_app(config: Config | None = None) -> FastAPI:
     return app
 
 
+def turn_executor(settings: Settings) -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=2 * settings.max_concurrency,
+                              thread_name_prefix="turn")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     config: Config = app.state.config
     settings: Settings = app.state.settings
 
+    # A streamed turn's graph nodes are synchronous, and LangGraph runs them on
+    # the loop's default executor: min(32, cpus + 4) threads, six on a one-vCPU
+    # task, which capped streamed turns below max_concurrency. A turn can fan
+    # out into parallel tasks, hence the headroom.
+    asyncio.get_running_loop().set_default_executor(turn_executor(settings))
     app.state.billing = Billing.from_config(config)
     app.state.runtime = AgentRuntime.build(
         config,
         billing=app.state.billing,
         max_concurrency=settings.max_concurrency,
+        max_reads=settings.max_reads,
         timeout=settings.request_timeout,
     )
     app.state.jobs = IngestionJobManager(
