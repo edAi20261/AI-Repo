@@ -558,7 +558,7 @@ def test_a_streamed_turn_reaches_the_student(monkeypatch):
         return [pair async for pair in updates]
 
     updates = anyio.run(run)
-    assert [stage for stage, _ in updates] == ["plan", "compose", "__final__"]
+    assert [stage for stage, _ in updates] == ["queued", "plan", "compose", "__final__"]
     # The final payload is the accumulation of every node's update, not the last one.
     assert updates[-1][1].result == {
         "tasks": ["explain"], "response": "Jabir ibn Hayyan was a chemist."}

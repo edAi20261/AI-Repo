@@ -68,7 +68,7 @@ def test_a_student_stream_reaches_every_stage_and_a_final_state():
     events = _drain(runtime, {"user_id": "u1", "user_type": "student", "message": "hi"})
 
     stages = [stage for stage, _ in events]
-    assert stages == ["classify", "compose", "__final__"]
+    assert stages == ["queued", "classify", "compose", "__final__"]
 
     final_stage, final = events[-1]
     assert final_stage == "__final__"

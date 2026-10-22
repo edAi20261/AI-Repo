@@ -32,6 +32,7 @@ from agent.persona.build import BuildRequest, build_persona
 from agent.persona.models import Exemplar, Persona
 from agent.persona.store import PersonaStore
 from agent.persona.voice import PersonaDirectory
+from agent.profile import forget, held
 from agent.tagging import suggest_topics
 from agent.voice.service import Heard, ensure_speaking, hear, speak
 from agent.tools import get_latest_report
@@ -90,6 +91,7 @@ class AgentRuntime:
         billing: Billing,
         max_concurrency: int,
         timeout: float,
+        max_reads: Optional[int] = None,
         personas: Optional[PersonaDirectory] = None,
     ) -> None:
         self._config = config
@@ -98,6 +100,7 @@ class AgentRuntime:
         self._billing = billing
         self._personas = personas
         self._limiter = CapacityLimiter(max_concurrency)
+        self._reads = CapacityLimiter(max_reads or max_concurrency)
         self._timeout = timeout
 
     @classmethod
@@ -106,8 +109,9 @@ class AgentRuntime:
         config: Config | None = None,
         *,
         billing: Billing,
-        max_concurrency: int = 8,
-        timeout: float = 120.0,
+        max_concurrency: int,
+        max_reads: int,
+        timeout: float,
     ) -> AgentRuntime:
         config = config or get_config()
         personas = PersonaDirectory.from_config(config)
@@ -115,11 +119,13 @@ class AgentRuntime:
         visual_graph = build_visual_sg(config=config)
         logger.info(
             "runtime graphs compiled",
-            extra={"max_concurrency": max_concurrency, "timeout": timeout},
+            extra={"max_concurrency": max_concurrency, "max_reads": max_reads,
+                   "timeout": timeout},
         )
         return cls(
             config, graph, visual_graph, billing=billing,
-            max_concurrency=max_concurrency, timeout=timeout, personas=personas,
+            max_concurrency=max_concurrency, max_reads=max_reads, timeout=timeout,
+            personas=personas,
         )
 
     @property
@@ -175,13 +181,13 @@ class AgentRuntime:
                                   partial(speak, text, language, config=self._config))
 
     async def class_analytics(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._offload(class_analytics, payload["user_ids"],
-                                   subject_ids=payload.get("subject_ids"), config=self._config)
+        return await self._read(class_analytics, payload["user_ids"],
+                                subject_ids=payload.get("subject_ids"), config=self._config)
 
     async def latest_report(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
-        return await self._offload(get_latest_report, payload["scope"],
-                                   user_id=payload.get("user_id"),
-                                   class_id=payload.get("class_id"), config=self._config)
+        return await self._read(get_latest_report, payload["scope"],
+                                user_id=payload.get("user_id"),
+                                class_id=payload.get("class_id"), config=self._config)
 
     async def class_report(self, payload: dict[str, Any], *,
                            billed_user_id: str) -> Metered:
@@ -190,12 +196,12 @@ class AgentRuntime:
                                   failed=_degraded)
 
     async def learner_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._offload(
+        return await self._read(
             learner_summary, payload["user_id"], subject_ids=payload.get("subject_ids"),
             lecture_ids=payload.get("lecture_ids"), config=self._config)
 
     async def suggest_topics(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._offload(
+        return await self._read(
             suggest_topics, payload["questions"], payload["subject_id"],
             lecture_ids=payload.get("lecture_ids"), config=self._config)
 
@@ -210,7 +216,7 @@ class AgentRuntime:
         return built
 
     async def personas(self, teacher_id: str) -> list[Persona]:
-        return await self._offload(self._persona_store().versions, teacher_id)
+        return await self._read(self._persona_store().versions, teacher_id)
 
     async def persona(self, teacher_id: str, version: int) -> PersonaView:
         store = self._persona_store()
@@ -222,7 +228,15 @@ class AgentRuntime:
                                     details={"teacher_id": teacher_id, "version": version})
             return PersonaView(persona, store.exemplars(persona.persona_id))
 
-        return await self._offload(read)
+        return await self._read(read)
+
+    async def memory(self, user_id: str) -> dict[str, Any]:
+        return await self._read(held, user_id, config=self._config)
+
+    async def forget_memory(self, user_id: str,
+                            conversation_id: Optional[str] = None) -> dict[str, Any]:
+        return await self._read(forget, user_id, conversation_id=conversation_id,
+                                config=self._config)
 
     async def edit_persona_card(self, teacher_id: str, version: int,
                                 card: PersonaCard) -> Persona:
@@ -294,6 +308,7 @@ class AgentRuntime:
         state: dict[str, Any] = {}
         async with self._billing.guard(bill):
             meter = start_meter()
+            yield "queued", None
             # fail_after is a synchronous context manager used inside async code;
             # `async with` on it raises before the first node ever runs.
             try:
@@ -322,7 +337,11 @@ class AgentRuntime:
                 bill.settle(meter)
             return Metered(result, meter)
 
-    async def _offload(self, fn, *args, timeout: Optional[float] = None, **kwargs) -> Any:
+    async def _read(self, fn, *args, **kwargs) -> Any:
+        return await self._offload(fn, *args, limiter=self._reads, **kwargs)
+
+    async def _offload(self, fn, *args, timeout: Optional[float] = None,
+                       limiter: Optional[CapacityLimiter] = None, **kwargs) -> Any:
         def call() -> Any:
             return fn(*args, **kwargs)
 
@@ -330,11 +349,11 @@ class AgentRuntime:
         try:
             with anyio.fail_after(limit):
                 return await anyio.to_thread.run_sync(
-                    call, abandon_on_cancel=True, limiter=self._limiter
+                    call, abandon_on_cancel=True, limiter=limiter or self._limiter
                 )
         except TimeoutError as exc:
-            # A thread cannot be killed: the work runs to completion and holds its slot.
-            # The caller is released rather than left hanging.
+            # A thread cannot be killed, but anyio gives its slot back when the
+            # caller is cancelled: the abandoned work runs on outside the bound.
             logger.warning("turn exceeded %ss", limit)
             raise UpstreamTimeoutError("The request took too long to complete.") from exc
         except MemoryError as exc:

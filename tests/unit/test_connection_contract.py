@@ -194,5 +194,51 @@ def test_the_query_client_carries_the_query_budget(monkeypatch):
     import qdrant_client
     monkeypatch.setattr(qdrant_client, "QdrantClient",
                         lambda **kwargs: seen.update(kwargs) or object())
+    vector_store._shared_client.cache_clear()
     vector_store.query_client(Config.load())
     assert seen["timeout"] == Config.load().get("vector_store.query_timeout_seconds")
+
+
+def test_searches_share_one_query_client(monkeypatch):
+    """A client per search opened a new TLS connection to Qdrant every time:
+    0.38s for a search a warm connection answers in 0.13s."""
+    import qdrant_client
+    built = []
+    monkeypatch.setattr(qdrant_client, "QdrantClient",
+                        lambda **kwargs: built.append(kwargs) or object())
+    vector_store._shared_client.cache_clear()
+    first = vector_store.query_client(Config.load())
+    second = vector_store.query_client(Config.load())
+    vector_store._shared_client.cache_clear()
+    assert first is second and len(built) == 1
+
+
+def test_searches_beyond_the_cap_wait_rather_than_reach_qdrant(monkeypatch):
+    """Thirty turns and a topic batch searching at once pushed Qdrant past the
+    5s read timeout, and the turns waiting on those searches failed."""
+    import threading
+    import time
+
+    import qdrant_client
+
+    inside, peak, lock = [0], [0], threading.Lock()
+
+    class _Slow:
+        def query_points(self, *a, **k):
+            with lock:
+                inside[0] += 1
+                peak[0] = max(peak[0], inside[0])
+            time.sleep(0.05)
+            with lock:
+                inside[0] -= 1
+
+    monkeypatch.setattr(qdrant_client, "QdrantClient", lambda **kwargs: _Slow())
+    vector_store._shared_client.cache_clear()
+    client = vector_store.query_client(Config.load())
+    threads = [threading.Thread(target=client.query_points) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    vector_store._shared_client.cache_clear()
+    assert peak[0] == Config.load().get("vector_store.max_concurrent_queries")

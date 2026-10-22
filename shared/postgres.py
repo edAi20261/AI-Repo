@@ -27,7 +27,8 @@ from __future__ import annotations
 import atexit
 import logging
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from typing import Iterator, Optional
 
 from .config import Config
@@ -40,6 +41,15 @@ logger = logging.getLogger(__name__)
 # a pool that mixed them would hand a 5s turn a 500ms connection at random.
 _pools: dict[tuple, object] = {}
 _lock = threading.Lock()
+_held: ContextVar[Optional["_Held"]] = ContextVar("held_connection", default=None)
+
+
+class _Held:
+    """The connection a :func:`one_connection` block lends, checked out on first use."""
+
+    def __init__(self, stack: ExitStack, key: tuple) -> None:
+        self.stack, self.key = stack, key
+        self.conn: Optional[object] = None
 
 
 def pg_url(raw: str) -> str:
@@ -116,8 +126,40 @@ def connect(
 
     pool = _pool_for(pg_url(config.secret("DATABASE_URL")),
                      connect_timeout, statement_timeout_ms, config, pool_size)
+    held = _held.get()
+    if held is not None and held.key == (connect_timeout, statement_timeout_ms, pool_size):
+        from psycopg.pq import TransactionStatus
+
+        if held.conn is None:
+            held.conn = held.stack.enter_context(pool.connection())
+        try:
+            yield held.conn
+        finally:
+            if held.conn.info.transaction_status == TransactionStatus.INERROR:
+                held.conn.rollback()
+        return
     with pool.connection() as conn:
         yield conn
+
+
+@contextmanager
+def one_connection(config: Config | None = None) -> Iterator[None]:
+    """Serve every default-bounded ``connect`` inside the block from one connection.
+
+    A read made of several tools checked a connection out for each, and each
+    checkout costs a liveness round trip: the learner summary's seven queries
+    paid fourteen round trips, and queued seven times for the pool under load.
+    A statement that fails is rolled back on its own, so the next still runs.
+    """
+    config = config or Config.load()
+    key = (config.get("database.connect_timeout_seconds"),
+           config.get("database.statement_timeout_ms"), None)
+    with ExitStack() as stack:
+        token = _held.set(_Held(stack, key))
+        try:
+            yield
+        finally:
+            _held.reset(token)
 
 
 def _open_once(url: str, connect_timeout: int) -> object:

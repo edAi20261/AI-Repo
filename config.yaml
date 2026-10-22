@@ -178,6 +178,13 @@ vector_store:
   # of the points already written without a name.
   hybrid: true
   query_timeout_seconds: 5
+  # Searches this process sends Qdrant at once; the rest wait here, where the
+  # wait does not count against query_timeout_seconds. The cluster answers
+  # one at a time in effect (warm client, filtered dense search):
+  #   1 at once: 0.13s   10: median 0.81s, max 0.91s   30: median 1.82s, max 3.42s
+  # Thirty turns plus a 20-question topic batch pushed searches past 5s and
+  # failed the turns waiting on them.
+  max_concurrent_queries: 8
   upsert_batch_size: 64
   # The collection retrieval reads and ingestion writes. Named dense + sparse
   # vectors cannot be added to a collection that has an unnamed one, so the
@@ -786,7 +793,20 @@ backend:
 
 api:
   # HTTP service (system/). Secrets stay in .env; everything tunable is here.
-  max_concurrency: 8           # concurrent graph invocations; each holds a worker thread
+  # Concurrent turns (chat, grading, reports). A turn spends most of its time
+  # waiting on a model, so the bound is what Postgres and Qdrant behind it can
+  # serve, not CPU. Ten parallel turns at 8: eight began at 7.4s, the ninth and
+  # tenth at 23s. Fifty turns, a 20-question topic batch and 20 summaries at
+  # once, from a laptop against production (Postgres and Qdrant ~0.1s away):
+  #   8 turns, 16 reads:  first event 42.7s, turn 52.3s, summary 82s
+  #   32 turns, 16 reads: 16 of 50 turns failed (pool and Qdrant timeouts)
+  #   24 turns, 4 reads:  first event 0.08s, turn 35.3s, summary 13s, none failed
+  max_concurrency: 24
+  # Reads a page waits on (summaries, stored reports, topic suggestions,
+  # memory) get their own slots, so they never queue behind a chat turn. A
+  # summary holds one connection for all its queries: four leave half of
+  # database.pool_size to the turns.
+  max_reads: 4
   request_timeout: 120         # seconds a caller should allow for a chat turn
   docs_enabled: true           # OpenAPI + /docs; off in production
   cors_origins: []             # the platform backend calls this service, not a browser

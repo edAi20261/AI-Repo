@@ -320,3 +320,16 @@ def test_every_supported_language_has_the_rule_in_its_own_words():
 
     for code in DEFAULT_SUPPORTED:
         assert code in NO_GREETING, code
+
+
+@pytest.mark.parametrize("text", [
+    "Bună ziua, aceasta este o lecție despre fracții și numere zecimale pentru elevi. " * 4,
+    "Merhaba, bu ders öğrencilere kesirleri ve ondalık sayıları anlatıyor ve örnekler veriyor. " * 4,
+])
+def test_a_page_in_a_language_we_do_not_support_keeps_the_books_language(policy, text):
+    """An Arabic book's page read as Romanian, then Turkish, and its figure
+    captions asked for 'ro' and 'tr'; the prompt refused both codes and two
+    books failed to ingest."""
+    decision = policy.resolve_document(text, hint="ar")
+    assert decision.code == "ar"
+    assert decision.refused

@@ -28,6 +28,7 @@ class Settings:
     service_token: str | None
     backend_base_url: str | None
     max_concurrency: int
+    max_reads: int
     request_timeout: float
     cors_origins: list[str] = field(default_factory=list)
     docs_enabled: bool = True
@@ -45,7 +46,8 @@ class Settings:
             app_env=config.app_env,
             service_token=Config.secret("AI_WEBHOOK_SHARED_SECRET"),
             backend_base_url=Config.secret("BACKEND_API_BASE_URL"),
-            max_concurrency=int(api.get("max_concurrency", 8)),
+            max_concurrency=int(api.get("max_concurrency", 24)),
+            max_reads=int(api.get("max_reads", 4)),
             request_timeout=float(api.get("request_timeout", 120)),
             cors_origins=list(api.get("cors_origins") or []),
             docs_enabled=bool(api.get("docs_enabled", True)),

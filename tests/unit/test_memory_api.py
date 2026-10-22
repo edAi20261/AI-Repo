@@ -15,7 +15,9 @@ from fastapi.testclient import TestClient
 
 from agent.config import get_config
 from agent.profile import forget, held
+from system.billing import Billing
 from system.main import create_app
+from system.runtime import AgentRuntime
 
 USER = str(uuid.uuid4())
 SESSION = str(uuid.uuid4())
@@ -31,7 +33,10 @@ HELD_ROWS = [
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", "test-token")
-    return TestClient(create_app(get_config()))
+    app = create_app(get_config())
+    app.state.runtime = AgentRuntime(get_config(), None, None, billing=Billing(None),
+                                     max_concurrency=2, timeout=5)
+    return TestClient(app)
 
 
 def _auth(client):
