@@ -33,11 +33,45 @@ class Usage(Schema):
         return cls.model_validate(meter.as_dict())
 
 
+QuestionType = Literal["mcq", "true_false", "short_answer", "essay"]
+Difficulty = Literal["easy", "medium", "hard"]
+
+
+class Submission(Schema):
+    question: str = Field(min_length=1)
+    student_answer: str
+    correct_answer: Optional[str] = Field(
+        default=None, description="Reference answer; used ahead of the syllabus when present."
+    )
+    question_id: Optional[str] = None
+    topic_id: Optional[str] = None
+    lecture_id: Optional[str] = None
+    type: Optional[QuestionType] = None
+    difficulty: Optional[Difficulty] = None
+    bloom: Optional[str] = None
+    points: Optional[float] = Field(default=None, ge=0)
+    known_score: Optional[float] = Field(
+        default=None, ge=0, le=1,
+        description="The platform already scored this answer (a fraction of full marks). "
+                    "It moves mastery as given and is not regraded by the model.",
+    )
+
+
 class GradeReference(Schema):
-    """Points a grading turn at a saved assessment so its answer key is used."""
+    """Points a grading turn at a saved assessment so its answer key is used.
+
+    A turn carrying one is the student reviewing work the platform already marked,
+    so it records nothing: that attempt's evidence was written when it was marked.
+    """
 
     assessment_id: str
     kind: Literal["quiz", "homework"]
+    submissions: Optional[list[Submission]] = Field(
+        default=None, max_length=200,
+        description=("The student's answers to this assessment, one per question, in the "
+                     "shape POST /ai/grade takes. Without them the turn walks through every "
+                     "question with its correct answer and says the student's own answers "
+                     "were not available."))
 
 
 class Visual(BaseModel):

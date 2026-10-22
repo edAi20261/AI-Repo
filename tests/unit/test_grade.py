@@ -634,3 +634,137 @@ def test_a_known_score_outside_zero_to_one_is_rejected_at_the_door():
     assert Submission(question="q", student_answer="a", known_score=0.5).known_score == 0.5
     with pytest.raises(pydantic.ValidationError):
         Submission(question="q", student_answer="a", known_score=4)
+
+
+# --- "check my work": reviewing a saved, already-marked assessment ----------
+
+def _review_adapter(sg):
+    from agent.graph.graph import _build_grade_adapter
+    from agent.subjects import SubjectDirectory
+
+    return _build_grade_adapter(sg, get_config(), SubjectDirectory(None))
+
+
+def _review_payload(**params):
+    return {"pathway": "student", "subject_id": "bio", "user_id": "student-1",
+            "language": "en",
+            "task": {"task_id": "t", "params": {
+                "query": "check my work", "review": True,
+                "grade": {"assessment_id": "quiz-1", "kind": "quiz"}, **params}}}
+
+
+_STORED = [
+    {"id": "q-1", "question_text": "Which process moves water into the air?",
+     "question_type": "mcq", "correct_answer_text": None, "explanation": "Heat lifts vapour.",
+     "options": [{"option_text": "condensation", "is_correct": False},
+                 {"option_text": "evaporation", "is_correct": True}]},
+    {"id": "q-2", "question_text": "Name the gas plants take in.",
+     "question_type": "short_answer", "correct_answer_text": "carbon dioxide",
+     "explanation": None, "options": []},
+]
+
+
+def test_checking_marked_work_records_no_mastery(monkeypatch):
+    """"Check my work" on a quiz the platform had already marked wrote practice
+    evidence for the same answers again, moving the student's mastery twice."""
+    writes = []
+    monkeypatch.setattr(gmod, "get_mastery", lambda uid, ids, config=None: [])
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda uid, events, aggs, config=None: writes.append(uid) or ["e1"])
+    adapter = _review_adapter(build_grade_sg(config=get_config(), llm=None))
+    submission = {"question": "2+2?", "student_answer": "4", "correct_answer": "4",
+                  "topic_id": "t1", "lecture_id": "l1"}
+
+    out = adapter(_review_payload(submissions=[submission]))
+
+    assert out["grade_result"]["summary"]["count"] == 1
+    assert writes == []
+
+
+def test_a_review_explains_answers_the_platform_already_scored():
+    """An answer carrying the platform's score is not regraded, so a student checking a
+    marked quiz got a score back and no word on any answer."""
+    captured = {}
+
+    class _Recording:
+        def invoke(self, payload):
+            captured.update(payload)
+            return {"result": {}}
+
+    adapter = _review_adapter(_Recording())
+    adapter(_review_payload(submissions=[
+        {"question": "2+2?", "student_answer": "5", "correct_answer": "4", "known_score": 0}]))
+
+    assert captured["submissions"] == [
+        {"question": "2+2?", "student_answer": "5", "correct_answer": "4"}]
+    assert captured["user_id"] is None
+
+
+def test_a_review_without_answers_never_marks_the_message_against_question_one(monkeypatch):
+    """With no answers sent, "check my work" was itself graded as the answer to the
+    quiz's first question. The tutor goes through every question instead."""
+    monkeypatch.setattr(gmod, "get_item",
+                        lambda kind, assessment_id, config=None: _STORED, raising=False)
+    monkeypatch.setattr(gmod, "record_graded_evidence",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no write")))
+    llm = _BatchLLM(
+        '{"note": "I could not see your answers, so here is every question.",'
+        ' "items": [{"id": "b2", "explanation": "You need the gas leaves absorb."},'
+        ' {"id": "b1", "explanation": "You can see heat turns water to vapour."}]}')
+    adapter = _review_adapter(build_grade_sg(config=get_config(), llm=llm))
+
+    result = adapter(_review_payload())["grade_result"]
+
+    assert result["graded"] == [] and result["mastery_events"] == 0
+    walkthrough = result["walkthrough"]
+    assert walkthrough["note"].startswith("I could not see your answers")
+    assert [s["question_id"] for s in walkthrough["items"]] == ["q-1", "q-2"]
+    assert walkthrough["items"][0]["correct_answer"] == "evaporation"
+    assert walkthrough["items"][0]["explanation"].startswith("You can see heat")
+    assert walkthrough["items"][1]["correct_answer"] == "carbon dioxide"
+
+
+def test_a_walkthrough_that_skips_a_question_is_not_shown(monkeypatch):
+    """A reply that leaves a question out would show the student an explanation
+    under the wrong question."""
+    monkeypatch.setattr(gmod, "get_item",
+                        lambda kind, assessment_id, config=None: _STORED, raising=False)
+    llm = _BatchLLM('{"note": "No answers.", "items": [{"id": "b1", "explanation": "x"}]}')
+    adapter = _review_adapter(build_grade_sg(config=get_config(), llm=llm))
+
+    result = adapter(_review_payload())["grade_result"]
+
+    assert result["degraded"] is True and "walkthrough" not in result
+
+
+def test_a_walkthrough_whose_questions_cannot_be_loaded_degrades(monkeypatch):
+    def _down(kind, assessment_id, config=None):
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr(gmod, "get_item", _down, raising=False)
+    adapter = _review_adapter(build_grade_sg(config=get_config(), llm=None))
+
+    assert adapter(_review_payload())["grade_result"]["degraded"] is True
+
+
+def test_the_walkthrough_reply_shows_every_question_with_its_answer_and_why():
+    """A walkthrough rendered through the score line came out as "0/0"."""
+    text = nmod._grade_line({"graded": [], "summary": {"count": 0, "max_score": 0.0},
+                             "walkthrough": {"note": "I could not see your answers.", "items": [
+                                 {"question": "Q1?", "correct_answer": "A1",
+                                  "explanation": "Because one."},
+                                 {"question": "Q2?", "correct_answer": "A2",
+                                  "explanation": "Because two."}]}})
+    assert text.splitlines() == [
+        "I could not see your answers.",
+        "1. Q1?", f"   {nmod.CORRECT_ANSWER_MARK} A1", f"   {nmod.REASON_MARK} Because one.",
+        "2. Q2?", f"   {nmod.CORRECT_ANSWER_MARK} A2", f"   {nmod.REASON_MARK} Because two."]
+
+
+def test_grade_feedback_is_written_to_the_student_as_you():
+    """Feedback read "The student confused..." in a reply addressed to the student."""
+    from agent.prompts import GRADE_BATCH_PROMPT, GRADE_WALKTHROUGH_PROMPT
+
+    for prompt in (GRADE_BATCH_PROMPT, GRADE_WALKTHROUGH_PROMPT):
+        assert 'as "you"' in prompt.template
+    assert '"you"' in GradeDraft.model_fields["feedback"].description

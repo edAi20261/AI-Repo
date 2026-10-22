@@ -36,7 +36,9 @@ class ChatRequest(Schema):
     )
     grade: Optional[str] = Field(default=None, description="Academic year level, e.g. 'g8'.")
     grade_ref: Optional[GradeReference] = Field(
-        default=None, description="Set when the turn grades a saved assessment."
+        default=None,
+        description=("Set when the student checks work on a saved assessment they already "
+                     "submitted. The turn reviews it and records no mastery."),
     )
     teacher_id: Optional[str] = Field(
         default=None,
@@ -73,7 +75,7 @@ class ChatRequest(Schema):
             "persona_version": self.persona_version,
         }
         if self.grade_ref:
-            state["grade_ref"] = self.grade_ref.model_dump()
+            state["grade_ref"] = self.grade_ref.model_dump(exclude_none=True)
         if self.study_scope:
             state["study_scope"] = self.study_scope.model_dump()
         if self.language:

@@ -387,6 +387,34 @@ def test_plan_grade_ref_overrides_nl_reference(monkeypatch):
     assert gtask["params"]["grade"]["kind"] == "homework"
 
 
+def test_a_grade_ref_turn_is_a_review_carrying_the_students_answers(monkeypatch):
+    """The student's answers on grade_ref never reached the grader, and nothing told it
+    the turn was a review of marked work rather than new practice to record."""
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    plan = nmod.build_plan(get_config(), _Subjects())
+    submissions = [{"question": "2+2?", "student_answer": "5", "correct_answer": "4"}]
+    out = plan(_plan_state(
+        subject_id="s",
+        grade_ref={"assessment_id": "a-1", "kind": "quiz", "submissions": submissions},
+        planned_tasks=[{"type": "grade", "query": "check my work", "level": "intermediate",
+                        "length": "medium"}]))
+    params = next(t for t in out["tasks"] if t["type"] == "grade")["params"]
+    assert params["review"] is True
+    assert params["submissions"] == submissions
+    assert params["grade"]["assessment_id"] == "a-1"
+
+
+def test_a_practice_grade_is_not_a_review(monkeypatch):
+    monkeypatch.setattr(nmod, "resolve_topics", lambda q, sid=None, **k: [])
+    plan = nmod.build_plan(get_config(), _Subjects())
+    out = plan(_plan_state(
+        subject_id="s",
+        planned_tasks=[{"type": "grade", "query": "4", "level": "intermediate",
+                        "length": "medium"}]))
+    params = next(t for t in out["tasks"] if t["type"] == "grade")["params"]
+    assert not params.get("review") and "submissions" not in params
+
+
 # --- compose helpers --------------------------------------------------------
 
 def _pt(topic_id="t0", label="Cells", strength="weak", depth=1):

@@ -1,6 +1,7 @@
 """grade_sg — grade a submission and move mastery (AI-final).
 
     prepare -> fetch_rubric -> grade -> write_mastery
+            -> walkthrough          (a review of a saved assessment with no answers sent)
 
 Private state (``GradeState``); the parent adapter (chat) or ``run_grade`` (endpoint)
 hands it a normalized ``submissions`` list. The student's answers arrive in the request
@@ -25,12 +26,21 @@ from langchain_core.messages import HumanMessage
 from shared.structured import align_by_id, call_structured, schema_hint
 
 from ...mastery import Mastery, MasteryParams, observation, update_aggregate
-from ...models import GradeBatch, GradedItem, ReviewedGrade, ReviewReason, SubmissionItem
-from ...prompts import GRADE_BATCH_PROMPT
+from ...models import (
+    GradeBatch,
+    GradedItem,
+    ReviewedGrade,
+    ReviewReason,
+    SubmissionItem,
+    Walkthrough,
+    WalkthroughStep,
+)
+from ...prompts import GRADE_BATCH_PROMPT, GRADE_WALKTHROUGH_PROMPT
 from ...retrieval import DEFAULT_MIN_SCORE
 from ...tools import (
     create_mistake_tag,
     fetch_rubric,
+    get_item,
     get_mastery,
     get_topic_lectures,
     rag_search,
@@ -55,6 +65,7 @@ _RUBRIC_MAP = {
 class GradeState(TypedDict, total=False):
     # inputs
     submissions: list[dict[str, Any]]   # normalized: question/student_answer (+ optional key)
+    review: bool                        # checking marked work: answers explained, none recorded
     subject_id: str | None
     lecture_ids: list[str] | None    # optional lecture scope for grounding; None -> whole subject
     user_id: str | None
@@ -361,11 +372,124 @@ def _summary(graded: list[GradedItem]) -> dict:
             "needs_review": sum(1 for g in scored if g.needs_review)}
 
 
+def _question_text(question: dict) -> str:
+    return (question.get("question_text") or question.get("question") or "").strip()
+
+
+def _option_text(option: Any) -> str:
+    if isinstance(option, dict):
+        return str(option.get("option_text") or option.get("text") or "").strip()
+    return str(option or "").strip()
+
+
+def _answer_key_of(question: dict) -> str:
+    """A stored question's correct answer, whichever way the platform keeps it: model
+    answer text, the options marked correct, or a rubric."""
+    if question.get("correct_answer_text"):
+        return str(question["correct_answer_text"]).strip()
+    correct = [_option_text(o) for o in question.get("options") or []
+               if isinstance(o, dict) and o.get("is_correct")]
+    if any(correct):
+        return "; ".join(c for c in correct if c)
+    return str(question.get("rubric") or "").strip()
+
+
+def _walkthrough_blocks(questions: list[dict]) -> str:
+    blocks = []
+    for i, q in enumerate(questions, 1):
+        options = [t for t in (_option_text(o) for o in q.get("options") or []) if t]
+        listed = f"\nOptions: {'; '.join(options)}" if options else ""
+        blocks.append(
+            f"Block id={_block_id(i)}: type={q.get('question_type') or 'short_answer'}\n"
+            f"Question: {_question_text(q)}{listed}\n"
+            f"Correct answer: {_answer_key_of(q) or '(none given)'}\n"
+            f"Explanation: {q.get('explanation') or '(none given)'}"
+        )
+    return "\n\n".join(blocks)
+
+
+def _walk(llm, questions: list[dict], state: GradeState, config) -> Walkthrough:
+    """Explain every question in ONE call; a reply that skips one is sent back."""
+    if llm is None:
+        return Walkthrough.model_construct(note="", items=[
+            WalkthroughStep.model_construct(id=_block_id(i), explanation=q.get("explanation") or "")
+            for i, q in enumerate(questions, 1)])
+    prompt_text = GRADE_WALKTHROUGH_PROMPT.render(
+        schema=schema_hint(Walkthrough),
+        language=state.get("language", "en"),
+        instructions=state.get("instructions", ""),
+        n=len(questions),
+        items_block=_walkthrough_blocks(questions),
+    )
+    expected = [_block_id(i) for i in range(1, len(questions) + 1)]
+    walkthrough = call_structured(
+        Walkthrough,
+        [HumanMessage(content=prompt_text)],
+        task="grade",
+        config=config,
+        llm=llm,
+        label="grade_walkthrough",
+        validate=lambda w: align_by_id(expected, w.items, what="walkthrough"),
+    )
+    walkthrough.items = align_by_id(expected, walkthrough.items, what="walkthrough")
+    return walkthrough
+
+
+def _walkthrough_result(questions: list[dict], walkthrough: Walkthrough | None,
+                        source: str) -> dict:
+    result = {
+        "graded": [], "summary": _summary([]), "mastery_events": 0, "topics_updated": 0,
+        "mastery_recorded": True, "source": source, "degraded": walkthrough is None,
+    }
+    if walkthrough is not None:
+        result["walkthrough"] = {"note": walkthrough.note, "items": [
+            {"question": _question_text(q), "correct_answer": _answer_key_of(q) or None,
+             "explanation": step.explanation or None, "question_id": q.get("id")}
+            for q, step in zip(questions, walkthrough.items)]}
+    return result
+
+
 # --- nodes ------------------------------------------------------------------
 
 def _prepare(state: GradeState) -> dict:
     items = _to_items(state.get("submissions") or [])
     return {"items": items}
+
+
+def _after_prepare(state: GradeState) -> str:
+    """A review that arrived without the student's answers has nothing to mark. Marking
+    the chat message against the first question graded a request as an answer."""
+    if state.get("review") and not state.get("items") and state.get("assessment_id"):
+        return "walkthrough"
+    return "fetch_rubric"
+
+
+def _build_walkthrough(llm, config):
+    def _node(state: GradeState) -> dict:
+        kind = state.get("kind") or "quiz"
+        source = state.get("source", "practice")
+        try:
+            questions = [q for q in get_item(kind, state["assessment_id"], config=config)
+                         if _question_text(q)]
+        except Exception:
+            logger.error("walkthrough: questions not loaded", exc_info=True,
+                         extra={"kind": kind})
+            return {"result": _walkthrough_result([], None, source)}
+        if not questions:
+            logger.error("walkthrough: the assessment has no questions", extra={"kind": kind})
+            return {"result": _walkthrough_result([], None, source)}
+        try:
+            walkthrough = _walk(llm, questions, state, config)
+        except Exception:
+            logger.error("walkthrough failed; degrading", exc_info=True,
+                         extra={"questions": len(questions)})
+            walkthrough = None
+        logger.info("walkthrough", extra={
+            "questions": len(questions), "degraded": walkthrough is None,
+            "calls": 0 if llm is None else 1})
+        return {"result": _walkthrough_result(questions, walkthrough, source)}
+
+    return _node
 
 
 def _build_fetch_rubric(config):
@@ -548,9 +672,11 @@ def build_grade_sg(*, config, llm=None):
     graph.add_node("fetch_rubric", _build_fetch_rubric(config))
     graph.add_node("grade", _build_grade(llm, config))
     graph.add_node("write_mastery", _build_write_mastery(config))
+    graph.add_node("walkthrough", _build_walkthrough(llm, config))
 
     graph.add_edge(START, "prepare")
-    graph.add_edge("prepare", "fetch_rubric")
+    graph.add_conditional_edges("prepare", _after_prepare, ["fetch_rubric", "walkthrough"])
+    graph.add_edge("walkthrough", END)
     graph.add_edge("fetch_rubric", "grade")
     graph.add_edge("grade", "write_mastery")
     graph.add_edge("write_mastery", END)

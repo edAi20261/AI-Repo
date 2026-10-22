@@ -618,9 +618,13 @@ def build_plan(config, subjects: SubjectDirectory, client=None):
                 grade = gspec.model_dump() if gspec else {}
                 # A structured grade_ref on the request (the frontend already knows the
                 # saved quiz/homework id) wins over the NL-parsed reference.
-                ref = _validate_grade_spec(state.get("grade_ref"))
+                grade_ref = state.get("grade_ref") or {}
+                ref = _validate_grade_spec(grade_ref)
                 if ref is not None:
                     grade.update(ref.model_dump(exclude_none=True))
+                    params["review"] = True
+                    if grade_ref.get("submissions"):
+                        params["submissions"] = grade_ref["submissions"]
                 params["grade"] = grade
             # A chat visual task: carry the visual spec + the resolved topic_ids (so
             # visual_sg can try get_figures first).
@@ -766,9 +770,28 @@ def _visual_line(visuals: list) -> str:
     return "\n".join(lines)
 
 
+def _walkthrough_block(walkthrough: dict) -> str:
+    """Every question with its correct answer and why, under the model's note that the
+    student's own answers were not available."""
+    lines = [walkthrough.get("note") or ""]
+    for i, step in enumerate(walkthrough.get("items") or [], 1):
+        lines.append(f"{i}. {step.get('question', '')}")
+        if step.get("correct_answer"):
+            lines.append(f"   {CORRECT_ANSWER_MARK} {step['correct_answer']}")
+        if step.get("explanation"):
+            lines.append(f"   {REASON_MARK} {step['explanation']}")
+    return "\n".join(line for line in lines if line)
+
+
+def _has_grade(grade_result: dict) -> bool:
+    return bool(grade_result.get("graded") or grade_result.get("walkthrough"))
+
+
 def _grade_line(grade_result: dict) -> str:
     """The score, then per answer the feedback and — for a wrong answer — the correct
     answer and why, so the student learns what was right and not only that they missed it."""
+    if grade_result.get("walkthrough"):
+        return _walkthrough_block(grade_result["walkthrough"])
     summary = grade_result.get("summary") or {}
     score = summary.get("score", 0)
     total = summary.get("max_score", summary.get("count", 0))
@@ -901,13 +924,13 @@ def build_compose(config, llm, voices: Voices):
             raise TutorUnavailable()
         if state.get("visual_error"):
             logger.error("a requested visual could not be rendered")
-            if not (answers or visuals or grade_result.get("graded")
+            if not (answers or visuals or _has_grade(grade_result)
                     or assessment.get("items")):
                 raise TutorUnavailable()
 
         if not answers:
             parts = []
-            if grade_result.get("graded"):
+            if _has_grade(grade_result):
                 parts.append(_grade_line(grade_result))
             if assessment.get("items"):
                 parts.append(_assessment_block(assessment))
@@ -946,7 +969,7 @@ def build_compose(config, llm, voices: Voices):
         # parts.append(_sources_block(citations))
         if assessment.get("items"):
             parts.append(_assessment_block(assessment))
-        if grade_result.get("graded"):
+        if _has_grade(grade_result):
             parts.append(_grade_line(grade_result))
         if visuals:
             parts.append(_visual_line(visuals))
