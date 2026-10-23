@@ -331,3 +331,34 @@ def test_a_unit_revision_starting_on_its_lessons_page_shares_those_pages():
     copied = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=40)
     assert [(lsn.title, lsn.page_from) for lsn in copied] == [
         ("Lesson 1", 1), ("Lesson 2", 1), ("Unit revision", 1), ("Lesson 3", 23)]
+
+
+def test_a_lesson_named_like_its_unit_among_other_lessons_is_a_lesson():
+    """Reveal Math Course 1's Module 7 is "Relationships Between Two Variables"
+    and so is its Lesson 7-1; the book failed on every attempt for listing it."""
+    check = _validator(1, 24, 3.5, 20)
+    check(LessonBreakdown(units=[UnitItem(
+        title="Relationships Between Two Variables", unit_number=7, lessons=[
+            LessonItem(title="Relationships Between Two Variables", start_page=1),
+            LessonItem(title="Write Equations to Represent Relationships", start_page=9),
+            LessonItem(title="Graphs of Relationships", start_page=17)])]))
+
+
+def test_a_long_lesson_the_model_keeps_after_being_asked_again_is_kept(caplog):
+    """Into Literature's Diary of Anne Frank, Act One, is one 55-page play. Each
+    attempt was sent back as too long, so the book was never ingested."""
+    check = _validator(1, 200, 3.5, 20)
+    play = _breakdown(1, 11, 21, 31, 41)
+    with pytest.raises(ValueError, match="sections"):
+        check(play)
+    with caplog.at_level("WARNING", logger="ingestion.books"):
+        check(play)
+    assert "kept" in caplog.text
+
+
+def test_a_long_lesson_on_new_pages_is_still_sent_back():
+    check = _validator(1, 200, 3.5, 20)
+    with pytest.raises(ValueError, match="sections"):
+        check(_breakdown(1, 11, 21, 31, 41))
+    with pytest.raises(ValueError, match="sections"):
+        check(_breakdown(1, 11, 21, 31, 36))

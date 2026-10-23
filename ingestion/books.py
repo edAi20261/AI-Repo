@@ -127,6 +127,8 @@ def _oversized(entries: Sequence[_Entry], first_page: int, last_page: int,
 
 def _validator(first_page: int, last_page: int, oversized_ratio: float,
                oversized_min_pages: int):
+    questioned: set[str] = set()
+
     def check(breakdown: LessonBreakdown) -> None:
         items = [item for unit in breakdown.units for item in unit.lessons]
         if not items and not breakdown.sections:
@@ -136,7 +138,8 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
             raise ValueError(f"these units list no lessons: {empty}. List the lessons "
                              "inside every unit")
         posing = [unit.title for unit in breakdown.units
-                  if unit.title and any(_same(item.title, unit.title) for item in unit.lessons)]
+                  if unit.title and len(unit.lessons) == 1
+                  and _same(unit.lessons[0].title, unit.title)]
         if posing:
             raise ValueError(f"a unit is not a lesson, but these units are listed as their "
                              f"own lesson: {posing}. List the lessons inside them")
@@ -157,7 +160,11 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
                              "with that number as printed")
         long = _oversized(_entries(breakdown), first_page, last_page, oversized_ratio,
                           oversized_min_pages)
-        if long:
+        if long and set(long) <= questioned:
+            logger.warning("long lessons kept after being questioned",
+                           extra={"lessons": long})
+        elif long:
+            questioned.update(long)
             raise ValueError(
                 "these lessons run far longer than a lesson in this book usually does: "
                 f"{long}. Pages that belong to no single lesson — revision of the whole "
