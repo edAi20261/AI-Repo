@@ -8,6 +8,7 @@
 # Multi-stage: packages install into a venv in the builder stage; only the
 # venv + app code cross into the runtime stage, so pip's own footprint and
 # any install-time state never end up in the final image.
+
 # ---------------------------------------------------------------------------
 FROM python:3.11-slim AS builder
 
