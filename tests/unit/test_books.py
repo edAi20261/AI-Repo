@@ -356,9 +356,13 @@ def test_a_long_lesson_the_model_keeps_after_being_asked_again_is_kept(caplog):
     assert "kept" in caplog.text
 
 
-def test_a_long_lesson_on_new_pages_is_still_sent_back():
+def test_long_lessons_are_questioned_once_per_book(caplog):
+    """Asked about the Anne Frank play, the model split it and then listed two
+    paired texts as one 44-page lesson; that was sent back too, and the book
+    failed on its last attempt."""
     check = _validator(1, 200, 3.5, 20)
     with pytest.raises(ValueError, match="sections"):
         check(_breakdown(1, 11, 21, 31, 41))
-    with pytest.raises(ValueError, match="sections"):
+    with caplog.at_level("WARNING", logger="ingestion.books"):
         check(_breakdown(1, 11, 21, 31, 36))
+    assert "kept" in caplog.text

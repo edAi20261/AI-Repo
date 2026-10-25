@@ -160,7 +160,7 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
                              "with that number as printed")
         long = _oversized(_entries(breakdown), first_page, last_page, oversized_ratio,
                           oversized_min_pages)
-        if long and set(long) <= questioned:
+        if long and questioned:
             logger.warning("long lessons kept after being questioned",
                            extra={"lessons": long})
         elif long:
