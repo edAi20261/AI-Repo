@@ -3,6 +3,8 @@ the backend client is monkeypatched. Asserts SQL targets and row mapping."""
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 import agent.tools as tools
@@ -198,14 +200,15 @@ def test_scope_topics_are_read_for_the_subjects_asked_and_those_with_evidence(fa
 def test_recent_outcomes_keep_the_newest_answers_per_topic(fake_postgres):
     from agent.tools import get_recent_outcomes
 
-    cur = FakePostgres(rows=[("t1", 1.0, None), ("t1", None, False), ("t2", 0.5, True)])
+    t1, t2 = str(uuid.uuid4()), str(uuid.uuid4())
+    cur = FakePostgres(rows=[(t1, 1.0, None), (t1, None, False), (t2, 0.5, True)])
     fake_postgres(cur)
-    out = get_recent_outcomes("u1", ["t1", "t2"], per_topic=5, config=get_config())
+    out = get_recent_outcomes("u1", [t1, t2], per_topic=5, config=get_config())
 
     sql, args = cur.statements[0]
     assert "row_number() OVER (PARTITION BY e.topic_id ORDER BY e.created_at DESC)" in sql
-    assert args == ("u1", ["t1", "t2"], 5)
-    assert out == {"t1": [1.0, 0.0], "t2": [0.5]}
+    assert args == ("u1", [t1, t2], 5)
+    assert out == {t1: [1.0, 0.0], t2: [0.5]}
 
 
 def test_weekly_activity_is_bucketed_in_the_database(fake_postgres):

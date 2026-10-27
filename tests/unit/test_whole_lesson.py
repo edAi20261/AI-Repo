@@ -172,4 +172,4 @@ def test_a_lessons_topics_include_those_its_text_carries(fake_postgres):
     topics = tools.get_lecture_topics([LESSON], config=_config())
 
     assert [t.topic_id for t in topics] == ["t-sub"]
-    assert "unnest(c.topic_ids)" in db.sql[0] and "t.lecture_id::text = ANY" in db.sql[0]
+    assert "unnest(c.topic_ids)" in db.sql[0] and "t.lecture_id = ANY(%s::uuid[])" in db.sql[0]
