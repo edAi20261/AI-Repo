@@ -7,9 +7,12 @@ LESSON_TERMS_PROMPT = Prompt(
     audience=Audience.INTERNAL,
     language_rule=LanguageRule.NONE,
     template="""\
-Below are the first pages of a school book, then the lessons it was split into,
-in book order: each lesson's number in the list, its title, and how its first
-page opens.
+Below are the first pages of a school book, an outline of the whole book with
+one line per page (the page number, then how the page opens), and the lessons
+it was split into, in book order: each lesson's number in the list, the page it
+starts on, its title, and how its first page opens. In a book for the whole
+year, the page where the second term starts is usually a part title or a
+divider; every lesson from that page on is in the second term.
 
 A school year is often split into terms (also called semesters). A book may be
 for one term, or for the whole year with each term in a part of its own. Give
@@ -25,6 +28,9 @@ List every lesson, once, by its number. Return JSON only, no prose. Fields:
 
 The first pages:
 {opening_pages}
+
+Outline:
+{outline}
 
 The lessons:
 {lessons}

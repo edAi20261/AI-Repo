@@ -24,6 +24,7 @@ from typing import Any, Callable, Optional, Sequence
 from ingestion.books import (
     OPENING_PAGE_CHARS,
     OPENING_PAGES,
+    OUTLINE_LINE_CHARS,
     STALE_SEARCH,
     LessonCatalog,
     SplitLesson,
@@ -50,11 +51,11 @@ SELECT lecture_id::text,
        MIN(page) AS first_page
 FROM ai.page_transcriptions GROUP BY lecture_id ORDER BY 2, 3
 """
-_OPENING = """
-SELECT page, raw_output FROM (
-    SELECT DISTINCT ON (page) page, raw_output FROM ai.page_transcriptions
-    WHERE lecture_id = ANY(%s::uuid[]) ORDER BY page, created_at DESC) AS pages
-ORDER BY page LIMIT %s
+# The whole-year G9 books name their second term on a divider in the middle;
+# from the first pages alone, 34 of Mathematics' 35 lessons came back with no term.
+_PAGES = """
+SELECT DISTINCT ON (page) page, raw_output FROM ai.page_transcriptions
+WHERE lecture_id = ANY(%s::uuid[]) ORDER BY page, created_at DESC
 """
 _LESSONS = """
 SELECT id::text, subject_id::text, title FROM content.lessons
@@ -62,8 +63,8 @@ WHERE id = ANY(%(ids)s::uuid[]) AND status <> 'archived'
   AND (%(subjects)s::uuid[] IS NULL OR subject_id = ANY(%(subjects)s::uuid[]))
 """
 _LESSON_OPENINGS = """
-SELECT DISTINCT ON (lecture_id) lecture_id::text, text FROM ai.chunks
-WHERE lecture_id = ANY(%s::uuid[]) ORDER BY lecture_id, order_index
+SELECT DISTINCT ON (lecture_id) lecture_id::text, text, page_from FROM ai.chunks
+WHERE lecture_id = ANY(%s::uuid[]) ORDER BY lecture_id, page_from, order_index
 """
 
 
@@ -72,6 +73,7 @@ class Book:
     book_id: str
     subject_id: str
     opening_pages: str
+    outline: str
     lessons: list[tuple[str, SplitLesson]]
 
 
@@ -114,15 +116,18 @@ def _book(cur, book_id: str, slice_ids: list[str],
         logger.error("book %s has lessons in %d subjects; left out", book_id, len(by_subject))
         return None
     cur.execute(_LESSON_OPENINGS, ([lesson_id for lesson_id, _, _ in rows],))
-    openings = dict(cur.fetchall())
-    cur.execute(_OPENING, (slice_ids, OPENING_PAGES))
-    opening = "\n\n".join(f"[{page}]\n{page_text(raw)[:OPENING_PAGE_CHARS]}"
-                          for page, raw in cur.fetchall())
-    lessons = [(lesson_id, SplitLesson(ordinal, _one_line(title, 200),
-                                       _one_line(openings.get(lesson_id, ""),
-                                                 LESSON_OPENING_CHARS)))
-               for ordinal, (lesson_id, _, title) in enumerate(rows)]
-    return Book(book_id, rows[0][1], opening, lessons)
+    openings = {lesson_id: (text, page) for lesson_id, text, page in cur.fetchall()}
+    cur.execute(_PAGES, (slice_ids,))
+    pages = [(page, page_text(raw)) for page, raw in cur.fetchall()]
+    opening = "\n\n".join(f"[{page}]\n{text[:OPENING_PAGE_CHARS]}"
+                          for page, text in pages[:OPENING_PAGES])
+    outline = "\n".join(f"[{page}] {_one_line(text, OUTLINE_LINE_CHARS)}" for page, text in pages)
+    lessons = []
+    for ordinal, (lesson_id, _, title) in enumerate(rows):
+        text, page = openings.get(lesson_id, ("", None))
+        lessons.append((lesson_id, SplitLesson(ordinal, _one_line(title, 200),
+                                               _one_line(text, LESSON_OPENING_CHARS), page)))
+    return Book(book_id, rows[0][1], opening, outline, lessons)
 
 
 def plan_rows(book: Book, terms: dict[int, Optional[int]]) -> list[dict[str, Any]]:
@@ -188,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         books = books_to_read(cur, args.subjects)
     print(f"{len(books)} books to read")
     rows, failed = read_plan(
-        books, lambda book: read_lesson_terms(book.opening_pages,
+        books, lambda book: read_lesson_terms(book.opening_pages, book.outline,
                                               [lesson for _, lesson in book.lessons], config),
         args.workers)
     with open(args.out, "w", newline="", encoding="utf-8") as plan:

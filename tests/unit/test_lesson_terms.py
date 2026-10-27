@@ -173,7 +173,7 @@ def test_the_term_of_each_split_lesson_is_read_and_every_lesson_must_be_answered
     lessons = [SplitLesson(0, "Lesson 1", "Term 2 ..."), SplitLesson(1, "Lesson 2", "...")]
     model = _Model('{"lessons": [{"ordinal": 0, "term": 2}]}',
                    '{"lessons": [{"ordinal": 0, "term": 2}, {"ordinal": 1, "term": 2}]}')
-    assert read_lesson_terms("[1] cover", lessons, _config(), llm=model) == {0: 2, 1: 2}
+    assert read_lesson_terms("[1] cover", "", lessons, _config(), llm=model) == {0: 2, 1: 2}
     assert len(model.prompts) == 2
     assert "list every lesson once" in model.prompts[1]
 
@@ -186,8 +186,8 @@ def test_a_transcribed_page_is_read_in_either_form_the_page_cache_holds():
 
 
 def test_a_plan_is_read_book_by_book_and_a_book_that_fails_is_reported_not_dropped():
-    good = Book(BOOK, SUBJECT, "", [(lesson_id_for(BOOK, 0), SplitLesson(0, "L", ""))])
-    bad = Book("b" * 8, SUBJECT, "", [])
+    good = Book(BOOK, SUBJECT, "", "", [(lesson_id_for(BOOK, 0), SplitLesson(0, "L", ""))])
+    bad = Book("b" * 8, SUBJECT, "", "", [])
 
     def read(book):
         if book is bad:
@@ -226,16 +226,19 @@ def test_a_book_cut_into_one_pdf_per_lesson_is_read_whole_from_its_cover():
     db = FakePostgres(fetchall=[
         [(first, parent, 1), (second, parent, 40)],
         [(second, SUBJECT, "Lesson 2"), (first, SUBJECT, "Lesson 1")],
-        [(first, "opens"), (second, "opens")],
-        [(1, {"text": "Student book, second term"})],
+        [(first, "opens", 1), (second, "opens", 40)],
+        [(1, {"text": "Student book, second term"}), (40, {"text": "Lesson 2"})],
     ])
     (book,) = books_to_read(db, None)
     assert book.book_id == parent
     assert [(lesson_id, lesson.ordinal) for lesson_id, lesson in book.lessons] == [
         (first, 0), (second, 1)]
     assert "second term" in book.opening_pages
-    (opening_args,) = [args for sql, args in db.statements if "LIMIT" in sql]
-    assert opening_args[0] == [first, second]
+    assert book.outline.splitlines() == ["[1] Student book, second term", "[40] Lesson 2"]
+    assert [lesson.start_page for _, lesson in book.lessons] == [1, 40]
+    (pages_args,) = [args for sql, args in db.statements if "page_transcriptions" in sql
+                     and "DISTINCT ON (page)" in sql]
+    assert pages_args[0] == [first, second]
 
 
 def test_every_lesson_of_a_book_for_one_term_is_in_that_term_whether_or_not_it_was_said():
@@ -244,7 +247,7 @@ def test_every_lesson_of_a_book_for_one_term_is_in_that_term_whether_or_not_it_w
     lessons = [SplitLesson(n, f"Lesson {n}", "") for n in range(3)]
     model = _Model('{"book_term": 2, "lessons": [{"ordinal": 0, "term": 2}, '
                    '{"ordinal": 1}, {"ordinal": 2, "term": null}]}')
-    assert read_lesson_terms("[1] second term", lessons, _config(), llm=model) == {
+    assert read_lesson_terms("[1] second term", "", lessons, _config(), llm=model) == {
         0: 2, 1: 2, 2: 2}
 
 
@@ -254,5 +257,5 @@ def test_a_book_for_one_term_with_a_lesson_in_another_is_sent_back():
                    '{"ordinal": 1, "term": 2}]}',
                    '{"book_term": null, "lessons": [{"ordinal": 0, "term": 1}, '
                    '{"ordinal": 1, "term": 2}]}')
-    assert read_lesson_terms("", lessons, _config(), llm=model) == {0: 1, 1: 2}
+    assert read_lesson_terms("", "", lessons, _config(), llm=model) == {0: 1, 1: 2}
     assert "whole year" in model.prompts[1]

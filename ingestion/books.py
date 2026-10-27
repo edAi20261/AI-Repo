@@ -251,10 +251,11 @@ class SplitLesson:
     ordinal: int
     title: str
     opening: str
+    start_page: Optional[int] = None
 
 
-def read_lesson_terms(opening_pages: str, lessons: Sequence[SplitLesson], config, *,
-                      llm: Any = None) -> dict[int, Optional[int]]:
+def read_lesson_terms(opening_pages: str, outline: str, lessons: Sequence[SplitLesson],
+                      config, *, llm: Any = None) -> dict[int, Optional[int]]:
     """The term of each lesson of a book that was split before terms were read."""
     ordinals = [lesson.ordinal for lesson in lessons]
     max_term = config.get("ingestion.books.max_term")
@@ -275,10 +276,10 @@ def read_lesson_terms(opening_pages: str, lessons: Sequence[SplitLesson], config
         check_terms([_term_of(item, answer) for item in
                      sorted(answer.lessons, key=lambda i: i.ordinal)], max_term)
 
-    listing = "\n".join(f"[{lesson.ordinal}] {lesson.title} | {lesson.opening}"
-                         for lesson in lessons)
-    prompt = LESSON_TERMS_PROMPT.render(opening_pages=opening_pages, lessons=listing,
-                                        schema=schema_hint(LessonTerms))
+    listing = "\n".join(f"[{lesson.ordinal}] page {lesson.start_page}: {lesson.title} | "
+                         f"{lesson.opening}" for lesson in lessons)
+    prompt = LESSON_TERMS_PROMPT.render(opening_pages=opening_pages, outline=outline,
+                                        lessons=listing, schema=schema_hint(LessonTerms))
     answer = call_structured(LessonTerms, prompt, task=TASK, config=config,
                              llm=llm if llm is not None else get_llm(config, TASK),
                              label="lesson_terms", validate=check)
