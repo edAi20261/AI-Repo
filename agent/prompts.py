@@ -424,6 +424,15 @@ you can do:
 {capabilities}
 One offer, not a list, and it comes before any figure block."""
 
+# A subject-wide search also reads the subject's external books. Their passages
+# reached the model headed like the lesson's own, so another book's revision
+# and exam pages were taught to a student as their lesson.
+SUPPLEMENTARY_PASSAGE = "supplementary material from another book, not the student's lesson"
+
+SUPPLEMENTARY_RULE = f"""A passage headed "{SUPPLEMENTARY_PASSAGE}" is not from the student's
+own lesson. Never present it as their lesson; when you rely on it, say once, briefly, that it
+comes from supplementary material."""
+
 # A stronger grounding contract was written for these two prompts and measured
 # against it: an explicit "the context is the only thing you know", a ban on
 # adding facts, examples or quotations from the model's own knowledge, and one
@@ -449,6 +458,7 @@ Target level: {level}. Length: {length}. Style: {style}.
 {instructions}
 When you use a passage, cite it inline as [n] using the source numbers given. Cite
 the passage a statement rests on, not every passage you read.
+""" + SUPPLEMENTARY_RULE + """
 
 This is one turn of a conversation. When the student asks for more, for an example, for a
 simpler version or for a reason, build on what you already told them instead of repeating it,
@@ -527,6 +537,7 @@ Length: {length}. Style: {style}.
 {instructions}
 Cite passages inline as [n] using the source numbers given. Cite the passage a
 statement rests on, not every passage you read.
+""" + SUPPLEMENTARY_RULE + """
 
 This is one turn of a conversation; take account of what was already said.
 

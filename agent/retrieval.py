@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
+from .prompts import SUPPLEMENTARY_PASSAGE
 from .tools import (
     get_lecture_topics,
     get_lesson_chunks,
@@ -90,10 +91,15 @@ def answers_within_scope(
     What separates them is the rest of the corpus. A question the lesson owns
     scores the same with or without the filter; a question belonging to another
     lesson scores markedly worse once that lesson is excluded.
+
+    The rest of the corpus is the other lessons. The lesson-scoped search reads
+    no external book, so this one does not either: an external guide's copy of
+    the selected lesson outscored the lesson itself, and the gate turned away
+    3 of 120 lessons' own questions as belonging elsewhere.
     """
     if scoped_best <= 0:
         return False
-    unscoped = rag_search(query or "", namespaces, k=1, subject_id=subject_id)
+    unscoped = rag_search(query or "", namespaces, k=1, subject_id=subject_id, background=False)
     if not unscoped:
         return True
     return scoped_best / unscoped[0].score >= ratio
@@ -216,7 +222,8 @@ def resolve_prereqs(
 
 def cite(chunk: RetrievedChunk, n: int) -> Citation:
     if chunk.background:
-        return Citation(n=n, subject_name=chunk.subject_name, chunk_id=chunk.chunk_id)
+        return Citation(n=n, subject_name=chunk.subject_name, chunk_id=chunk.chunk_id,
+                        supplementary=True)
     return Citation(
         n=n,
         lecture_id=chunk.lecture_id,
@@ -231,10 +238,14 @@ def cite(chunk: RetrievedChunk, n: int) -> Citation:
 
 
 def render_context(chunks: list[RetrievedChunk], start: int = 1) -> tuple[str, list[Citation]]:
-    """Number chunks [n] and return the block text plus citation records."""
+    """Number chunks [n] and return the block text plus citation records.
+
+    A background passage is headed as what it is. Headed by its own book's
+    section like a lesson passage, the model presented another book's revision
+    pages as the student's lesson."""
     lines, citations = [], []
     for i, c in enumerate(chunks, start=start):
-        head = c.heading_path or c.lecture_id
+        head = SUPPLEMENTARY_PASSAGE if c.background else (c.heading_path or c.lecture_id)
         lines.append(f"[{i}] ({head}) {c.text}")
         citations.append(cite(c, i))
     return "\n\n".join(lines), citations
