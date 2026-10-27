@@ -36,14 +36,17 @@ title as printed and the outline page where it starts, so that its pages are not
 filed under the lesson next to it. A book that is only questions or exams can
 have sections and no lessons.
 
-Pages that only help a reader find their way or check their work, and teach
-nothing of their own, are never lessons: a table of contents, an index, a
+The book's apparatus is pages that only help a reader find their way or check
+their work, and teach nothing of their own: a table of contents, an index, a
 glossary, credits or acknowledgements, selected answers or an answer key,
-references or a bibliography. Recognise them by what the pages do, in whatever
-language the book is written. When they stand on pages of their own, list each
-under sections with its title as printed; no student is shown a section as a
-lesson. Mark every lesson you list with apparatus: false, and if you find you
-would mark one true, it is a section instead.
+references or a bibliography, notes pages, a cover or title page, technical
+specifications of the book. Recognise it by what the pages do, in whatever
+language the book is written. Apparatus is never a lesson. When it stands on
+pages of its own, list it under sections with apparatus: true; students are
+never shown it. Every other section, such as revision, exams and assessments,
+is something students work through: give it apparatus: false, and it is shown
+to them. Mark every lesson you list with apparatus: false, and if you find you
+would mark one true, it is an apparatus section instead.
 
 For each unit give its title as printed and its number. For each lesson give
 its own title as printed, in the book's own words and language, with its number

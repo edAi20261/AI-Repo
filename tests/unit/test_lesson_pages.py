@@ -46,12 +46,12 @@ def _texts(data: bytes) -> list[str]:
         return [page.get_text().strip() for page in doc]
 
 
-def _lessons(*spans: tuple[int, int], sections: tuple[int, ...] = ()) -> list[dict]:
+def _lessons(*spans: tuple[int, int], apparatus: tuple[int, ...] = ()) -> list[dict]:
     from ingestion.books import lesson_id_for
 
     return [{"lesson_id": lesson_id_for(BOOK, n), "ordinal": n, "title": f"Lesson {n}",
              "label": f"Lesson {n}", "unit_number": 1, "unit_title": "", "page_from": first,
-             "page_to": last, "section": n in sections}
+             "page_to": last, "apparatus": n in apparatus}
             for n, (first, last) in enumerate(spans)]
 
 
@@ -63,7 +63,7 @@ def test_each_ministry_lesson_carries_exactly_its_own_pages_of_the_book(tmp_path
 
     uploader = FakeS3Uploader()
     state = {"lecture_id": BOOK, "subject_id": SUBJECT, "namespace": SYLLABUS,
-             "lessons": _lessons((1, 3), (4, 6), (7, 8), sections=(2,))}
+             "lessons": _lessons((1, 3), (4, 6), (7, 8), apparatus=(2,))}
     store_lesson_pages(state, _book(tmp_path / "book.pdf", 8), get_config(), uploader=uploader)
 
     first, second, index = state["lessons"]

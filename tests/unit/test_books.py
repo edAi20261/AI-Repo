@@ -363,27 +363,32 @@ def test_book_apparatus_listed_as_a_lesson_is_sent_back_to_be_a_section():
     as_section = ('{"units": [{"title": "Unit 1", "unit_number": 1, "lessons": ['
                   '{"title": "Lesson 1", "start_page": 1, "apparatus": false}, '
                   '{"title": "Lesson 2", "start_page": 5, "apparatus": false}]}], '
-                  '"sections": [{"title": "Index", "start_page": 10}]}')
+                  '"sections": [{"title": "Index", "start_page": 10, "apparatus": true}]}')
     model = _Replies(as_lesson, as_section)
     lessons = detect_lessons(state, get_config(), llm=model)
     assert len(model.prompts) == 2
     assert "Index" in model.prompts[1]
-    assert [(lsn.title, lsn.section) for lsn in lessons] == [
+    assert [(lsn.title, lsn.apparatus) for lsn in lessons] == [
         ("Lesson 1", False), ("Lesson 2", False), ("Index", True)]
 
 
-def test_a_section_is_filed_where_no_student_is_shown_it(fake_postgres):
+def _revision_and_index() -> list:
+    breakdown = _breakdown(1, 10)
+    breakdown.sections = [SectionItem(title="Final revision", start_page=20),
+                          SectionItem(title="Index", start_page=28, apparatus=True)]
+    return lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=30)
+
+
+def test_book_apparatus_is_filed_where_no_student_is_shown_it(fake_postgres):
     """A section became a ministry lesson like any other and was published the
-    moment it was ready: an index, a glossary, a list of credits."""
+    moment it was ready: an index, a glossary, a list of credits. A term's
+    revision, also a section, is used by students and stays a shown lesson."""
     from shared.config import get_config
     from shared.namespaces import BACKGROUND
 
-    breakdown = _breakdown(1, 10)
-    breakdown.sections = [SectionItem(title="Glossary", start_page=20)]
-    lessons = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=30)
     state = {"lecture_id": BOOK, "book_id": BOOK, "subject_id": SUBJECT, "chunks": [],
              "figures": []}
-    file_under_lessons(state, lessons)
+    file_under_lessons(state, _revision_and_index())
     db = fake_postgres(fetchone=[(0,)])
     LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Gem",
                                          lessons=state["lessons"])
@@ -391,31 +396,39 @@ def test_a_section_is_filed_where_no_student_is_shown_it(fake_postgres):
     upserts = [(sql, args) for sql, args in db.statements if "INSERT INTO content.lessons" in sql]
     assert [(args[3], args[2]) for _, args in upserts] == [
         ("Lesson 1", sources[SYLLABUS]), ("Lesson 2", sources[SYLLABUS]),
-        ("Glossary", sources[BACKGROUND])]
+        ("Final revision", sources[SYLLABUS]), ("Index", sources[BACKGROUND])]
     sql = upserts[0][0]
     assert "source = EXCLUDED.source" in sql
     assert "'published' AND EXCLUDED.source <>" in sql
 
 
-def test_only_a_ministry_books_lessons_are_shown_never_its_sections():
+def test_only_book_apparatus_is_hidden_from_students():
     from ingestion.books import shown
     from shared.namespaces import BACKGROUND
 
-    assert shown({"section": False}, SYLLABUS)
-    assert not shown({"section": True}, SYLLABUS)
-    assert not shown({"section": False}, BACKGROUND)
+    assert shown({"apparatus": False}, SYLLABUS)
+    assert not shown({"apparatus": True}, SYLLABUS)
+    assert not shown({"apparatus": False}, BACKGROUND)
 
 
 def test_a_book_split_into_lessons_tells_each_lesson_whether_it_is_shown():
-    breakdown = _breakdown(1, 10)
-    breakdown.sections = [SectionItem(title="Credits", start_page=20)]
-    lessons = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=30)
+    """A term's revision and model exams are published today and students use
+    them; only the book's apparatus is kept from them."""
     state = {"lecture_id": BOOK, "book_id": BOOK, "subject_id": SUBJECT,
              "namespace": SYLLABUS, "chunks": [], "figures": []}
-    file_under_lessons(state, lessons)
+    file_under_lessons(state, _revision_and_index())
     state["lessons"][0]["pdf"] = {"key": "k"}
     state["lessons"][1]["pdf_error"] = "AccessDenied"
     parts = lesson_states(state)
-    assert [p["shown"] for p in parts] == [True, True, False]
-    assert [p["lesson_pdf"] for p in parts] == [{"key": "k"}, None, None]
-    assert [p["lesson_pdf_error"] for p in parts] == [None, "AccessDenied", None]
+    assert [p["shown"] for p in parts] == [True, True, True, False]
+    assert [p["lesson_pdf"] for p in parts] == [{"key": "k"}, None, None, None]
+    assert [p["lesson_pdf_error"] for p in parts] == [None, "AccessDenied", None, None]
+
+
+def test_apparatus_sharing_a_page_with_a_lesson_does_not_hide_the_lesson():
+    breakdown = _breakdown(1, 10)
+    breakdown.sections = [SectionItem(title="Credits", start_page=10, apparatus=True)]
+    merged = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=20,
+                          shared_pages="merge")
+    assert [(lsn.title, lsn.apparatus) for lsn in merged] == [
+        ("Lesson 1", False), ("Lesson 2 / Credits", False)]

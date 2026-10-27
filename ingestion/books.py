@@ -53,7 +53,7 @@ class Lesson:
     unit_title: str
     page_from: int
     page_to: int
-    section: bool = False
+    apparatus: bool = False
 
     @property
     def label(self) -> str:
@@ -91,12 +91,13 @@ class _Entry:
     unit_title: str = ""
     unit_number: Optional[int] = None
     section: bool = False
+    apparatus: bool = False
 
 
 def _entries(breakdown: LessonBreakdown) -> list[_Entry]:
     lessons = [_Entry(item.title, item.start_page, unit.title, unit.unit_number)
                for unit in breakdown.units for item in unit.lessons]
-    sections = [_Entry(item.title, item.start_page, section=True)
+    sections = [_Entry(item.title, item.start_page, section=True, apparatus=item.apparatus)
                 for item in breakdown.sections]
     return sorted(lessons + sections, key=lambda entry: entry.start_page)
 
@@ -138,8 +139,8 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
         if apparatus:
             raise ValueError(f"these are not lessons: {apparatus}. Pages that only help a "
                              "reader find their way or check their work teach nothing of "
-                             "their own; list each under sections, with the page it starts "
-                             "on, and remove it from the lessons")
+                             "their own; list each under sections with apparatus: true and "
+                             "the page it starts on, and remove it from the lessons")
         empty = [unit.title for unit in breakdown.units if not unit.lessons]
         if empty:
             raise ValueError(f"these units list no lessons: {empty}. List the lessons "
@@ -242,7 +243,8 @@ def _merged(entries: Sequence[_Entry]) -> list[_Entry]:
         last = merged[-1] if merged else None
         if last and last.start_page == entry.start_page:
             merged[-1] = replace(last, title=f"{last.title} / {entry.title}",
-                                 section=last.section and entry.section)
+                                 section=last.section and entry.section,
+                                 apparatus=last.apparatus and entry.apparatus)
         else:
             merged.append(entry)
     return merged
@@ -258,7 +260,7 @@ def lessons_from(breakdown: LessonBreakdown, *, book_id: str, first_page: int,
     return [Lesson(lesson_id=lesson_id_for(book_id, ordinal), ordinal=ordinal,
                    title=entry.title, unit_number=entry.unit_number,
                    unit_title=entry.unit_title, page_from=page_from, page_to=page_to,
-                   section=entry.section)
+                   apparatus=entry.apparatus)
             for ordinal, (entry, (page_from, page_to))
             in enumerate(zip(entries, _spans(entries, first_page, last_page)))]
 
@@ -292,8 +294,9 @@ def file_under_lessons(state: IngestionState, lessons: Sequence[Lesson]) -> Inge
 
 def shown(lesson: Mapping[str, Any], namespace: str) -> bool:
     """Whether students are shown this lesson of a book: a ministry book's lessons
-    are, its sections (contents, index, glossary, a term's exams) never are."""
-    return namespace == SYLLABUS and not lesson.get("section")
+    and sections are (a term's revision, its exams), its apparatus never is
+    (contents, index, glossary, credits, answer keys)."""
+    return namespace == SYLLABUS and not lesson.get("apparatus")
 
 
 def store_lesson_pages(state: IngestionState, book_path: str, config, *,

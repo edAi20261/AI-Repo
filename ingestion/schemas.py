@@ -120,7 +120,7 @@ class LessonItem(BaseModel):
         description="true when these pages only help a reader find their way or check "
                     "their work and teach nothing of their own: a table of contents, an "
                     "index, a glossary, credits, selected answers or an answer key, "
-                    "references. Such pages are a section, never a lesson.")
+                    "references. Such pages are an apparatus section, never a lesson.")
 
     @field_validator("title", mode="before")
     @classmethod
@@ -154,6 +154,14 @@ class SectionItem(BaseModel):
     title: str = Field(description="The section's title as printed in the book.")
     start_page: int = Field(
         description="The outline page number where this section starts.")
+    apparatus: bool = Field(
+        default=False,
+        description="true when these pages only help a reader find their way or check "
+                    "their work and teach nothing of their own: contents, an index, a "
+                    "glossary, credits, an answer key, references, notes pages, a cover "
+                    "or title page, technical specifications. false for anything a "
+                    "student works through: revision, exams, assessments. Students are "
+                    "shown every section that is not apparatus.")
 
     @field_validator("title", mode="before")
     @classmethod
@@ -165,10 +173,9 @@ class LessonBreakdown(BaseModel):
     units: list[UnitItem] = Field(default_factory=list)
     sections: list[SectionItem] = Field(
         default_factory=list,
-        description="Parts of the book that belong to no single lesson, in book order, "
-                    "including its contents, index, glossary, credits, answer keys and "
-                    "references; empty when every page after the opening belongs to a "
-                    "lesson. No student is shown a section as a lesson.")
+        description="Parts of the book that belong to no single lesson, in book order: "
+                    "a term's revision, exams and assessments, and the book's apparatus; "
+                    "empty when every page after the opening belongs to a lesson.")
 
 
 # --- dependencies ----------------------------------------------------------
