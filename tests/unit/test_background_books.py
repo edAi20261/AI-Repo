@@ -87,7 +87,7 @@ def test_an_external_book_lesson_is_filed_so_the_app_can_hide_it(fake_postgres):
     from ingestion.books import LessonCatalog, lesson_id_for
     from shared.config import get_config
 
-    db = fake_postgres(fetchone=[(0,), (0,)])
+    db = fake_postgres(fetchone=[(False,), (0,), (False,), (0,)])
     lessons = [{"lesson_id": lesson_id_for("book", 0), "ordinal": 0, "title": "L1",
                 "unit_number": 1}]
     LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Book",

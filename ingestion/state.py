@@ -183,6 +183,7 @@ class IngestionState(TypedDict, total=False):
     version: int             # bumped on re-ingestion
     language_hint: Optional[str]
     subject_is_math: bool    # force every page to the vision route
+    term: Optional[int]      # the operator's term for the whole book; None to read it
     ingestion_status: Optional[str]   # set to needs_review on an unreadable page
 
     # accumulated by the stages
@@ -213,6 +214,7 @@ def new_state(
     version: int = 1,
     language_hint: Optional[str] = None,
     subject_is_math: bool = False,
+    term: Optional[int] = None,
 ) -> IngestionState:
     """Build a fresh state for one lesson with its lists initialised empty."""
     if not source_uri and not source_text:
@@ -230,6 +232,7 @@ def new_state(
         version=version,
         language_hint=language_hint,
         subject_is_math=subject_is_math,
+        term=term,
         ingestion_status=None,
         pages=[],
         elements=[],

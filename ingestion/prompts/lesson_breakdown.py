@@ -43,6 +43,14 @@ lesson whose pages show only its number is titled with that number as printed.
 When the book has no units, return one unit with an empty title holding every
 lesson.
 
+A school year is often split into terms (also called semesters). A book may be
+for one term, or for the whole year with each term in a part of its own. Give
+every unit and section the term it belongs to, as a number, where the cover,
+the title page, the table of contents or the title of a part says which term
+it is: 1 for the first term, 2 for the second. In a book for one term every
+unit and section has that term. Leave the term empty when the book does not
+say; never guess it from the subject matter.
+
 Use the page numbers of the outline, not the numbers printed in the table of
 contents: the two can differ by the pages before the first lesson.
 

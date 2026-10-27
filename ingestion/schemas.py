@@ -111,6 +111,17 @@ def _one_line(v) -> str:
     return " ".join(str(v or "").split())[:255]
 
 
+TERM_DESCRIPTION = ("The term of the school year this part belongs to, as a number: 1 for "
+                    "the first term, 2 for the second. Null when the book does not say.")
+
+
+def _whole_number_or_none(v):
+    try:
+        return int(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
 class LessonItem(BaseModel):
     title: str = Field(description="The lesson's own title as printed in the book.")
     start_page: int = Field(
@@ -127,6 +138,7 @@ class UnitItem(BaseModel):
                                                 "the book has no units.")
     unit_number: Optional[int] = Field(
         default=None, description="The unit's number, when the book numbers units.")
+    term: Optional[int] = Field(default=None, description=TERM_DESCRIPTION)
     lessons: list[LessonItem] = Field(
         default_factory=list, description="Every lesson inside this unit, in book order.")
 
@@ -135,24 +147,43 @@ class UnitItem(BaseModel):
     def _clamp_title(cls, v):
         return _one_line(v)
 
-    @field_validator("unit_number", mode="before")
+    @field_validator("unit_number", "term", mode="before")
     @classmethod
-    def _unit_or_none(cls, v):
-        try:
-            return int(v) if v not in (None, "") else None
-        except (TypeError, ValueError):
-            return None
+    def _number_or_none(cls, v):
+        return _whole_number_or_none(v)
 
 
 class SectionItem(BaseModel):
     title: str = Field(description="The section's title as printed in the book.")
     start_page: int = Field(
         description="The outline page number where this section starts.")
+    term: Optional[int] = Field(default=None, description=TERM_DESCRIPTION)
 
     @field_validator("title", mode="before")
     @classmethod
     def _clamp_title(cls, v):
         return _one_line(v)
+
+    @field_validator("term", mode="before")
+    @classmethod
+    def _term_or_none(cls, v):
+        return _whole_number_or_none(v)
+
+
+class LessonTerm(BaseModel):
+    ordinal: int = Field(description="The lesson's number in the list, as given.")
+    term: Optional[int] = Field(default=None, description=TERM_DESCRIPTION)
+
+    @field_validator("term", mode="before")
+    @classmethod
+    def _term_or_none(cls, v):
+        return _whole_number_or_none(v)
+
+
+class LessonTerms(BaseModel):
+    """Structured-output wrapper: the term of each lesson of a book already split."""
+
+    lessons: list[LessonTerm] = Field(default_factory=list)
 
 
 class LessonBreakdown(BaseModel):

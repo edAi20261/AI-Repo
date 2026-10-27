@@ -91,7 +91,7 @@ def test_two_books_of_one_subject_register_their_lessons_one_after_the_other(fak
     from ingestion.books import LessonCatalog, lesson_id_for
     from shared.config import get_config
 
-    db = fake_postgres(fetchone=[(0,)])
+    db = fake_postgres(fetchone=[(False,), (0,)])
     lessons = [{"lesson_id": lesson_id_for(BOOK, 0), "ordinal": 0, "title": "Lesson 1",
                 "unit_number": 1}]
     LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Book",

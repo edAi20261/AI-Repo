@@ -21,8 +21,8 @@ from shared.structured import StructuredValidationFailure, call_structured, sche
 from .layout.blocks import ParsedPage
 from .layout.bridge import parsed_pages
 from .lesson import ID_NAMESPACE, UNTITLED
-from .prompts import LESSON_BREAKDOWN_PROMPT
-from .schemas import LessonBreakdown
+from .prompts import LESSON_BREAKDOWN_PROMPT, LESSON_TERMS_PROMPT
+from .schemas import LessonBreakdown, LessonTerms
 from .state import IngestionState
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,10 @@ class BreakdownFailed(RuntimeError):
     pass
 
 
+class TermColumnMissing(RuntimeError):
+    pass
+
+
 @dataclass
 class Lesson:
     lesson_id: str
@@ -51,6 +55,7 @@ class Lesson:
     unit_title: str
     page_from: int
     page_to: int
+    term: Optional[int] = None
 
     @property
     def label(self) -> str:
@@ -88,12 +93,14 @@ class _Entry:
     unit_title: str = ""
     unit_number: Optional[int] = None
     section: bool = False
+    term: Optional[int] = None
 
 
 def _entries(breakdown: LessonBreakdown) -> list[_Entry]:
-    lessons = [_Entry(item.title, item.start_page, unit.title, unit.unit_number)
+    lessons = [_Entry(item.title, item.start_page, unit.title, unit.unit_number,
+                      term=unit.term)
                for unit in breakdown.units for item in unit.lessons]
-    sections = [_Entry(item.title, item.start_page, section=True)
+    sections = [_Entry(item.title, item.start_page, section=True, term=item.term)
                 for item in breakdown.sections]
     return sorted(lessons + sections, key=lambda entry: entry.start_page)
 
@@ -126,7 +133,7 @@ def _oversized(entries: Sequence[_Entry], first_page: int, last_page: int,
 
 
 def _validator(first_page: int, last_page: int, oversized_ratio: float,
-               oversized_min_pages: int):
+               oversized_min_pages: int, max_term: int):
     def check(breakdown: LessonBreakdown) -> None:
         items = [item for unit in breakdown.units for item in unit.lessons]
         if not items and not breakdown.sections:
@@ -155,6 +162,7 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
             raise ValueError("every lesson and section needs its title as printed in the "
                              "book; a lesson whose pages show only its number is titled "
                              "with that number as printed")
+        check_terms([entry.term for entry in _entries(breakdown)], max_term)
         long = _oversized(_entries(breakdown), first_page, last_page, oversized_ratio,
                           oversized_min_pages)
         if long:
@@ -165,6 +173,18 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
                 "part of the lesson before them: list them under sections, each with the "
                 "page it starts on")
     return check
+
+
+def check_terms(terms: Sequence[Optional[int]], max_term: int) -> None:
+    """Raise when the terms of a book's parts, in book order, cannot be right."""
+    given = [term for term in terms if term is not None]
+    unknown = sorted({term for term in given if not 1 <= term <= max_term})
+    if unknown:
+        raise ValueError(f"terms {unknown} are not terms of a school year: a term is a "
+                         f"number from 1 to {max_term}, or null when the book does not say")
+    if any(b < a for a, b in zip(given, given[1:])):
+        raise ValueError("a book's terms run in order, the first term's parts before the "
+                         f"second's; in book order the terms given were {given}")
 
 
 def _same(a: str, b: str) -> bool:
@@ -193,12 +213,13 @@ def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Le
             LessonBreakdown, prompt, task=TASK, config=config, llm=llm,
             label="lesson_breakdown",
             validate=_validator(numbers[0], numbers[-1], settings["oversized_lesson_ratio"],
-                                settings["oversized_lesson_min_pages"]))
+                                settings["oversized_lesson_min_pages"], settings["max_term"]))
     except StructuredValidationFailure as error:
         raise BreakdownFailed(f"could not split the book into lessons: {error}") from error
     shared = settings["shared_pages"][state.get("namespace") or SYLLABUS]
     return lessons_from(breakdown, book_id=state["lecture_id"],
-                        first_page=numbers[0], last_page=numbers[-1], shared_pages=shared)
+                        first_page=numbers[0], last_page=numbers[-1], shared_pages=shared,
+                        term=state.get("term"))
 
 
 def lessons_for(state: IngestionState, config, *, llm: Any = None) -> list[Lesson]:
@@ -221,7 +242,39 @@ def lessons_for(state: IngestionState, config, *, llm: Any = None) -> list[Lesso
         return []
     return [Lesson(lesson_id=lesson_id_for(state["lecture_id"], 0), ordinal=0,
                    title=state.get("lesson_title") or UNTITLED, unit_number=None,
-                   unit_title="", page_from=pages[0], page_to=pages[-1])]
+                   unit_title="", page_from=pages[0], page_to=pages[-1],
+                   term=state.get("term"))]
+
+
+@dataclass(frozen=True)
+class SplitLesson:
+    ordinal: int
+    title: str
+    opening: str
+
+
+def read_lesson_terms(opening_pages: str, lessons: Sequence[SplitLesson], config, *,
+                      llm: Any = None) -> dict[int, Optional[int]]:
+    """The term of each lesson of a book that was split before terms were read."""
+    ordinals = [lesson.ordinal for lesson in lessons]
+    max_term = config.get("ingestion.books.max_term")
+
+    def check(answer: LessonTerms) -> None:
+        listed = sorted(item.ordinal for item in answer.lessons)
+        if listed != sorted(ordinals):
+            raise ValueError(f"list every lesson once, by its number: {sorted(ordinals)}; "
+                             f"got {listed}")
+        check_terms([item.term for item in sorted(answer.lessons, key=lambda i: i.ordinal)],
+                    max_term)
+
+    listing = "\n".join(f"[{lesson.ordinal}] {lesson.title} | {lesson.opening}"
+                         for lesson in lessons)
+    prompt = LESSON_TERMS_PROMPT.render(opening_pages=opening_pages, lessons=listing,
+                                        schema=schema_hint(LessonTerms))
+    answer = call_structured(LessonTerms, prompt, task=TASK, config=config,
+                             llm=llm if llm is not None else get_llm(config, TASK),
+                             label="lesson_terms", validate=check)
+    return {item.ordinal: item.term for item in answer.lessons}
 
 
 COPY, MERGE = "copy", "merge"
@@ -240,7 +293,10 @@ def _merged(entries: Sequence[_Entry]) -> list[_Entry]:
 
 
 def lessons_from(breakdown: LessonBreakdown, *, book_id: str, first_page: int,
-                 last_page: int, shared_pages: str = COPY) -> list[Lesson]:
+                 last_page: int, shared_pages: str = COPY,
+                 term: Optional[int] = None) -> list[Lesson]:
+    """The book's lessons. ``term`` is the operator's word for the whole book, and
+    wins over what the model read from it."""
     if shared_pages not in (COPY, MERGE):
         raise ValueError(f"shared_pages is {COPY!r} or {MERGE!r}, not {shared_pages!r}")
     entries = _entries(breakdown)
@@ -248,7 +304,8 @@ def lessons_from(breakdown: LessonBreakdown, *, book_id: str, first_page: int,
         entries = _merged(entries)
     return [Lesson(lesson_id=lesson_id_for(book_id, ordinal), ordinal=ordinal,
                    title=entry.title, unit_number=entry.unit_number,
-                   unit_title=entry.unit_title, page_from=page_from, page_to=page_to)
+                   unit_title=entry.unit_title, page_from=page_from, page_to=page_to,
+                   term=entry.term if term is None else term)
             for ordinal, (entry, (page_from, page_to))
             in enumerate(zip(entries, _spans(entries, first_page, last_page)))]
 
@@ -302,18 +359,31 @@ def lesson_states(state: IngestionState) -> list[IngestionState]:
     return states
 
 
-_UPSERT_LESSON = """
+def _upsert_lesson(with_term: bool) -> str:
+    term_column, term_value, term_update = (
+        (", term", ", %s", "\n    term = EXCLUDED.term,") if with_term else ("", "", ""))
+    return f"""
 INSERT INTO content.lessons
-    (id, subject_id, source, title, description, unit_number, order_index,
+    (id, subject_id, source, title, description, unit_number, order_index{term_column},
      status, ingestion_status)
-VALUES (%s, %s, %s, %s, %s, %s, %s, 'draft', 'processing')
+VALUES (%s, %s, %s, %s, %s, %s, %s{term_value}, 'draft', 'processing')
 ON CONFLICT (id) DO UPDATE SET
     title = EXCLUDED.title,
     description = EXCLUDED.description,
-    unit_number = EXCLUDED.unit_number,
+    unit_number = EXCLUDED.unit_number,{term_update}
     ingestion_status = 'processing',
     ingestion_error = NULL,
     updated_at = now()
+"""
+
+
+# The backend owns content.lessons; its term column arrives with a Prisma
+# migration (docs/BACKEND_INTEGRATION.md, "Lesson terms"), and ingestion must keep
+# working on a database that does not have it yet.
+_HAS_TERM = """
+SELECT EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'content' AND table_name = 'lessons'
+                 AND column_name = 'term')
 """
 
 _LOCK_SUBJECT = "SELECT pg_advisory_xact_lock(hashtext(%s))"
@@ -325,6 +395,21 @@ subject_id = %(subject)s AND status <> 'archived' AND source <> %(background_sou
 _NEXT_ORDER = f"""
 SELECT COALESCE(MAX(order_index), -1) + 1 FROM content.lessons
 WHERE {_SHOWN_IN_SUBJECT} AND NOT (id = ANY(%(ids)s::uuid[]))
+"""
+
+# Both terms' books share a subject, and each book was appended after the last:
+# Christian Religion G7 showed the second term's lessons 0-18 and the first's
+# 19-37. A book in the middle of a term keeps its place among that term's books.
+_ORDER_BY_TERM = f"""
+UPDATE content.lessons AS l SET order_index = o.position, updated_at = now()
+FROM (SELECT id, row_number() OVER (ORDER BY term NULLS LAST, order_index, id) - 1 AS position
+      FROM content.lessons WHERE {_SHOWN_IN_SUBJECT}) AS o
+WHERE l.id = o.id AND l.order_index <> o.position
+"""
+
+_SET_TERM = """
+UPDATE content.lessons SET term = %(term)s, updated_at = now()
+WHERE id = %(lesson_id)s AND subject_id = %(subject)s AND term IS DISTINCT FROM %(term)s
 """
 
 _PUBLISHES = "%(publish)s AND status = 'draft' AND source = %(shown_source)s"
@@ -363,17 +448,57 @@ class LessonCatalog:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(_LOCK_SUBJECT, (subject_id,))
+                with_term = self._has_term(cur, subject_id, lessons)
                 # A student sees a lesson's place among the lessons shown: the
                 # first book after twelve background books in a subject was
                 # numbered from 583.
                 cur.execute(_NEXT_ORDER, {"subject": subject_id, "ids": ids,
                                           "background_source": self._sources[BACKGROUND]})
                 base = cur.fetchone()[0]
+                upsert = _upsert_lesson(with_term)
                 for lesson in lessons:
-                    cur.execute(_UPSERT_LESSON, (
-                        lesson["lesson_id"], subject_id, source, lesson["title"],
-                        book_title, lesson["unit_number"], base + lesson["ordinal"]))
+                    row = (lesson["lesson_id"], subject_id, source, lesson["title"],
+                           book_title, lesson["unit_number"], base + lesson["ordinal"])
+                    cur.execute(upsert, (*row, lesson.get("term")) if with_term else row)
+                if with_term:
+                    self._order_by_term(cur, subject_id)
             conn.commit()
+
+    def set_terms(self, subject_id: str, terms: dict[str, Optional[int]]) -> int:
+        """Store the terms of a subject's lessons and order the subject by them."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_LOCK_SUBJECT, (subject_id,))
+                cur.execute(_HAS_TERM)
+                row = cur.fetchone()
+                if not (row and row[0]):
+                    raise TermColumnMissing(
+                        "content.lessons has no term column yet; the backend migration in "
+                        "docs/BACKEND_INTEGRATION.md (\"Lesson terms\") adds it")
+                changed = 0
+                for lesson_id, term in terms.items():
+                    cur.execute(_SET_TERM, {"term": term, "lesson_id": lesson_id,
+                                            "subject": subject_id})
+                    changed += max(cur.rowcount, 0)
+                self._order_by_term(cur, subject_id)
+            conn.commit()
+        return changed
+
+    def _order_by_term(self, cur, subject_id: str) -> None:
+        cur.execute(_ORDER_BY_TERM, {"subject": subject_id,
+                                     "background_source": self._sources[BACKGROUND]})
+
+    @staticmethod
+    def _has_term(cur, subject_id: str, lessons: Sequence[dict]) -> bool:
+        cur.execute(_HAS_TERM)
+        row = cur.fetchone()
+        present = bool(row and row[0])
+        termed = sum(1 for lesson in lessons if lesson.get("term") is not None)
+        if not present and termed:
+            logger.warning("content.lessons has no term column; the term of these lessons "
+                           "is not stored and the subject is not ordered by term",
+                           extra={"subject_id": subject_id, "lessons_with_term": termed})
+        return present
 
     def finished(self, lesson_id: str, *, status: str, errors: Sequence[str],
                  version: int) -> None:
