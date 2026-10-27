@@ -221,7 +221,7 @@ def test_a_request_that_only_points_at_the_selected_lesson_is_read_as_about_it(m
     assert "names_subject_matter:" in prompt
 
 
-def test_a_pointing_request_inside_a_selected_lesson_is_sent_back_until_it_names_the_lesson(
+def test_a_pointing_request_inside_a_selected_lesson_is_sent_back_until_it_reads_the_lesson(
         monkeypatch):
     """A query of "the topic" with a lesson selected searched for nothing and
     reached the answer with no subject to explain, so the tutor declined."""
@@ -229,10 +229,18 @@ def test_a_pointing_request_inside_a_selected_lesson_is_sent_back_until_it_names
 
     with pytest.raises(ValueError, match="whole_lesson"):
         validate(_pointing(query="the topic", names_subject_matter=False))
-    with pytest.raises(ValueError, match="Subtraction"):
-        validate(_pointing(query="the topic", names_subject_matter=False, whole_lesson=True))
-    validate(_pointing(query="the lesson Subtraction", names_subject_matter=False,
-                       whole_lesson=True))
+    validate(_pointing(query="the topic", names_subject_matter=False, whole_lesson=True))
+
+
+def test_a_whole_lesson_reading_is_not_held_to_the_lessons_exact_title(monkeypatch):
+    """A whole-lesson task reads the lesson whatever its query says. Requiring the
+    title verbatim would fail every retry for a model that translated it, and the
+    turn would end with the tutor unavailable instead of an answer."""
+    captured = _read_with(monkeypatch, _SELECTED)
+
+    assert "write the lesson's title in the query" in captured["prompt"]
+    captured["validate"](_pointing(query="الطرح", names_subject_matter=False,
+                                   whole_lesson=True))
 
 
 def test_without_a_selected_lesson_a_pointing_request_is_not_forced_onto_one(monkeypatch):

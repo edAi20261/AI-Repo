@@ -201,23 +201,21 @@ def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
     return "\n".join(lines)
 
 
-def _about_the_selected_lesson(task: PlannedTask, scope: StudyScope) -> None:
+def _about_the_selected_lesson(task: PlannedTask) -> None:
     """A request that only points, with a lesson open, is about that lesson.
 
     The lesson screen's starter chips say "Explain this topic". Searched for as
     "the topic", the request found nothing and the answer said the topic was not
     specified, so the tutor declined on the very screen that offered the chip.
+
+    The prompt asks for the lesson's title in the query but nothing checks it: a
+    whole-lesson task reads the lesson whatever the query says, and a model that
+    translated or paraphrased the title would fail every retry, turning a decline
+    into the tutor being unavailable.
     """
-    if task.names_subject_matter:
-        return
-    if not task.whole_lesson:
+    if not task.names_subject_matter and not task.whole_lesson:
         raise ValueError(f"the {task.type} task names no subject matter and a lesson is "
                          "selected, so it is about that lesson: set whole_lesson to true")
-    title = scope.label()
-    if title and " ".join(title.casefold().split()) not in " ".join(
-            (task.query or "").casefold().split()):
-        raise ValueError(f"the {task.type} task is about the selected lesson, so its query "
-                         f"must name it by its title: {title}")
 
 
 def _coherent(allowed: list[str], supported: tuple[str, ...], message: str,
@@ -238,7 +236,7 @@ def _coherent(allowed: list[str], supported: tuple[str, ...], message: str,
             if not (task.query or "").strip():
                 raise ValueError(f"the {task.type} task needs a query that names what it is about")
             if scope and scope.is_narrow and task.type != "grade":
-                _about_the_selected_lesson(task, scope)
+                _about_the_selected_lesson(task)
         if reading.continues_previous and reading.scope_fit == "outside":
             raise ValueError("a message that continues the tutor's last answer is about what "
                              "that answer taught, so scope_fit cannot be outside")
