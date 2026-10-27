@@ -276,6 +276,31 @@ def test_a_refusal_that_knows_no_topics_is_told_to_name_none(monkeypatch):
     _declined(StudyScope(), {"language": "en", "message": "q"}, writer, "friendly")
     assert "Do not name any topic" in writer.prompt
     assert "suggest what they could ask about instead" not in writer.prompt
+
+
+def test_a_turn_that_produced_nothing_is_told_what_the_lessons_do_cover(monkeypatch):
+    """Every turn that produced nothing crashed: ``_no_material`` rendered the
+    refusal without the ``suggest`` placeholder the prompt had gained, the render
+    raised, and the student saw "not sent"."""
+    from agent import retrieval
+    from agent.graph.nodes import _no_material
+
+    asked = {}
+
+    def offer(**kw):
+        asked.update(kw)
+        return ["Borrowing"]
+
+    monkeypatch.setattr(retrieval, "topics_on_offer", offer)
+    writer = _Writer("Your lessons don't cover that.")
+    text = _no_material({"message": "draw me a mind map", "subject_id": "maths",
+                         "study_scope": {"subject_id": "maths", "lecture_id": LESSON}},
+                        writer, "en", "")
+    assert text == "Your lessons don't cover that."
+    assert "Borrowing" in writer.prompt
+    assert asked["lecture_id"] == LESSON
+
+
 # --- the selected subject is the turn's subject ------------------------------
 
 def test_the_subject_a_student_selected_is_the_subject_the_turn_is_answered_in():

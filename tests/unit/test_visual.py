@@ -326,3 +326,23 @@ def test_dispatch_routes_visual():
         "namespaces": ["syllabus"], "language": "en", "subject_id": "sub1", "user_id": "u1",
     })
     assert len(sends) == 1 and sends[0].node == "visual_adapter"
+
+
+def _planned_visual(kind: str, message: str):
+    from agent.models import PlannedTask, TurnUnderstanding, VisualSpec
+
+    return TurnUnderstanding(
+        needs_syllabus=True, student_words=message,
+        tasks=[PlannedTask(type="visual", query=message, visual=VisualSpec(kind=kind))])
+
+
+def test_a_planned_visual_nothing_can_render_is_sent_back_to_the_model():
+    """The mind-map starter chip was planned as kind ``image``, which nothing renders,
+    so it was skipped silently, the turn produced nothing, and the student saw an
+    error instead of a mind map."""
+    message = "Draw me a mind map of the main ideas in this topic"
+    check = nmod._coherent(["visual"], ("en",), message)
+    with pytest.raises(ValueError, match="image"):
+        check(_planned_visual("image", message))
+    check(_planned_visual("mindmap", message))
+    check(_planned_visual("figure", message))

@@ -524,3 +524,46 @@ def test_a_topic_no_passage_is_tagged_with_is_found_by_its_name(monkeypatch):
         "type_mix": {"mcq": 3}, "k_per_topic": 2, "adaptive": False,
     })
     assert sorted(i["topic_id"] for i in out["assessment"]["items"]) == ["t1", "t2", "t3"]
+
+
+def test_a_quiz_on_a_lesson_without_topics_asks_from_more_than_one_passage(monkeypatch):
+    """213 published lessons have no topics. A quiz on one searched the request,
+    found a single passage, never read the lesson because something had been found,
+    and the model wrote no questions from it, so the turn produced nothing."""
+    lone = RetrievedChunk(chunk_id="c-1", score=0.6, text="Plants make food.",
+                          lecture_id="lec-x", topic_ids=[], page_from=1, page_to=1,
+                          heading_path=None, language="en")
+    monkeypatch.setattr(qmod.retrieval, "retrieve", lambda *a, **k: [lone])
+    read = {"lessons": []}
+
+    def whole_lesson(lecture_id, namespaces, *, limit):
+        read["lessons"].append(lecture_id)
+        return [RetrievedChunk(
+            chunk_id=f"c-{n}", score=0.0, text=f"Passage {n}.", lecture_id=lecture_id,
+            topic_ids=[], page_from=n, page_to=n, heading_path=None, language="en")
+            for n in range(1, 4)]
+
+    monkeypatch.setattr(qmod.retrieval, "whole_lesson", whole_lesson)
+    out = qmod._retrieve_batch({
+        "query": "quiz me on this lesson", "subject_id": "sub1", "lecture_ids": ["lec-x"],
+        "namespaces": ["syllabus"], "k_per_topic": 4,
+        "coverage": [{"topic_id": None, "type": "mcq", "difficulty": "easy"}] * 3,
+    })
+
+    assert read["lessons"] == ["lec-x"]
+    assert [c.chunk_id for c in out["chunks_by_topic"][""]] == ["c-1", "c-2", "c-3"]
+
+
+def test_a_lesson_quiz_with_a_passage_for_every_question_does_not_read_the_lesson(monkeypatch):
+    found = [RetrievedChunk(chunk_id=f"c-{n}", score=0.6, text=f"Passage {n}.",
+                            lecture_id="lec-x", topic_ids=[], page_from=n, page_to=n,
+                            heading_path=None, language="en") for n in range(1, 3)]
+    monkeypatch.setattr(qmod.retrieval, "retrieve", lambda *a, **k: found)
+    monkeypatch.setattr(qmod.retrieval, "whole_lesson",
+                        lambda *a, **k: pytest.fail("the lesson was read"))
+    out = qmod._retrieve_batch({
+        "query": "quiz me", "subject_id": "sub1", "lecture_ids": ["lec-x"],
+        "namespaces": ["syllabus"], "k_per_topic": 4,
+        "coverage": [{"topic_id": None, "type": "mcq", "difficulty": "easy"}] * 2,
+    })
+    assert out["chunks_by_topic"][""] == found

@@ -57,7 +57,8 @@ from ..prompts import (
     TASK_DESCRIPTIONS,
     UNDERSTAND_PROMPT,
 )
-from ..retrieval import DEFAULT_MIN_SCORE
+from ..retrieval import DEFAULT_MIN_SCORE, what_to_suggest
+from .subgraphs.visual_sg import RENDERABLE_KINDS
 from ..scope import StudyScope, lecture_filter, scope_of
 from ..subjects import SubjectDirectory
 from ..learner import standing
@@ -214,6 +215,9 @@ def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
                                  f"use only {available}; {way_out}")
             if not (task.query or "").strip():
                 raise ValueError(f"the {task.type} task needs a query that names what it is about")
+            if task.visual is not None and task.visual.kind not in RENDERABLE_KINDS:
+                raise ValueError(f"visual kind {task.visual.kind!r} cannot be drawn here; "
+                                 f"use one of {', '.join(sorted(RENDERABLE_KINDS))}")
         if reading.continues_previous and reading.scope_fit == "outside":
             raise ValueError("a message that continues the tutor's last answer is about what "
                              "that answer taught, so scope_fit cannot be outside")
@@ -921,6 +925,7 @@ def _no_material(state, llm, language: str, voice: str) -> str:
         return NOTHING_PRODUCED
     prompt = NO_MATERIAL_PROMPT.render(
         language=language, style=(state.get("style") or Style()).tone, scope="",
+        suggest=what_to_suggest(scope_of(state), state.get("subject_id")),
         history=state.get("history") or "", message=state.get("message", ""), voice=voice)
     try:
         text = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()

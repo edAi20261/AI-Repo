@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
+from .prompts import SUGGEST_COVERED_TOPICS, SUGGEST_NO_TOPIC
+from .scope import StudyScope
 from .tools import (
     get_lecture_topics,
     get_lesson_chunks,
@@ -23,6 +25,8 @@ from .tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+OFFERED_TOPICS = 5
 
 
 def retrieve(
@@ -113,6 +117,24 @@ def topics_on_offer(*, lecture_id: str | None, subject_id: str | None,
                        extra={"lecture_id": lecture_id, "subject_id": subject_id},
                        exc_info=True)
     return []
+
+
+def what_to_suggest(scope: StudyScope, subject_id: str | None = None) -> str:
+    """What a tutor that has nothing to give may offer instead.
+
+    Told to suggest what the student could ask and never told what the lessons
+    hold, the model made topics up: a maths student was offered "The Water
+    Cycle", an Arabic one "the history of the internet". It is given the real
+    topics of the lesson or subject, or told to name none.
+    """
+    offer = topics_on_offer(
+        lecture_id=scope.lecture_id if scope.is_narrow else None,
+        subject_id=scope.subject_id or subject_id, limit=OFFERED_TOPICS)
+    if offer:
+        return SUGGEST_COVERED_TOPICS.format(topics="; ".join(offer))
+    return SUGGEST_NO_TOPIC
+
+
 def whole_lesson(lecture_id: str, namespaces: list[str], *, limit: int) -> list[RetrievedChunk]:
     """The selected lesson's own passages, for a request about the lesson as a whole."""
     chunks = get_lesson_chunks(lecture_id, namespaces, limit=limit)
