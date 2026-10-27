@@ -1,18 +1,21 @@
 """Attach to each lesson of a book the pages of the book it was cut from.
 
 The lesson page shows a lesson's PDF attachment, and a lesson ingestion split
-out of a book had none: a student opened it to an empty page. This cuts each
-lesson's pages out of the book's PDF, stores them beside the book, and attaches
-them to the lesson. A lesson that already has an attachment, and a lesson of
-the book that is not shown (its glossary or index, filed as background), is
-left alone.
+out of a book had none: a student opened it to an empty page. Ingestion now
+attaches them itself (``ingestion.lesson_pages``); this does the same, with the
+same functions, for the lessons ingested before it did. A lesson that already
+has an attachment, and a lesson of the book that is not shown (its glossary or
+index, filed as background), is left alone.
 
 A lesson's pages run from the first page any of its passages came from to the
 page before the next lesson's, counting every lesson of the book, shown or not;
 the last runs to the end of the book.
 
-    python -m scripts.attach_lesson_pages --source s3://bucket/book.pdf --uploader <user id>          # dry run
-    python -m scripts.attach_lesson_pages --source s3://bucket/book.pdf --uploader <user id> --apply
+    python -m scripts.attach_lesson_pages --source s3://bucket/book.pdf          # dry run
+    python -m scripts.attach_lesson_pages --source s3://bucket/book.pdf --apply
+
+The pages are stored as the user ``LESSON_PAGES_UPLOADER`` names, unless
+``--uploader`` names another.
 
 ``--book`` names the book's id when it was not ingested from ``--source`` itself
 (a book ingested before ingestion split books is filed under its own id).
@@ -22,15 +25,17 @@ from __future__ import annotations
 
 import argparse
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ingestion import lesson_pages
 from ingestion.books import STALE_SEARCH, lesson_id_for
 from ingestion.lesson import book_id_for
 from shared.config import get_config
 from shared.namespaces import SYLLABUS
 from shared.postgres import connect_once
-from shared.storage import s3_client
+from shared.storage import get_uploader, s3_client
 
 _LESSONS = """
 SELECT l.id::text, l.subject_id::text, l.title,
@@ -40,15 +45,6 @@ SELECT l.id::text, l.subject_id::text, l.title,
 FROM content.lessons l
 WHERE l.id = ANY(%(ids)s::uuid[]) AND l.status <> 'archived'
 ORDER BY l.order_index
-"""
-_MEDIA = """
-INSERT INTO content.media_assets (uploaded_by, s3_bucket, s3_key, file_name, mime_type, size_bytes)
-VALUES (%(uploader)s, %(bucket)s, %(key)s, %(file_name)s, 'application/pdf', %(size)s)
-RETURNING id
-"""
-_ATTACH = """
-INSERT INTO content.lesson_attachments (lesson_id, media_id, description, order_index)
-VALUES (%(lesson)s, %(media)s, 'Lesson PDF', 0)
 """
 
 
@@ -62,18 +58,14 @@ def _spans(rows: list[tuple], page_count: int) -> list[tuple[tuple, int, int]]:
     return spans
 
 
-def _file_name(title: str, lesson_id: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in " -_" else " " for ch in title)
-    return f"{' '.join(safe.split())[:120] or lesson_id}.pdf"
-
-
 def main(argv: list[str] | None = None) -> int:
     import fitz
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", required=True, help="the book's PDF, s3://bucket/key")
     parser.add_argument("--book", help="the book's id, when it is not the one --source gives")
-    parser.add_argument("--uploader", required=True, help="the user the pages are stored as")
+    parser.add_argument("--uploader", help="the user the pages are stored as, when not "
+                                           "the one LESSON_PAGES_UPLOADER names")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
 
@@ -105,20 +97,14 @@ def main(argv: list[str] | None = None) -> int:
             print("dry run: nothing changed; pass --apply to attach")
             return 0
 
-        folder = key.rsplit("/", 1)[0] + "/lessons"
+        uploader = args.uploader or lesson_pages.uploader_id(config)
+        storage = get_uploader(config)
         for (lesson_id, subject_id, title, _, _), first, last in todo:
-            part = fitz.open()
-            part.insert_pdf(book, from_page=first - 1, to_page=last - 1)
-            data = part.tobytes(garbage=3, deflate=True)
-            part.close()
-            target = f"{folder}/{subject_id}/{lesson_id}.pdf"
-            s3.put_object(Bucket=bucket, Key=target, Body=data, ContentType="application/pdf")
+            stored = lesson_pages.store(storage, book, subject_id=subject_id,
+                                        lesson_id=lesson_id, title=title,
+                                        first_page=first, last_page=last)
             with connect_once(config) as conn, conn.cursor() as cur:
-                cur.execute(_MEDIA, {"uploader": args.uploader, "bucket": bucket, "key": target,
-                                     "file_name": _file_name(title, lesson_id),
-                                     "size": len(data)})
-                media_id = cur.fetchone()[0]
-                cur.execute(_ATTACH, {"lesson": lesson_id, "media": media_id})
+                lesson_pages.record(cur, asdict(stored), lesson_id=lesson_id, uploader=uploader)
                 conn.commit()
             print(f"attached p{first}-{last} to {lesson_id}")
     return 0

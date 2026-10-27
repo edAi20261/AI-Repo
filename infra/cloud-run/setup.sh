@@ -27,7 +27,7 @@ account="${SERVICE_ACCOUNT:-ingestion-deployer@$project.iam.gserviceaccount.com}
 tag="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 image="$region-docker.pkg.dev/$project/ingest/ingest:$tag"
 bucket="$project-ingest-work"
-secrets=(DATABASE_URL QDRANT_URL QDRANT_API_KEY S3_BUCKET S3_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY)
+secrets=(DATABASE_URL QDRANT_URL QDRANT_API_KEY S3_BUCKET S3_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LESSON_PAGES_UPLOADER)
 
 gcloud config set project "$project" >/dev/null
 
