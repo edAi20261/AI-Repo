@@ -325,15 +325,15 @@ units 1–5 twice. Students and teachers cannot pick a term.
 ```prisma
 model Lesson {
   // ...
-  // Term of the school year: 1, 2 (3 for a trimester curriculum). NULL when the
-  // curriculum has no terms or the book does not say.
+  // Term of the school year: 1 or 2. NULL when the curriculum has no terms or
+  // the book does not say.
   term Int? @db.SmallInt
 
   @@index([subjectId, term, orderIndex], map: "idx_lessons_subject_term")
 }
 ```
 
-Add `CHECK (term BETWEEN 1 AND 3)` in the migration SQL; Prisma cannot declare it.
+Add `CHECK (term BETWEEN 1 AND 2)` in the migration SQL; Prisma cannot declare it.
 
 **Who writes it.** Ingestion, for every lesson it creates: it reads each part's
 term from the book's cover and table of contents (or takes it from whoever
@@ -341,7 +341,7 @@ ingests the book), stores it, and renumbers `order_index` across the subject so
 the first term's lessons come before the second's. Until the column exists,
 ingestion keeps working and logs that the term was not stored. Lessons a
 teacher creates have no term unless your create/update endpoints accept one —
-please add `term` (optional, 1–3) to both.
+please add `term` (optional, 1 or 2) to both.
 
 **What the platform shows.**
 - Return `term` on every lesson the API sends, and accept `?term=1` on the

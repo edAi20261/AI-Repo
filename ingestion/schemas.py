@@ -183,7 +183,15 @@ class LessonTerm(BaseModel):
 class LessonTerms(BaseModel):
     """Structured-output wrapper: the term of each lesson of a book already split."""
 
+    book_term: Optional[int] = Field(
+        default=None, description="The term the whole book is for, when it is for one term. "
+                                  "Null for a book for the whole year, or one that does not say.")
     lessons: list[LessonTerm] = Field(default_factory=list)
+
+    @field_validator("book_term", mode="before")
+    @classmethod
+    def _book_term_or_none(cls, v):
+        return _whole_number_or_none(v)
 
 
 class LessonBreakdown(BaseModel):

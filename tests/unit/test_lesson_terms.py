@@ -213,3 +213,46 @@ def test_a_reviewed_plan_is_stored_subject_by_subject():
             {"subject_id": "other", "lesson_id": "c", "term": "2"}]
     assert apply_plan(rows, _Catalog()) == 3
     assert stored == {SUBJECT: {"a": 1, "b": None}, "other": {"c": 2}}
+
+
+def test_a_book_cut_into_one_pdf_per_lesson_is_read_whole_from_its_cover():
+    """Each slice of Christian Religion G7 was read on its own, and only the slice
+    holding page 1 has the cover that names the term: 35 of its 38 lessons came
+    back with no term."""
+    from scripts.backfill_lesson_terms import books_to_read
+    from tests.conftest import FakePostgres
+
+    parent, first, second = "9d3f1b20-0002-4a00-9000-000000000011", BOOK, "b" * 8
+    db = FakePostgres(fetchall=[
+        [(first, parent, 1), (second, parent, 40)],
+        [(second, SUBJECT, "Lesson 2"), (first, SUBJECT, "Lesson 1")],
+        [(first, "opens"), (second, "opens")],
+        [(1, {"text": "Student book, second term"})],
+    ])
+    (book,) = books_to_read(db, None)
+    assert book.book_id == parent
+    assert [(lesson_id, lesson.ordinal) for lesson_id, lesson in book.lessons] == [
+        (first, 0), (second, 1)]
+    assert "second term" in book.opening_pages
+    (opening_args,) = [args for sql, args in db.statements if "LIMIT" in sql]
+    assert opening_args[0] == [first, second]
+
+
+def test_every_lesson_of_a_book_for_one_term_is_in_that_term_whether_or_not_it_was_said():
+    """The second-term Christian Religion G7 book came back with a term for six of
+    its nineteen lessons and none for the rest."""
+    lessons = [SplitLesson(n, f"Lesson {n}", "") for n in range(3)]
+    model = _Model('{"book_term": 2, "lessons": [{"ordinal": 0, "term": 2}, '
+                   '{"ordinal": 1}, {"ordinal": 2, "term": null}]}')
+    assert read_lesson_terms("[1] second term", lessons, _config(), llm=model) == {
+        0: 2, 1: 2, 2: 2}
+
+
+def test_a_book_for_one_term_with_a_lesson_in_another_is_sent_back():
+    lessons = [SplitLesson(n, f"Lesson {n}", "") for n in range(2)]
+    model = _Model('{"book_term": 1, "lessons": [{"ordinal": 0, "term": 1}, '
+                   '{"ordinal": 1, "term": 2}]}',
+                   '{"book_term": null, "lessons": [{"ordinal": 0, "term": 1}, '
+                   '{"ordinal": 1, "term": 2}]}')
+    assert read_lesson_terms("", lessons, _config(), llm=model) == {0: 1, 1: 2}
+    assert "whole year" in model.prompts[1]

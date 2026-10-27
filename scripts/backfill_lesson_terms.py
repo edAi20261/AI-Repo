@@ -39,10 +39,22 @@ logger = logging.getLogger("backfill_lesson_terms")
 LESSON_OPENING_CHARS = 240
 FIELDS = ("subject_id", "book_id", "lesson_id", "ordinal", "term", "title")
 
-_BOOKS = "SELECT DISTINCT lecture_id::text FROM ai.page_transcriptions ORDER BY 1"
+# A book cut into one PDF per lesson was read slice by slice, each under its
+# lesson's own id, and only the slice holding page 1 has the cover that says
+# which term the book is: Christian Religion G7 read as no term in 35 of its 38
+# lessons until the slices were put back together under the book they came from.
+_BOOKS = """
+SELECT lecture_id::text,
+       COALESCE(NULLIF(MIN(raw_output->'meta'->>'doc_id'), lecture_id::text),
+                lecture_id::text) AS book,
+       MIN(page) AS first_page
+FROM ai.page_transcriptions GROUP BY lecture_id ORDER BY 2, 3
+"""
 _OPENING = """
-SELECT DISTINCT ON (page) page, raw_output FROM ai.page_transcriptions
-WHERE lecture_id = %s AND page <= %s ORDER BY page, created_at DESC
+SELECT page, raw_output FROM (
+    SELECT DISTINCT ON (page) page, raw_output FROM ai.page_transcriptions
+    WHERE lecture_id = ANY(%s::uuid[]) ORDER BY page, created_at DESC) AS pages
+ORDER BY page LIMIT %s
 """
 _LESSONS = """
 SELECT id::text, subject_id::text, title FROM content.lessons
@@ -76,32 +88,41 @@ def _one_line(text: str, limit: int) -> str:
 
 def books_to_read(cur, subjects: Optional[list[str]]) -> list[Book]:
     cur.execute(_BOOKS)
+    slices: dict[str, list[str]] = defaultdict(list)
+    for slice_id, book_id, _ in cur.fetchall():
+        slices[book_id].append(slice_id)
     books = []
-    for (book_id,) in cur.fetchall():
-        # A book cut into one PDF per lesson was ingested under the lesson's own id.
-        ordinal_of = {book_id: 0, **{lesson_id_for(book_id, n): n for n in range(STALE_SEARCH)}}
-        cur.execute(_LESSONS, {"ids": list(ordinal_of), "subjects": subjects})
-        rows = cur.fetchall()
-        if not rows:
-            continue
-        by_subject = Counter(subject_id for _, subject_id, _ in rows)
-        if len(by_subject) > 1:
-            logger.error("book %s has lessons in %d subjects; left out", book_id,
-                         len(by_subject))
-            continue
-        cur.execute(_LESSON_OPENINGS, ([lesson_id for lesson_id, _, _ in rows],))
-        openings = dict(cur.fetchall())
-        cur.execute(_OPENING, (book_id, OPENING_PAGES))
-        opening = "\n\n".join(f"[{page}]\n{page_text(raw)[:OPENING_PAGE_CHARS]}"
-                              for page, raw in cur.fetchall())
-        lessons = sorted(
-            ((lesson_id, SplitLesson(ordinal_of[lesson_id], _one_line(title, 200),
-                                     _one_line(openings.get(lesson_id, ""),
-                                               LESSON_OPENING_CHARS)))
-             for lesson_id, _, title in rows),
-            key=lambda pair: pair[1].ordinal)
-        books.append(Book(book_id, rows[0][1], opening, lessons))
+    for book_id, slice_ids in slices.items():
+        book = _book(cur, book_id, slice_ids, subjects)
+        if book is not None:
+            books.append(book)
     return books
+
+
+def _book(cur, book_id: str, slice_ids: list[str],
+          subjects: Optional[list[str]]) -> Optional[Book]:
+    place = {}
+    for position, slice_id in enumerate(slice_ids):
+        place[slice_id] = (position, 0)
+        place.update({lesson_id_for(slice_id, n): (position, n) for n in range(STALE_SEARCH)})
+    cur.execute(_LESSONS, {"ids": list(place), "subjects": subjects})
+    rows = sorted(cur.fetchall(), key=lambda row: place[row[0]])
+    if not rows:
+        return None
+    by_subject = Counter(subject_id for _, subject_id, _ in rows)
+    if len(by_subject) > 1:
+        logger.error("book %s has lessons in %d subjects; left out", book_id, len(by_subject))
+        return None
+    cur.execute(_LESSON_OPENINGS, ([lesson_id for lesson_id, _, _ in rows],))
+    openings = dict(cur.fetchall())
+    cur.execute(_OPENING, (slice_ids, OPENING_PAGES))
+    opening = "\n\n".join(f"[{page}]\n{page_text(raw)[:OPENING_PAGE_CHARS]}"
+                          for page, raw in cur.fetchall())
+    lessons = [(lesson_id, SplitLesson(ordinal, _one_line(title, 200),
+                                       _one_line(openings.get(lesson_id, ""),
+                                                 LESSON_OPENING_CHARS)))
+               for ordinal, (lesson_id, _, title) in enumerate(rows)]
+    return Book(book_id, rows[0][1], opening, lessons)
 
 
 def plan_rows(book: Book, terms: dict[int, Optional[int]]) -> list[dict[str, Any]]:

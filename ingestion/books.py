@@ -264,8 +264,16 @@ def read_lesson_terms(opening_pages: str, lessons: Sequence[SplitLesson], config
         if listed != sorted(ordinals):
             raise ValueError(f"list every lesson once, by its number: {sorted(ordinals)}; "
                              f"got {listed}")
-        check_terms([item.term for item in sorted(answer.lessons, key=lambda i: i.ordinal)],
-                    max_term)
+        check_terms([answer.book_term], max_term)
+        other = sorted({item.term for item in answer.lessons
+                        if answer.book_term is not None and item.term is not None
+                        and item.term != answer.book_term})
+        if other:
+            raise ValueError(f"the book is for term {answer.book_term}, yet lessons were given "
+                             f"terms {other}; a book with parts in two terms is for the whole "
+                             "year, and its book_term is null")
+        check_terms([_term_of(item, answer) for item in
+                     sorted(answer.lessons, key=lambda i: i.ordinal)], max_term)
 
     listing = "\n".join(f"[{lesson.ordinal}] {lesson.title} | {lesson.opening}"
                          for lesson in lessons)
@@ -274,7 +282,14 @@ def read_lesson_terms(opening_pages: str, lessons: Sequence[SplitLesson], config
     answer = call_structured(LessonTerms, prompt, task=TASK, config=config,
                              llm=llm if llm is not None else get_llm(config, TASK),
                              label="lesson_terms", validate=check)
-    return {item.ordinal: item.term for item in answer.lessons}
+    return {item.ordinal: _term_of(item, answer) for item in answer.lessons}
+
+
+def _term_of(item, answer: LessonTerms) -> Optional[int]:
+    """A lesson of a book for one term is in that term, whether or not it was said
+    again: the second-term Christian Religion G7 book came back with a term for
+    six of its nineteen lessons."""
+    return item.term if item.term is not None else answer.book_term
 
 
 COPY, MERGE = "copy", "merge"
