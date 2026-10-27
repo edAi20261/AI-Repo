@@ -81,9 +81,15 @@ to look up in the lessons; how the student wants it presented (simpler, shorter,
 an example or a memory aid) belongs to the answer, not the search. Write the query in
 {material_language}. For "grade", the query is the answer to mark, copied as written.
 level is basic or intermediate; length is short or medium.
+names_subject_matter: on a task, false when neither the student's request nor the
+conversation names what it is about, and the request only points ("this", "it", "this topic",
+"this lesson", or the same in any language); true when either names it. Read it from what the
+student means.
 whole_lesson: on a task, true only when a lesson is selected (see what is in force) and the
 task is about that lesson as a whole, such as summarising it or giving an overview of it,
-rather than about one topic inside it. Otherwise false.
+rather than about one topic inside it. Otherwise false. While a lesson is selected, a request
+that names no subject matter is about the whole lesson: set whole_lesson to true and write the
+lesson's title in the query, never "the topic" or a word that only points at it.
 For "assessment", copy only what the student stated: a question count only if they gave one,
 question types only if they named them, a difficulty only if they said one, and focus "weak"
 only if they asked to practise their weak spots or what they struggle with. Omit the rest.

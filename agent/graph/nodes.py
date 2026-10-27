@@ -185,8 +185,11 @@ def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
         lines.append("- Subject: not settled yet.")
     if scope and scope.is_narrow:
         named = f' "{scope.label()}"' if scope.label() else ""
-        lines.append(f"- The student has selected the lesson{named}. When they speak of "
-                     "this lesson, they mean it.")
+        lines.append(f"- The student has selected the lesson{named}. Any reference to "
+                     "\"this\", \"it\", \"this topic\" or \"this lesson\", in any language, "
+                     "means that lesson unless the conversation ties it to something "
+                     "discussed earlier. A request that names no subject matter is about "
+                     "the whole lesson.")
     if requested:
         lines.append(f"- The student asked to be answered in {name_of(requested)}.")
     if pending and pending.items:
@@ -198,7 +201,27 @@ def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
     return "\n".join(lines)
 
 
-def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
+def _about_the_selected_lesson(task: PlannedTask, scope: StudyScope) -> None:
+    """A request that only points, with a lesson open, is about that lesson.
+
+    The lesson screen's starter chips say "Explain this topic". Searched for as
+    "the topic", the request found nothing and the answer said the topic was not
+    specified, so the tutor declined on the very screen that offered the chip.
+    """
+    if task.names_subject_matter:
+        return
+    if not task.whole_lesson:
+        raise ValueError(f"the {task.type} task names no subject matter and a lesson is "
+                         "selected, so it is about that lesson: set whole_lesson to true")
+    title = scope.label()
+    if title and " ".join(title.casefold().split()) not in " ".join(
+            (task.query or "").casefold().split()):
+        raise ValueError(f"the {task.type} task is about the selected lesson, so its query "
+                         f"must name it by its title: {title}")
+
+
+def _coherent(allowed: list[str], supported: tuple[str, ...], message: str,
+              scope: Optional[StudyScope] = None):
     """The checks a schema cannot express, fed back to the model on a retry."""
     available = ", ".join(allowed)
     way_out = ("if none of them does what the message asks, the tutor cannot do it here: "
@@ -214,6 +237,8 @@ def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
                                  f"use only {available}; {way_out}")
             if not (task.query or "").strip():
                 raise ValueError(f"the {task.type} task needs a query that names what it is about")
+            if scope and scope.is_narrow and task.type != "grade":
+                _about_the_selected_lesson(task, scope)
         if reading.continues_previous and reading.scope_fit == "outside":
             raise ValueError("a message that continues the tutor's last answer is about what "
                              "that answer taught, so scope_fit cannot be outside")
@@ -241,11 +266,12 @@ def _read_turn(state, llm, config, *, allowed, subject, requested, policy,
         )
     material = (name_of(subject.language) if policy.supports(subject.language)
                 else "the language the student writes in")
+    scope = scope_of(state)
     prompt = UNDERSTAND_PROMPT.render(
         role=state["pathway"],
         task_descriptions=_allowed_descriptions(allowed),
         allowed=", ".join(allowed),
-        session=_session_facts(subject, requested, policy, pending, scope_of(state)),
+        session=_session_facts(subject, requested, policy, pending, scope),
         history=state.get("history") or "",
         message=message,
         material_language=material,
@@ -255,7 +281,7 @@ def _read_turn(state, llm, config, *, allowed, subject, requested, policy,
         TurnUnderstanding,
         [HumanMessage(content=prompt)],
         task="understand", config=config, llm=llm, label="understand",
-        validate=_coherent(allowed, policy.supported, message),
+        validate=_coherent(allowed, policy.supported, message, scope),
     )
 
 
