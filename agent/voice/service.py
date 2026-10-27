@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from langchain_core.messages import HumanMessage
 
@@ -50,12 +50,26 @@ class Capabilities:
 
     @classmethod
     def of(cls, config: Config) -> Capabilities:
-        return cls(transcribe=True, speak=bool(config.get("voice.speak.enabled")))
+        return cls(transcribe=_allowed(ensure_hearing, config),
+                   speak=_allowed(ensure_speaking, config))
+
+
+def ensure_hearing(config: Config) -> None:
+    speech.api_key(config, "transcribe")
 
 
 def ensure_speaking(config: Config) -> None:
-    if not Capabilities.of(config).speak:
+    if not config.get("voice.speak.enabled"):
         raise SpeakingDisabled("Reading replies aloud is turned off on this service.")
+    speech.api_key(config, "speak")
+
+
+def _allowed(ensure: Callable[[Config], None], config: Config) -> bool:
+    try:
+        ensure(config)
+    except ServiceError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -80,6 +94,7 @@ class Spoken:
 def hear(audio: bytes, content_type: str, *, config: Config,
          language: Optional[str] = None) -> Heard:
     """A recorded question, as the words the student said."""
+    ensure_hearing(config)
     transcript = speech.transcribe(audio, _bare(content_type), config=config,
                                    language=language)
     heard = Heard(text=transcript.text,
