@@ -43,7 +43,13 @@ from shared.metering import start_meter
 from . import get_config
 from shared.namespaces import SYLLABUS
 
-from .books import LessonCatalog, file_under_lessons, lesson_states, lessons_for
+from .books import (
+    LessonCatalog,
+    file_under_lessons,
+    lesson_states,
+    lessons_for,
+    store_lesson_pages,
+)
 from .context import PipelineContext
 from .graph import run_stages
 from .lesson import add_lesson_arguments, apply_lesson_overrides, lesson_state, report
@@ -149,6 +155,7 @@ def _cmd_prepare(args, config) -> int:
     state = run_stages(state, ctx, ("extract", "chunk"))
     if state.get("book_id"):
         state = file_under_lessons(state, lessons_for(state, config))
+        state = store_lesson_pages(state, args.source, config)
         _summarise_lessons(state)
     texts = embedding_texts(state.get("chunks", []), config)
     _dump(args.out, {
@@ -272,6 +279,15 @@ def _finish_lesson(part: dict, ctx: PipelineContext, catalog: LessonCatalog):
     except Exception as error:
         logger.exception("lesson failed", extra={"lecture_id": part["lecture_id"]})
         done, status, errors = part, "failed", [f"{type(error).__name__}: {error}"]
+    if part.get("shown"):
+        try:
+            catalog.attach(part["lecture_id"], pdf=part.get("lesson_pdf"),
+                           reason=part.get("lesson_pdf_error"))
+        except Exception as error:
+            reason = f"not published, its pages are not attached: {error}"
+            logger.error("lesson %s", reason, extra={"lecture_id": part["lecture_id"]})
+            errors = [*errors, reason]
+            status = "needs_review" if status == "ready" else status
     catalog.finished(part["lecture_id"], status=status, errors=errors,
                      version=part.get("version", 1))
     return part, done, status, errors

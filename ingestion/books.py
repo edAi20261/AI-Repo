@@ -12,12 +12,14 @@ import logging
 import statistics
 import uuid
 from dataclasses import asdict, dataclass, replace
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from shared.llm import get_llm, llm_key_available
 from shared.namespaces import BACKGROUND, SYLLABUS
+from shared.storage import get_uploader
 from shared.structured import StructuredValidationFailure, call_structured, schema_hint
 
+from . import lesson_pages
 from .layout.blocks import ParsedPage
 from .layout.bridge import parsed_pages
 from .lesson import ID_NAMESPACE, UNTITLED
@@ -51,6 +53,7 @@ class Lesson:
     unit_title: str
     page_from: int
     page_to: int
+    apparatus: bool = False
 
     @property
     def label(self) -> str:
@@ -88,12 +91,13 @@ class _Entry:
     unit_title: str = ""
     unit_number: Optional[int] = None
     section: bool = False
+    apparatus: bool = False
 
 
 def _entries(breakdown: LessonBreakdown) -> list[_Entry]:
     lessons = [_Entry(item.title, item.start_page, unit.title, unit.unit_number)
                for unit in breakdown.units for item in unit.lessons]
-    sections = [_Entry(item.title, item.start_page, section=True)
+    sections = [_Entry(item.title, item.start_page, section=True, apparatus=item.apparatus)
                 for item in breakdown.sections]
     return sorted(lessons + sections, key=lambda entry: entry.start_page)
 
@@ -133,6 +137,12 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
         items = [item for unit in breakdown.units for item in unit.lessons]
         if not items and not breakdown.sections:
             raise ValueError("a book holds at least one lesson or section; none were listed")
+        apparatus = [item.title for item in items if item.apparatus]
+        if apparatus:
+            raise ValueError(f"these are not lessons: {apparatus}. Pages that only help a "
+                             "reader find their way or check their work teach nothing of "
+                             "their own; list each under sections with apparatus: true and "
+                             "the page it starts on, and remove it from the lessons")
         empty = [unit.title for unit in breakdown.units if not unit.lessons]
         if empty:
             raise ValueError(f"these units list no lessons: {empty}. List the lessons "
@@ -240,7 +250,8 @@ def _merged(entries: Sequence[_Entry]) -> list[_Entry]:
         last = merged[-1] if merged else None
         if last and last.start_page == entry.start_page:
             merged[-1] = replace(last, title=f"{last.title} / {entry.title}",
-                                 section=last.section and entry.section)
+                                 section=last.section and entry.section,
+                                 apparatus=last.apparatus and entry.apparatus)
         else:
             merged.append(entry)
     return merged
@@ -255,7 +266,8 @@ def lessons_from(breakdown: LessonBreakdown, *, book_id: str, first_page: int,
         entries = _merged(entries)
     return [Lesson(lesson_id=lesson_id_for(book_id, ordinal), ordinal=ordinal,
                    title=entry.title, unit_number=entry.unit_number,
-                   unit_title=entry.unit_title, page_from=page_from, page_to=page_to)
+                   unit_title=entry.unit_title, page_from=page_from, page_to=page_to,
+                   apparatus=entry.apparatus)
             for ordinal, (entry, (page_from, page_to))
             in enumerate(zip(entries, _spans(entries, first_page, last_page)))]
 
@@ -287,12 +299,51 @@ def file_under_lessons(state: IngestionState, lessons: Sequence[Lesson]) -> Inge
     return state
 
 
+def shown(lesson: Mapping[str, Any], namespace: str) -> bool:
+    """Whether students are shown this lesson of a book: a ministry book's lessons
+    and sections are (a term's revision, its exams), its apparatus never is
+    (contents, index, glossary, credits, answer keys)."""
+    return namespace == SYLLABUS and not lesson.get("apparatus")
+
+
+def store_lesson_pages(state: IngestionState, book_path: str, config, *,
+                       uploader: Any = None) -> IngestionState:
+    """Each shown lesson's pages, cut from the book and stored for ``finish`` to
+    attach. Only ``prepare`` holds the book; a lesson whose pages could not be
+    stored carries the reason instead, and is not published."""
+    from .utils import pdf
+
+    namespace = state.get("namespace") or SYLLABUS
+    todo = [lesson for lesson in state.get("lessons", []) if shown(lesson, namespace)]
+    if not todo:
+        return state
+    uploader = uploader if uploader is not None else get_uploader(config)
+    book = pdf.open_document(book_path)
+    try:
+        for lesson in todo:
+            try:
+                stored = lesson_pages.store(
+                    uploader, book, subject_id=state["subject_id"],
+                    lesson_id=lesson["lesson_id"], title=lesson["title"],
+                    first_page=lesson["page_from"], last_page=lesson["page_to"])
+            except Exception as error:
+                lesson["pdf_error"] = f"{type(error).__name__}: {error}"
+                logger.error("lesson pages not stored: %s", lesson["pdf_error"],
+                             extra={"lecture_id": lesson["lesson_id"]})
+            else:
+                lesson["pdf"] = asdict(stored)
+    finally:
+        book.close()
+    return state
+
+
 _PER_BOOK = frozenset({"chunks", "figures", "topics", "dependencies", "stats", "errors",
                        "ingestion_status", "lessons", "pages", "elements", "parsed_pages"})
 
 
 def lesson_states(state: IngestionState) -> list[IngestionState]:
     shared_fields = {k: v for k, v in state.items() if k not in _PER_BOOK}
+    namespace = state.get("namespace") or SYLLABUS
     states: list[IngestionState] = []
     for lesson in state.get("lessons", []):
         lesson_id = lesson["lesson_id"]
@@ -301,6 +352,9 @@ def lesson_states(state: IngestionState) -> list[IngestionState]:
             "lecture_id": lesson_id,
             "lesson_title": lesson["label"],
             "lesson_order": lesson["ordinal"],
+            "shown": shown(lesson, namespace),
+            "lesson_pdf": lesson.get("pdf"),
+            "lesson_pdf_error": lesson.get("pdf_error"),
             "chunks": [c for c in state.get("chunks", []) if c.lecture_id == lesson_id],
             "figures": [f for f in state.get("figures", []) if f.lecture_id == lesson_id],
             "stats": {},
@@ -315,6 +369,9 @@ INSERT INTO content.lessons
      status, ingestion_status)
 VALUES (%s, %s, %s, %s, %s, %s, %s, 'draft', 'processing')
 ON CONFLICT (id) DO UPDATE SET
+    source = EXCLUDED.source,
+    status = CASE WHEN content.lessons.status = 'published' AND EXCLUDED.source <> %s
+                  THEN 'draft' ELSE content.lessons.status END,
     title = EXCLUDED.title,
     description = EXCLUDED.description,
     unit_number = EXCLUDED.unit_number,
@@ -334,7 +391,11 @@ SELECT COALESCE(MAX(order_index), -1) + 1 FROM content.lessons
 WHERE {_SHOWN_IN_SUBJECT} AND NOT (id = ANY(%(ids)s::uuid[]))
 """
 
-_PUBLISHES = "%(publish)s AND status = 'draft' AND source = %(shown_source)s"
+# Checked where the lesson is published, not by the caller: a lesson filed by any
+# path (a book's finish, split_whole_books) is never shown to an empty page.
+_PUBLISHES = """%(publish)s AND status = 'draft' AND source = %(shown_source)s
+    AND EXISTS (SELECT 1 FROM content.lesson_attachments a
+                WHERE a.lesson_id = content.lessons.id)"""
 
 _FINISH_LESSON = f"""
 UPDATE content.lessons
@@ -365,7 +426,7 @@ class LessonCatalog:
 
     def register(self, *, subject_id: str, book_title: Optional[str],
                  lessons: Sequence[dict], namespace: str = SYLLABUS) -> None:
-        source = self._sources[namespace]
+        shown_source = self._sources[SYLLABUS]
         ids = [lesson["lesson_id"] for lesson in lessons]
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -377,9 +438,23 @@ class LessonCatalog:
                                           "background_source": self._sources[BACKGROUND]})
                 base = cur.fetchone()[0]
                 for lesson in lessons:
+                    source = (shown_source if shown(lesson, namespace)
+                              else self._sources[BACKGROUND])
                     cur.execute(_UPSERT_LESSON, (
                         lesson["lesson_id"], subject_id, source, lesson["title"],
-                        book_title, lesson["unit_number"], base + lesson["ordinal"]))
+                        book_title, lesson["unit_number"], base + lesson["ordinal"],
+                        shown_source))
+            conn.commit()
+
+    def attach(self, lesson_id: str, *, pdf: Optional[Mapping[str, Any]],
+               reason: Optional[str]) -> None:
+        if pdf is None:
+            raise lesson_pages.PagesNotAttached(
+                f"the lesson's pages were not stored: {reason or 'no reason recorded'}")
+        uploader = lesson_pages.uploader_id(self._config)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                lesson_pages.record(cur, pdf, lesson_id=lesson_id, uploader=uploader)
             conn.commit()
 
     def finished(self, lesson_id: str, *, status: str, errors: Sequence[str],

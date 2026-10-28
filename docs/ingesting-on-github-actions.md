@@ -53,6 +53,7 @@ Repository → **Settings** → **Secrets and variables** → **Actions** →
 | `S3_REGION` | e.g. `eu-central-1` |
 | `AWS_ACCESS_KEY_ID` | for S3 |
 | `AWS_SECRET_ACCESS_KEY` | for S3 |
+| `LESSON_PAGES_UPLOADER` | the user id a lesson's pages are stored as; a ministry lesson is only published with its pages attached |
 | `GOOGLE_APPLICATION_CREDENTIALS` | the service account's whole JSON file, pasted on one line |
 
 Secrets are never shown in logs, and nobody can read them back once saved.
