@@ -313,6 +313,48 @@ unreadable, the rest indexed fine. Your enum has no equivalent, so it currently
 reports `ready`, since what was indexed is usable and `failed` would keep a
 mostly-good lesson offline. Worth deciding whether you want the extra value.
 
+### Lesson terms — a column you need to add
+
+A subject holds the books of both terms of the school year, and nothing says
+which lesson is in which. Christian Religion G7 shows the second term's 19
+lessons before the first term's 19; the G9 books for the whole year number
+units 1–5 twice. Students and teachers cannot pick a term.
+
+**Migration** (`content.lessons`):
+
+```prisma
+model Lesson {
+  // ...
+  // Term of the school year: 1 or 2. NULL when the curriculum has no terms or
+  // the book does not say.
+  term Int? @db.SmallInt
+
+  @@index([subjectId, term, orderIndex], map: "idx_lessons_subject_term")
+}
+```
+
+Add `CHECK (term BETWEEN 1 AND 2)` in the migration SQL; Prisma cannot declare it.
+
+**Who writes it.** Ingestion, for every lesson it creates: it reads each part's
+term from the book's cover and table of contents (or takes it from whoever
+ingests the book), stores it, and renumbers `order_index` across the subject so
+the first term's lessons come before the second's. Until the column exists,
+ingestion keeps working and logs that the term was not stored. Lessons a
+teacher creates have no term unless your create/update endpoints accept one —
+please add `term` (optional, 1 or 2) to both.
+
+**What the platform shows.**
+- Return `term` on every lesson the API sends, and accept `?term=1` on the
+  lesson list of a subject. Order by `term` (nulls last), then `orderIndex`.
+- Subject page and the AI tutor's lesson picker: when any lesson in the subject
+  has a term, show a tab per term. A lesson with no term appears under every tab.
+  When none has a term (the American books), show the list as today.
+- Chat needs nothing new: the AI service reads the term from the lesson.
+
+**Existing lessons.** Once the column is deployed, tell us. We read the term of
+every lesson already ingested (`scripts/backfill_lesson_terms.py`), review the
+plan, and store it.
+
 ---
 
 ## 5. Credits

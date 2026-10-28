@@ -71,7 +71,7 @@ def test_chunks_and_figures_are_filed_under_the_lesson_their_page_is_in():
 
 
 def test_a_breakdown_that_does_not_fit_the_book_is_sent_back():
-    check = _validator(1, 50, 3.5, 20)
+    check = _validator(1, 50, 3.5, 20, 3)
     check(_breakdown(1, 10, 30))
     check(_breakdown(1, 10, 10))
     for bad in (_breakdown(), _breakdown(10, 5), _breakdown(1, 70)):
@@ -99,7 +99,7 @@ def test_two_lessons_taught_on_the_same_pages_each_get_those_pages():
 
 
 def test_a_unit_listed_as_its_own_lesson_is_sent_back():
-    check = _validator(1, 50, 3.5, 20)
+    check = _validator(1, 50, 3.5, 20, 3)
     unit_as_lesson = LessonBreakdown(units=[
         UnitItem(title="Unit 1 Our Environment", unit_number=1,
                  lessons=[LessonItem(title="Unit 1  our environment", start_page=1)]),
@@ -159,7 +159,7 @@ def test_lessons_are_registered_under_the_subject_after_the_lessons_already_ther
         fake_postgres):
     from shared.config import get_config
 
-    db = fake_postgres(fetchone=[(7,)])
+    db = fake_postgres(fetchone=[(False,), (7,)])
     lessons = [{"lesson_id": lesson_id_for(BOOK, n), "ordinal": n, "title": f"Lesson {n}",
                 "unit_number": 1} for n in range(2)]
     LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Gem",
@@ -177,7 +177,7 @@ def test_a_books_lessons_are_numbered_after_the_shown_lessons_only(fake_postgres
     from shared.config import get_config
     from shared.namespaces import BACKGROUND
 
-    db = fake_postgres(fetchone=[(0,)])
+    db = fake_postgres(fetchone=[(False,), (0,)])
     LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Gem", lessons=[
         {"lesson_id": lesson_id_for(BOOK, 0), "ordinal": 0, "title": "Lesson 0",
          "unit_number": 1}])
@@ -250,7 +250,7 @@ def test_a_section_before_the_first_lesson_keeps_its_pages():
 def test_a_lesson_that_takes_in_the_pages_after_it_is_sent_back():
     """Correct first and last lessons ran to at most 2.7x a book's median
     lesson; those holding a term's revision ran 4x-34x, and nothing caught it."""
-    check = _validator(1, 200, 3.5, 20)
+    check = _validator(1, 200, 3.5, 20, 3)
     with pytest.raises(ValueError, match="sections"):
         check(_breakdown(1, 11, 21, 31, 41))
     split = _breakdown(1, 11, 21, 31, 41)
@@ -259,7 +259,7 @@ def test_a_lesson_that_takes_in_the_pages_after_it_is_sent_back():
 
 
 def test_a_book_of_only_exams_can_be_all_sections():
-    check = _validator(1, 50, 3.5, 20)
+    check = _validator(1, 50, 3.5, 20, 3)
     check(LessonBreakdown(sections=[SectionItem(title="Exam 1", start_page=1),
                                     SectionItem(title="Exam 2", start_page=20)]))
     for bad in ([SectionItem(title="A", start_page=5), SectionItem(title="B", start_page=5)],
@@ -314,7 +314,7 @@ def test_a_rate_limit_while_splitting_fails_the_book_rather_than_filing_it_whole
 def test_a_short_lesson_in_a_short_book_is_not_sent_back_as_too_long():
     """A 17-page notebook of one-page lessons had a four-page lesson sent back
     until the whole notebook was filed as one lesson."""
-    check = _validator(1, 17, 3.5, 20)
+    check = _validator(1, 17, 3.5, 20, 3)
     check(_breakdown(1, 5, 6, 7, 8, 9, 10, 11))
 
 
@@ -323,7 +323,7 @@ def test_a_unit_revision_starting_on_its_lessons_page_shares_those_pages():
     unit's lessons; that answer was refused until the book was filed whole."""
     breakdown = _breakdown(6, 6, 23)
     breakdown.sections = [SectionItem(title="Unit revision", start_page=6)]
-    _validator(1, 40, 3.5, 20)(breakdown)
+    _validator(1, 40, 3.5, 20, 3)(breakdown)
     merged = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=40,
                           shared_pages="merge")
     assert [(lsn.title, lsn.page_from, lsn.page_to) for lsn in merged] == [
@@ -389,7 +389,7 @@ def test_book_apparatus_is_filed_where_no_student_is_shown_it(fake_postgres):
     state = {"lecture_id": BOOK, "book_id": BOOK, "subject_id": SUBJECT, "chunks": [],
              "figures": []}
     file_under_lessons(state, _revision_and_index())
-    db = fake_postgres(fetchone=[(0,)])
+    db = fake_postgres(fetchone=[(False,), (0,)])
     LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Gem",
                                          lessons=state["lessons"])
     sources = get_config().get("ingestion.books.lesson_source")
@@ -437,7 +437,7 @@ def test_apparatus_sharing_a_page_with_a_lesson_does_not_hide_the_lesson():
 def test_a_lesson_named_like_its_unit_among_other_lessons_is_a_lesson():
     """Reveal Math Course 1's Module 7 is "Relationships Between Two Variables"
     and so is its Lesson 7-1; the book failed on every attempt for listing it."""
-    check = _validator(1, 24, 3.5, 20)
+    check = _validator(1, 24, 3.5, 20, 3)
     check(LessonBreakdown(units=[UnitItem(
         title="Relationships Between Two Variables", unit_number=7, lessons=[
             LessonItem(title="Relationships Between Two Variables", start_page=1),
@@ -448,7 +448,7 @@ def test_a_lesson_named_like_its_unit_among_other_lessons_is_a_lesson():
 def test_a_long_lesson_the_model_keeps_after_being_asked_again_is_kept(caplog):
     """Into Literature's Diary of Anne Frank, Act One, is one 55-page play. Each
     attempt was sent back as too long, so the book was never ingested."""
-    check = _validator(1, 200, 3.5, 20)
+    check = _validator(1, 200, 3.5, 20, 3)
     play = _breakdown(1, 11, 21, 31, 41)
     with pytest.raises(ValueError, match="sections"):
         check(play)
@@ -461,7 +461,7 @@ def test_long_lessons_are_questioned_once_per_book(caplog):
     """Asked about the Anne Frank play, the model split it and then listed two
     paired texts as one 44-page lesson; that was sent back too, and the book
     failed on its last attempt."""
-    check = _validator(1, 200, 3.5, 20)
+    check = _validator(1, 200, 3.5, 20, 3)
     with pytest.raises(ValueError, match="sections"):
         check(_breakdown(1, 11, 21, 31, 41))
     with caplog.at_level("WARNING", logger="ingestion.books"):

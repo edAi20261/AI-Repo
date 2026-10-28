@@ -3,6 +3,7 @@
 from .dependency_derivation import DERIVE_DEPS_PROMPT
 from .figure_caption import FIGURE_CAPTION_PROMPT
 from .lesson_breakdown import LESSON_BREAKDOWN_PROMPT
+from .lesson_terms import LESSON_TERMS_PROMPT
 from .math_transcription import MATH_PAGE_TRANSCRIPTION_PROMPT
 from .page_layout import PAGE_LAYOUT_PROMPT
 from .page_transcription import PAGE_TRANSCRIPTION_PROMPT
@@ -13,6 +14,7 @@ __all__ = [
     "DERIVE_DEPS_PROMPT",
     "FIGURE_CAPTION_PROMPT",
     "LESSON_BREAKDOWN_PROMPT",
+    "LESSON_TERMS_PROMPT",
     "MATH_PAGE_TRANSCRIPTION_PROMPT",
     "PAGE_LAYOUT_PROMPT",
     "PAGE_TRANSCRIPTION_PROMPT",

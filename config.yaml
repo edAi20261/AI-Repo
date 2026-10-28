@@ -233,6 +233,10 @@ ingestion:
     # one page, a four-page lesson was sent back until the book was filed whole;
     # the shortest lesson that had taken in a term's revision ran 40 pages.
     oversized_lesson_min_pages: 20
+    # Terms in a school year: the national curriculum has two. At three, on 27
+    # Oct 2026 a model filed unit 3 of a first-term Arabic G8 book as term 3; a
+    # trimester curriculum raises this, and the CHECK the backend adds with it.
+    max_term: 2
     # Lessons of one book taken through topics, prerequisites and the index at
     # once. One at a time, a 36-lesson book's finish took 1h25m (~2.3 min a
     # lesson, nearly all of it model calls). Each worker holds at most one

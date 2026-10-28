@@ -225,6 +225,10 @@ def lesson_state(args, config):
                                         "subject_id": args.subject_id,
                                         "lesson_title": args.lesson_title})
     subject = facts or _subject_of(config, args.subject_id)
+    max_term = config.get("ingestion.books.max_term")
+    if args.term is not None and not 1 <= args.term <= max_term:
+        raise ValueError(f"--term is a term of the school year, 1 to {max_term}; "
+                         f"got {args.term}")
     if not args.lesson_title:
         logger.warning("no --lesson-title: citations from this lecture will be labelled "
                        "by section headings only", extra={"lecture_id": args.lecture_id})
@@ -240,6 +244,7 @@ def lesson_state(args, config):
         version=args.version,
         language_hint=args.language or subject.get("language"),
         subject_is_math=args.subject_is_math,
+        term=args.term,
     )
     if book:
         state["book_id"] = args.lecture_id
@@ -267,6 +272,9 @@ def add_lesson_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--namespace", default=SYLLABUS, choices=[SYLLABUS, BACKGROUND],
                         help="syllabus for a ministry book, whose lessons the app shows; "
                              "external for a book that is background to them")
+    parser.add_argument("--term", type=int, default=None,
+                        help="the term of the school year the whole book is for (1, 2); "
+                             "leave it out to read each part's term from the book")
     parser.add_argument("--version", type=int, default=1, help="re-ingestion version")
     parser.add_argument("--language", default=None,
                         help="the book's language (ar, en, fr, de) when the backend "

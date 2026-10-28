@@ -4,7 +4,10 @@ For a host with no batch jobs to fan out across, such as Railway: every book
 goes through the same four steps the Cloud Run jobs run, as the only share of
 each, in a folder of its own that is removed once the book is done.
 
-    BOOKS   one book per line: SOURCE|SUBJECT_ID|ministry or external
+    BOOKS   one book per line: SOURCE|SUBJECT_ID|ministry or external[|TERM]
+
+TERM is the term of the school year the whole book is for; left out, each
+part's term is read from the book.
 
 A book that fails is reported and the next one starts; the exit status says
 whether any failed.
@@ -32,6 +35,7 @@ class Book:
     source: str
     subject_id: str
     kind: str
+    term: str = ""
 
 
 def parse_books(text: str) -> list[Book]:
@@ -41,10 +45,12 @@ def parse_books(text: str) -> list[Book]:
         if not line or line.startswith("#"):
             continue
         parts = [part.strip() for part in line.split("|")]
-        if len(parts) != 3 or not all(parts):
-            raise ValueError(f"line {number} is not SOURCE|SUBJECT_ID|KIND: {line!r}")
+        if len(parts) not in (3, 4) or not all(parts):
+            raise ValueError(f"line {number} is not SOURCE|SUBJECT_ID|KIND[|TERM]: {line!r}")
         if parts[2] not in KINDS:
             raise ValueError(f"line {number}: the kind is ministry or external, not {parts[2]!r}")
+        if len(parts) == 4 and not parts[3].isdigit():
+            raise ValueError(f"line {number}: the term is a number, not {parts[3]!r}")
         books.append(Book(*parts))
     if not books:
         raise ValueError("BOOKS lists no books")
@@ -58,7 +64,7 @@ def _run_step(step: str, env: dict[str, str]) -> int:
 def ingest(book: Book, *, run_step: Callable[[str, dict[str, str]], int] = _run_step) -> bool:
     run_dir = tempfile.mkdtemp(prefix="run-")
     env = {**os.environ, "SOURCE": book.source, "SUBJECT_ID": book.subject_id,
-           "BOOK_KIND": book.kind, "RUN_DIR": run_dir,
+           "BOOK_KIND": book.kind, "BOOK_TERM": book.term, "RUN_DIR": run_dir,
            "CLOUD_RUN_TASK_INDEX": "0", "CLOUD_RUN_TASK_COUNT": "1"}
     try:
         for step in STEPS:

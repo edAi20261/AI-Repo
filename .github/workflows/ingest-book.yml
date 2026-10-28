@@ -39,6 +39,10 @@ on:
         type: choice
         options: [ministry, external]
         required: true
+      term:
+        description: "Term of the school year the whole book is for (1, 2). Leave empty to read each part's term from the book"
+        required: false
+        default: ""
       preview:
         description: "Preview only: read the book and list its lessons, write nothing"
         type: boolean
@@ -74,6 +78,7 @@ env:
   SOURCE: ${{ inputs.source }}
   SUBJECT_ID: ${{ inputs.subject_id }}
   BOOK_KIND: ${{ inputs.kind }}
+  BOOK_TERM: ${{ inputs.term }}
   PYTHONUNBUFFERED: "1"
   TOKENIZERS_PARALLELISM: "false"
 
