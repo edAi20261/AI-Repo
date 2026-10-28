@@ -159,3 +159,14 @@ def test_an_operator_can_turn_one_setting_on_for_a_single_run():
     assert config.get("ingestion.layout.tier2.enabled") is True
     assert config.get("ingestion.layout.tier2.version")      # siblings survive
     assert Config.load().get("ingestion.layout.tier2.enabled") is False   # not the file
+
+
+@pytest.mark.parametrize("env", ["local", "staging", "production", "test"])
+@pytest.mark.parametrize("key", ["persona.enabled", "credits.enabled"])
+def test_personas_and_credits_are_on_in_every_environment(env, key, monkeypatch):
+    """Both shipped off while their tables were missing and stayed off after the
+    tables existed, so a client saw personas and credits as unfinished features."""
+    from shared.config import Config
+
+    monkeypatch.setenv("APP_ENV", env)
+    assert Config.load().get(key) is True

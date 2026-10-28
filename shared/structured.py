@@ -373,6 +373,8 @@ def _more_room(current: Optional[int]) -> int:
 
 def _with_room(client: Any, room: int) -> Any:
     """The same client with a larger completion budget, where it can take one."""
+    if "max_tokens" in getattr(type(client), "model_fields", {}):
+        return client.model_copy(update={"max_tokens": room})
     if not hasattr(client, "bind"):
         return client
     try:

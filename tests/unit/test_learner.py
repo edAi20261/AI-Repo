@@ -18,11 +18,15 @@ from agent.graph import nodes as nmod
 USER = str(uuid.uuid4())
 SUBJECT = str(uuid.uuid4())
 
+
+def _topic(name: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+
 # (topic_id, score, attempts, last_seen, trend, confidence) — ai.mastery's shape.
-WEAK = ("t-weak", 0.20, 4, None, -0.1, 1.0)
-WEAKER = ("t-weaker", 0.05, 4, None, -0.2, 1.0)
-STRONG = ("t-strong", 0.90, 4, None, 0.1, 1.0)
-THIN = ("t-thin", 0.10, 1, None, None, 0.5)      # one attempt: not yet evidence
+WEAK = (_topic("t-weak"), 0.20, 4, None, -0.1, 1.0)
+WEAKER = (_topic("t-weaker"), 0.05, 4, None, -0.2, 1.0)
+STRONG = (_topic("t-strong"), 0.90, 4, None, 0.1, 1.0)
+THIN = (_topic("t-thin"), 0.10, 1, None, None, 0.5)      # one attempt: not yet evidence
 
 
 def _db(fake_postgres, mastery, labels):
@@ -30,7 +34,7 @@ def _db(fake_postgres, mastery, labels):
 
 
 def test_a_topic_the_student_got_wrong_reaches_the_tutor(fake_postgres):
-    _db(fake_postgres, [WEAK], {"t-weak": "Fractions"})
+    _db(fake_postgres, [WEAK], {_topic("t-weak"): "Fractions"})
     read = standing(USER, SUBJECT, config=get_config())
     assert read.weak == ["Fractions"] and not read.strong
     assert "Fractions" in read.render()
@@ -39,14 +43,14 @@ def test_a_topic_the_student_got_wrong_reaches_the_tutor(fake_postgres):
 def test_a_thinly_sampled_topic_is_not_called_a_weakness(fake_postgres):
     """One wrong answer is not evidence. A tutor told a student is weak on
     something it has a single data point for teaches to a fact that isn't true."""
-    _db(fake_postgres, [THIN], {"t-thin": "Photosynthesis"})
+    _db(fake_postgres, [THIN], {_topic("t-thin"): "Photosynthesis"})
     assert not standing(USER, SUBJECT, config=get_config())
 
 
 def test_the_weakest_topics_come_first_and_the_list_is_bounded(fake_postgres):
-    rows = [WEAK, WEAKER] + [(f"t{i}", 0.3, 4, None, None, 1.0) for i in range(8)]
-    labels = {"t-weak": "Fractions", "t-weaker": "Long division",
-              **{f"t{i}": f"Topic {i}" for i in range(8)}}
+    rows = [WEAK, WEAKER] + [(_topic(f"t{i}"), 0.3, 4, None, None, 1.0) for i in range(8)]
+    labels = {_topic("t-weak"): "Fractions", _topic("t-weaker"): "Long division",
+              **{_topic(f"t{i}"): f"Topic {i}" for i in range(8)}}
     _db(fake_postgres, rows, labels)
     read = standing(USER, SUBJECT, config=get_config())
     assert read.weak[0] == "Long division"      # 0.05 before 0.20
@@ -55,7 +59,7 @@ def test_the_weakest_topics_come_first_and_the_list_is_bounded(fake_postgres):
 
 def test_a_topic_with_no_label_is_dropped(fake_postgres):
     """A bare uuid in a prompt is noise the model has to ignore, or quote."""
-    _db(fake_postgres, [WEAK, STRONG], {"t-strong": "Place value"})
+    _db(fake_postgres, [WEAK, STRONG], {_topic("t-strong"): "Place value"})
     read = standing(USER, SUBJECT, config=get_config())
     assert read.weak == [] and read.strong == ["Place value"]
 
@@ -75,11 +79,11 @@ def test_a_standing_with_nothing_in_it_says_so():
 
 
 def test_the_mastery_read_is_scoped_to_the_subject_in_play(fake_postgres):
-    db = _db(fake_postgres, [WEAK], {"t-weak": "Fractions"})
-    standing(USER, SUBJECT, topic_ids=["t-weak"], config=get_config())
+    db = _db(fake_postgres, [WEAK], {_topic("t-weak"): "Fractions"})
+    standing(USER, SUBJECT, topic_ids=[_topic("t-weak")], config=get_config())
     mastery_sql, params = db.statements[0]
     assert "t.subject_id = %s" in mastery_sql
-    assert SUBJECT in params and ["t-weak"] in params
+    assert SUBJECT in params and [_topic("t-weak")] in params
 
 
 # --- the turn -----------------------------------------------------------------

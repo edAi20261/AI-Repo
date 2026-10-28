@@ -187,6 +187,7 @@ class Citation(BaseModel):
     lesson_order: Optional[int] = None
     task_id: Optional[str] = None
     chunk_id: Optional[str] = None
+    supplementary: bool = False
 
 
 _NULL_WORDS = frozenset({"null", "none", "nil", "undefined"})
@@ -351,6 +352,11 @@ class PlannedTask(_ReadsNullWords):
         default=False,
         description="true only when a lesson is selected and this task is about that "
                     "lesson as a whole rather than a topic inside it.")
+    names_subject_matter: bool = Field(
+        default=True,
+        description="false when neither the student's request nor the conversation names "
+                    "what it is about, and the request only points, such as 'this', 'it' or "
+                    "'this topic' in any language; true when either names it.")
 
 
 class LanguageRequest(_ReadsNullWords):

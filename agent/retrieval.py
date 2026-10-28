@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from shared.logging import clip
 
 from .models import Citation, PrereqTopic, RetrievedChunk
+from .prompts import SUGGEST_COVERED_TOPICS, SUGGEST_NO_TOPIC, SUPPLEMENTARY_PASSAGE
+from .scope import StudyScope
 from .tools import (
     get_lecture_topics,
     get_lesson_chunks,
@@ -23,6 +25,8 @@ from .tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+OFFERED_TOPICS = 5
 
 
 def retrieve(
@@ -90,10 +94,15 @@ def answers_within_scope(
     What separates them is the rest of the corpus. A question the lesson owns
     scores the same with or without the filter; a question belonging to another
     lesson scores markedly worse once that lesson is excluded.
+
+    The rest of the corpus is the other lessons. The lesson-scoped search reads
+    no external book, so this one does not either: an external guide's copy of
+    the selected lesson outscored the lesson itself, and the gate turned away
+    3 of 120 lessons' own questions as belonging elsewhere.
     """
     if scoped_best <= 0:
         return False
-    unscoped = rag_search(query or "", namespaces, k=1, subject_id=subject_id)
+    unscoped = rag_search(query or "", namespaces, k=1, subject_id=subject_id, background=False)
     if not unscoped:
         return True
     return scoped_best / unscoped[0].score >= ratio
@@ -113,6 +122,24 @@ def topics_on_offer(*, lecture_id: str | None, subject_id: str | None,
                        extra={"lecture_id": lecture_id, "subject_id": subject_id},
                        exc_info=True)
     return []
+
+
+def what_to_suggest(scope: StudyScope, subject_id: str | None = None) -> str:
+    """What a tutor that has nothing to give may offer instead.
+
+    Told to suggest what the student could ask and never told what the lessons
+    hold, the model made topics up: a maths student was offered "The Water
+    Cycle", an Arabic one "the history of the internet". It is given the real
+    topics of the lesson or subject, or told to name none.
+    """
+    offer = topics_on_offer(
+        lecture_id=scope.lecture_id if scope.is_narrow else None,
+        subject_id=scope.subject_id or subject_id, limit=OFFERED_TOPICS)
+    if offer:
+        return SUGGEST_COVERED_TOPICS.format(topics="; ".join(offer))
+    return SUGGEST_NO_TOPIC
+
+
 def whole_lesson(lecture_id: str, namespaces: list[str], *, limit: int) -> list[RetrievedChunk]:
     """The selected lesson's own passages, for a request about the lesson as a whole."""
     chunks = get_lesson_chunks(lecture_id, namespaces, limit=limit)
@@ -216,7 +243,8 @@ def resolve_prereqs(
 
 def cite(chunk: RetrievedChunk, n: int) -> Citation:
     if chunk.background:
-        return Citation(n=n, subject_name=chunk.subject_name, chunk_id=chunk.chunk_id)
+        return Citation(n=n, subject_name=chunk.subject_name, chunk_id=chunk.chunk_id,
+                        supplementary=True)
     return Citation(
         n=n,
         lecture_id=chunk.lecture_id,
@@ -231,10 +259,14 @@ def cite(chunk: RetrievedChunk, n: int) -> Citation:
 
 
 def render_context(chunks: list[RetrievedChunk], start: int = 1) -> tuple[str, list[Citation]]:
-    """Number chunks [n] and return the block text plus citation records."""
+    """Number chunks [n] and return the block text plus citation records.
+
+    A background passage is headed as what it is. Headed by its own book's
+    section like a lesson passage, the model presented another book's revision
+    pages as the student's lesson."""
     lines, citations = [], []
     for i, c in enumerate(chunks, start=start):
-        head = c.heading_path or c.lecture_id
+        head = SUPPLEMENTARY_PASSAGE if c.background else (c.heading_path or c.lecture_id)
         lines.append(f"[{i}] ({head}) {c.text}")
         citations.append(cite(c, i))
     return "\n\n".join(lines), citations

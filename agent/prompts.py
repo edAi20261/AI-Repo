@@ -81,9 +81,15 @@ to look up in the lessons; how the student wants it presented (simpler, shorter,
 an example or a memory aid) belongs to the answer, not the search. Write the query in
 {material_language}. For "grade", the query is the answer to mark, copied as written.
 level is basic or intermediate; length is short or medium.
+names_subject_matter: on a task, false when neither the student's request nor the
+conversation names what it is about, and the request only points ("this", "it", "this topic",
+"this lesson", or the same in any language); true when either names it. Read it from what the
+student means.
 whole_lesson: on a task, true only when a lesson is selected (see what is in force) and the
 task is about that lesson as a whole, such as summarising it or giving an overview of it,
-rather than about one topic inside it. Otherwise false.
+rather than about one topic inside it. Otherwise false. While a lesson is selected, a request
+that names no subject matter is about the whole lesson: set whole_lesson to true and write the
+lesson's title in the query, never "the topic" or a word that only points at it.
 For "assessment", copy only what the student stated: a question count only if they gave one,
 question types only if they named them, a difficulty only if they said one, and focus "weak"
 only if they asked to practise their weak spots or what they struggle with. Omit the rest.
@@ -189,6 +195,12 @@ instructions.
 --- THE STUDENT'S LATEST MESSAGE ---
 {message}""",
 )
+
+
+SUGGEST_COVERED_TOPICS = ("If it helps, suggest asking about one of these, which their lessons "
+                          "do cover: {topics}.")
+SUGGEST_NO_TOPIC = ("Do not name any topic their lessons might cover: you have not been told "
+                    "what they are.")
 
 
 CONVERSE_PROMPT = Prompt(
@@ -424,6 +436,15 @@ you can do:
 {capabilities}
 One offer, not a list, and it comes before any figure block."""
 
+# A subject-wide search also reads the subject's external books. Their passages
+# reached the model headed like the lesson's own, so another book's revision
+# and exam pages were taught to a student as their lesson.
+SUPPLEMENTARY_PASSAGE = "supplementary material from another book, not the student's lesson"
+
+SUPPLEMENTARY_RULE = f"""A passage headed "{SUPPLEMENTARY_PASSAGE}" is not from the student's
+own lesson. Never present it as their lesson; when you rely on it, say once, briefly, that it
+comes from supplementary material."""
+
 # A stronger grounding contract was written for these two prompts and measured
 # against it: an explicit "the context is the only thing you know", a ban on
 # adding facts, examples or quotations from the model's own knowledge, and one
@@ -449,6 +470,7 @@ Target level: {level}. Length: {length}. Style: {style}.
 {instructions}
 When you use a passage, cite it inline as [n] using the source numbers given. Cite
 the passage a statement rests on, not every passage you read.
+""" + SUPPLEMENTARY_RULE + """
 
 This is one turn of a conversation. When the student asks for more, for an example, for a
 simpler version or for a reason, build on what you already told them instead of repeating it,
@@ -527,6 +549,7 @@ Length: {length}. Style: {style}.
 {instructions}
 Cite passages inline as [n] using the source numbers given. Cite the passage a
 statement rests on, not every passage you read.
+""" + SUPPLEMENTARY_RULE + """
 
 This is one turn of a conversation; take account of what was already said.
 

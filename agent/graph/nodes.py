@@ -57,7 +57,8 @@ from ..prompts import (
     TASK_DESCRIPTIONS,
     UNDERSTAND_PROMPT,
 )
-from ..retrieval import DEFAULT_MIN_SCORE
+from ..retrieval import DEFAULT_MIN_SCORE, what_to_suggest
+from .subgraphs.visual_sg import RENDERABLE_KINDS
 from ..scope import StudyScope, lecture_filter, scope_of
 from ..subjects import SubjectDirectory
 from ..learner import standing
@@ -185,8 +186,11 @@ def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
         lines.append("- Subject: not settled yet.")
     if scope and scope.is_narrow:
         named = f' "{scope.label()}"' if scope.label() else ""
-        lines.append(f"- The student has selected the lesson{named}. When they speak of "
-                     "this lesson, they mean it.")
+        lines.append(f"- The student has selected the lesson{named}. Any reference to "
+                     "\"this\", \"it\", \"this topic\" or \"this lesson\", in any language, "
+                     "means that lesson unless the conversation ties it to something "
+                     "discussed earlier. A request that names no subject matter is about "
+                     "the whole lesson.")
     if requested:
         lines.append(f"- The student asked to be answered in {name_of(requested)}.")
     if pending and pending.items:
@@ -198,7 +202,25 @@ def _session_facts(subject, requested: Optional[str], policy: LanguagePolicy,
     return "\n".join(lines)
 
 
-def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
+def _about_the_selected_lesson(task: PlannedTask) -> None:
+    """A request that only points, with a lesson open, is about that lesson.
+
+    The lesson screen's starter chips say "Explain this topic". Searched for as
+    "the topic", the request found nothing and the answer said the topic was not
+    specified, so the tutor declined on the very screen that offered the chip.
+
+    The prompt asks for the lesson's title in the query but nothing checks it: a
+    whole-lesson task reads the lesson whatever the query says, and a model that
+    translated or paraphrased the title would fail every retry, turning a decline
+    into the tutor being unavailable.
+    """
+    if not task.names_subject_matter and not task.whole_lesson:
+        raise ValueError(f"the {task.type} task names no subject matter and a lesson is "
+                         "selected, so it is about that lesson: set whole_lesson to true")
+
+
+def _coherent(allowed: list[str], supported: tuple[str, ...], message: str,
+              scope: Optional[StudyScope] = None):
     """The checks a schema cannot express, fed back to the model on a retry."""
     available = ", ".join(allowed)
     way_out = ("if none of them does what the message asks, the tutor cannot do it here: "
@@ -214,6 +236,11 @@ def _coherent(allowed: list[str], supported: tuple[str, ...], message: str):
                                  f"use only {available}; {way_out}")
             if not (task.query or "").strip():
                 raise ValueError(f"the {task.type} task needs a query that names what it is about")
+            if scope and scope.is_narrow and task.type != "grade":
+                _about_the_selected_lesson(task)
+            if task.visual is not None and task.visual.kind not in RENDERABLE_KINDS:
+                raise ValueError(f"visual kind {task.visual.kind!r} cannot be drawn here; "
+                                 f"use one of {', '.join(sorted(RENDERABLE_KINDS))}")
         if reading.continues_previous and reading.scope_fit == "outside":
             raise ValueError("a message that continues the tutor's last answer is about what "
                              "that answer taught, so scope_fit cannot be outside")
@@ -241,11 +268,12 @@ def _read_turn(state, llm, config, *, allowed, subject, requested, policy,
         )
     material = (name_of(subject.language) if policy.supports(subject.language)
                 else "the language the student writes in")
+    scope = scope_of(state)
     prompt = UNDERSTAND_PROMPT.render(
         role=state["pathway"],
         task_descriptions=_allowed_descriptions(allowed),
         allowed=", ".join(allowed),
-        session=_session_facts(subject, requested, policy, pending, scope_of(state)),
+        session=_session_facts(subject, requested, policy, pending, scope),
         history=state.get("history") or "",
         message=message,
         material_language=material,
@@ -255,7 +283,7 @@ def _read_turn(state, llm, config, *, allowed, subject, requested, policy,
         TurnUnderstanding,
         [HumanMessage(content=prompt)],
         task="understand", config=config, llm=llm, label="understand",
-        validate=_coherent(allowed, policy.supported, message),
+        validate=_coherent(allowed, policy.supported, message, scope),
     )
 
 
@@ -745,6 +773,7 @@ PREREQUISITES_MARK = "🧩"
 CORRECT_ANSWER_MARK = "→"
 REASON_MARK = "💡"
 REUSED_MARK = "📖"
+SUPPLEMENTARY_MARK = "📎"
 QUIZ_MARK = "📝"
 VISUAL_MARKS = {
     "mindmap": "🧠", "chart": "📊", "math": "📈", "geometry": "📐",
@@ -766,6 +795,8 @@ def _citation_where(c: Citation) -> str:
     else:
         lesson = title or (f"#{order}" if order is not None else "")
     label = " · ".join(p for p in (subject, lesson) if p)
+    if c.supplementary:
+        return f"{SUPPLEMENTARY_MARK} {label}".rstrip()
     return label or (c.heading_path or c.lecture_id or "").rstrip(_HEAD_TRAIL)
 
 
@@ -921,6 +952,7 @@ def _no_material(state, llm, language: str, voice: str) -> str:
         return NOTHING_PRODUCED
     prompt = NO_MATERIAL_PROMPT.render(
         language=language, style=(state.get("style") or Style()).tone, scope="",
+        suggest=what_to_suggest(scope_of(state), state.get("subject_id")),
         history=state.get("history") or "", message=state.get("message", ""), voice=voice)
     try:
         text = (llm.invoke([HumanMessage(content=prompt)]).content or "").strip()

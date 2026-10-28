@@ -155,7 +155,7 @@ WHERE lecture_id = :lecture_id
 _SELECT_TOPIC_OWNERS = """
 SELECT topic_id, lecture_id
 FROM ai.topics
-WHERE topic_id::text = ANY(:topic_ids) AND lecture_id IS NOT NULL
+WHERE topic_id = ANY(CAST(:topic_ids AS uuid[])) AND lecture_id IS NOT NULL
 """
 
 _DELETE_LECTURE_DEPS = """
