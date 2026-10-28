@@ -749,6 +749,7 @@ PREREQUISITES_MARK = "🧩"
 CORRECT_ANSWER_MARK = "→"
 REASON_MARK = "💡"
 REUSED_MARK = "📖"
+SUPPLEMENTARY_MARK = "📎"
 QUIZ_MARK = "📝"
 VISUAL_MARKS = {
     "mindmap": "🧠", "chart": "📊", "math": "📈", "geometry": "📐",
@@ -770,6 +771,8 @@ def _citation_where(c: Citation) -> str:
     else:
         lesson = title or (f"#{order}" if order is not None else "")
     label = " · ".join(p for p in (subject, lesson) if p)
+    if c.supplementary:
+        return f"{SUPPLEMENTARY_MARK} {label}".rstrip()
     return label or (c.heading_path or c.lecture_id or "").rstrip(_HEAD_TRAIL)
 
 

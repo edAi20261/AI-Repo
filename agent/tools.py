@@ -86,6 +86,7 @@ def rag_search(
     topic_ids: Sequence[str] | None = None,
     lecture_ids: Sequence[str] | None = None,
     ready_only: bool = True,
+    background: bool = True,
     config: Config | None = None,
 ) -> list[RetrievedChunk]:
     """Return the top-``k`` chunks most similar to ``query`` within ``namespaces``.
@@ -95,7 +96,8 @@ def rag_search(
     text from ``ai.chunks`` excluding non-``ready`` lectures (invariant 9).
     ``subject_id``/``grade``/``language``/``topic_ids``/``lecture_ids`` narrow the search
     further — all OPTIONAL payload filters on top of the namespace isolation; ``None`` means
-    that dimension is not scoped.
+    that dimension is not scoped. ``background=False`` keeps a subject-wide
+    syllabus search to the syllabus.
     """
     if not namespaces:
         raise ValueError("rag_search requires at least one namespace (invariant 1).")
@@ -140,7 +142,7 @@ def rag_search(
     fetch = k * 3 if ready_only else k
     if config.get("agent.hybrid.enabled"):
         fetch = max(fetch, config.get("agent.hybrid.candidates"))
-    background = _background_scope(namespaces, subject_id, lecture_ids, config)
+    background = _background_scope(namespaces, subject_id, lecture_ids) if background else None
     if background is None:
         scope = models.Filter(must=must + own, must_not=must_not)
     else:
@@ -190,33 +192,23 @@ def rag_search(
 
 
 def _background_scope(namespaces: Sequence[str], subject_id: str | None,
-                      lecture_ids: Sequence[str] | None, config: Config) -> list | None:
-    """Where the background a syllabus search also reads lives: the external
-    books of the same subject. A lesson's own id never matches them, since they
-    are filed under lessons of their own, so a lesson-scoped search reaches them
-    through its subject."""
+                      lecture_ids: Sequence[str] | None) -> list | None:
+    """Where the background a subject-wide syllabus search also reads lives:
+    the external books of the same subject.
+
+    A search scoped to lessons reads none of it. The external books are
+    whole-term study guides, and a passage similar to the lesson is usually
+    another lesson's revision or exam page: with them in a lesson's scope, 52%
+    of the top-8 passages over 120 published lessons came from another book,
+    and the tutor taught them as the lesson."""
     from qdrant_client import models
 
-    if SYLLABUS not in namespaces or BACKGROUND in namespaces:
-        return None
-    subjects = [subject_id] if subject_id else (
-        _subjects_of(lecture_ids, config) if lecture_ids else None)
-    if lecture_ids and not subjects:
+    if lecture_ids or SYLLABUS not in namespaces or BACKGROUND in namespaces:
         return None
     scope = [models.FieldCondition(key="namespace", match=models.MatchValue(value=BACKGROUND))]
-    if subjects:
-        scope.append(models.FieldCondition(key="subject_id", match=models.MatchAny(any=subjects)))
+    if subject_id:
+        scope.append(models.FieldCondition(key="subject_id", match=models.MatchValue(value=subject_id)))
     return scope
-
-
-def _subjects_of(lecture_ids: Sequence[str], config: Config) -> list[str]:
-    ids = uuid_ids(lecture_ids, what="_subjects_of")
-    if not ids:
-        return []
-    with connect(config) as conn, conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT subject_id::text FROM content.lessons "
-                    "WHERE id = ANY(%s::uuid[])", (ids,))
-        return [row[0] for row in cur.fetchall()]
 
 
 def _candidate_scores(
