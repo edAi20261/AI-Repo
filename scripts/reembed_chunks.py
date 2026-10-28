@@ -31,7 +31,7 @@ from psycopg.types.json import Json
 from qdrant_client import QdrantClient, models
 
 from agent.config import Config
-from shared.postgres import connect
+from shared.postgres import connect, uuid_ids
 from shared.vector_store import upsert_client
 from shared.vectors import DENSE_VECTOR, SPARSE_VECTOR
 from shared.matching import chunk_kind
@@ -70,7 +70,7 @@ def _chunk_rows(config: Config, chunk_ids: list[str]) -> dict[str, dict]:
         cur.execute(
             "SELECT chunk_id::text, text, heading_path, page_from, page_to, "
             "lecture_id::text, language FROM ai.chunks "
-            "WHERE chunk_id::text = ANY(%s)", (chunk_ids,))
+            "WHERE chunk_id = ANY(%s::uuid[])", (chunk_ids,))
         return {r[0]: {"text": r[1], "heading_path": r[2] or "", "page_from": r[3] or 0,
                        "page_to": r[4] or 0, "lecture_id": r[5] or "",
                        "language": r[6] or ""} for r in cur.fetchall()}
@@ -159,7 +159,7 @@ def main() -> int:
     if not payloads:
         return 0
 
-    rows = _chunk_rows(config, list(payloads))
+    rows = _chunk_rows(config, uuid_ids(payloads, what="reembed_chunks"))
     prefixed = bool(config.get("ingestion.context_prefix"))
     print(f"  context prefix: {'on' if prefixed else 'off'}")
     missing = [cid for cid in payloads if cid not in rows]

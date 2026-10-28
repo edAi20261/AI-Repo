@@ -34,7 +34,7 @@ from agent.persona.store import PersonaStore
 from agent.persona.voice import PersonaDirectory
 from agent.profile import forget, held
 from agent.tagging import suggest_topics
-from agent.voice.service import Heard, ensure_speaking, hear, speak
+from agent.voice.service import Heard, ensure_hearing, ensure_speaking, hear, speak
 from agent.tools import attach_report_visual, get_latest_report
 from shared.config import Config
 from shared.metering import Meter, start_meter
@@ -170,6 +170,7 @@ class AgentRuntime:
 
     async def transcribe(self, audio: bytes, content_type: str, *,
                          language: Optional[str], billed_user_id: str) -> Metered:
+        ensure_hearing(self._config)
         return await self._billed(billed_user_id, Action.VOICE_TRANSCRIBE,
                                   partial(hear, audio, content_type, config=self._config,
                                           language=language),

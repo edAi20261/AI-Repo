@@ -451,9 +451,10 @@ from.
 | reading a reply aloud | 1 |
 
 An account that cannot cover a call gets `402 insufficient_credits` with its balance and
-renewal date, and nothing runs; a stream is refused before it opens. Credits are off
-(`credits.enabled: false`) until the backend creates `ai.credit_wallets` and
-`ai.credit_ledger`; while off, nothing is charged and the credits endpoints answer `503`.
+renewal date, and nothing runs; a stream is refused before it opens. Credits are on
+(`credits.enabled: true`) and fail closed: if `ai.credit_wallets` and `ai.credit_ledger`
+cannot be reached, or the user is not in `identity.users`, paid calls answer `503`
+rather than run free.
 
 ---
 
@@ -803,8 +804,8 @@ it is the deployment gate. Ingestion runs separately: on GitHub's machines throu
   are derived by a model without review.
 - **The platform does not yet pass structured citations through** to the frontend, and the
   frontend sends the study mode inside the message rather than as a field.
-- **Credits, personas and reading aloud are off** until the backend creates their tables
-  and the frontend shows them.
+- **Reading aloud is off** (`voice.speak.enabled: false`) because it is most of the voice
+  cost. Credits and personas are on; the frontend does not show them yet.
 - **Parents have no conversation memory**, and session uploads are not built yet.
 - **`needs_review` is reported to the platform as `ready`**, because its status enum has
   no equivalent; what was indexed is usable.

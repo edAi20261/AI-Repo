@@ -191,6 +191,12 @@ instructions.
 )
 
 
+SUGGEST_COVERED_TOPICS = ("If it helps, suggest asking about one of these, which their lessons "
+                          "do cover: {topics}.")
+SUGGEST_NO_TOPIC = ("Do not name any topic their lessons might cover: you have not been told "
+                    "what they are.")
+
+
 CONVERSE_PROMPT = Prompt(
     name="CONVERSE_PROMPT",
     audience=Audience.STUDENT,

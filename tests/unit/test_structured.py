@@ -549,3 +549,18 @@ def test_a_student_turn_is_never_held_back_waiting_out_a_rate_limit(config, monk
         call_structured(Batch, "classify", task="assessment", config=config,
                         llm=RateLimitedLLM(1, parsed(items=[])))
     assert slept == []
+
+
+def test_more_room_reaches_the_model_behind_the_schema():
+    """A Vocabulary Workbook lesson thought for 7,468 tokens and wrote 710 inside
+    an 8,192 budget, twice: the bigger budget was bound beside the model, and
+    with_structured_output rebuilt the call from the model's own 8,192."""
+    import re
+
+    from langchain_openai import ChatOpenAI
+
+    from shared import structured
+
+    llm = ChatOpenAI(model="m", api_key="k", base_url="http://localhost:1", max_tokens=8192)
+    runnable = structured._bind(structured._with_room(llm, 16384), Batch, {})
+    assert re.findall(r"max_tokens=(\d+)", str(runnable)) == ["16384"]

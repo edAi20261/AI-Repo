@@ -49,7 +49,7 @@ def transcribe(audio: bytes, content_type: str, *, config: Config,
     """What was said in ``audio``, in the language it was said in."""
     import httpx
 
-    key = _key(config, "voice.transcribe.api_key_env")
+    key = api_key(config, "transcribe")
     data = {"model_id": config.get("voice.transcribe.model"),
             "tag_audio_events": "false", "diarize": "false"}
     if language:
@@ -88,7 +88,7 @@ def synthesize(text: str, voice: str, language: str, *, config: Config) -> bytes
     """``text`` read aloud by ``voice``, held to ``language``."""
     import httpx
 
-    key = _key(config, "voice.speak.api_key_env")
+    key = api_key(config, "speak")
     try:
         response = httpx.post(
             f"{config.get('voice.speak.url')}/{voice}",
@@ -111,8 +111,9 @@ def synthesize(text: str, voice: str, language: str, *, config: Config) -> bytes
     return response.content
 
 
-def _key(config: Config, setting: str) -> str:
-    name = config.get(setting)
+def api_key(config: Config, direction: str) -> str:
+    """The provider key ``direction`` (``transcribe`` or ``speak``) runs on."""
+    name = config.get(f"voice.{direction}.api_key_env")
     value = config.secret(name) if name else None
     if not value:
         raise SpeechUnavailable("Voice is not configured on this service.",
