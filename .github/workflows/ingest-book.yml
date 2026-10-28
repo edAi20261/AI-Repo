@@ -19,7 +19,8 @@
 # Secrets (Settings → Secrets and variables → Actions → Secrets): the same
 # values as .env.ingest — DATABASE_URL, QDRANT_URL, QDRANT_API_KEY, S3_BUCKET,
 # S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
-# GOOGLE_APPLICATION_CREDENTIALS (the JSON itself, on one line), and optionally
+# GOOGLE_APPLICATION_CREDENTIALS (the JSON itself, on one line), OPENAI_API_KEY
+# for the openai models profile, and optionally
 # BACKEND_API_BASE_URL and AI_WEBHOOK_SHARED_SECRET.
 # docs/ingesting-on-github-actions.md has the rest.
 
@@ -43,6 +44,11 @@ on:
         description: "Term of the school year the whole book is for (1, 2). Leave empty to read each part's term from the book"
         required: false
         default: ""
+      models:
+        description: "Whose models read the book (model_profiles in config.yaml)"
+        type: choice
+        options: [gemini, openai]
+        default: gemini
       preview:
         description: "Preview only: read the book and list its lessons, write nothing"
         type: boolean
@@ -70,6 +76,8 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   LESSON_PAGES_UPLOADER: ${{ secrets.LESSON_PAGES_UPLOADER }}
   GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  MODEL_PROFILE: ${{ inputs.models }}
   BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
   AI_WEBHOOK_SHARED_SECRET: ${{ secrets.AI_WEBHOOK_SHARED_SECRET }}
   # The link, as a variable: it is text a person pasted, and text pasted into a

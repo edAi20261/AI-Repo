@@ -59,6 +59,14 @@ PROVIDER_KEY_ENV = {
     "google": "GOOGLE_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
+# The address goes with the key: a gateway missing here was posted to
+# OpenRouter, so a page meant for OpenAI arrived there with an OpenAI key.
+PROVIDER_BASE_URL = {
+    "openrouter": DEFAULT_BASE_URL,
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "openai": "https://api.openai.com/v1",
+}
+OPENROUTER = "openrouter"
 
 # google  -> the Gemini API, billed from AI Studio prepay credit
 # vertex  -> the same models, billed to the Cloud billing account instead,
@@ -99,8 +107,9 @@ def _base_url(config: Config) -> str:
     """Where to post. Vertex's address carries the project and region in it, so
     it is built rather than configured — one fewer thing to get wrong by hand."""
     configured = config.get("vision.base_url")
-    if (config.get("vision.provider") or "").lower() != VERTEX:
-        return configured or DEFAULT_BASE_URL
+    provider = (config.get("vision.provider") or "").lower()
+    if provider != VERTEX:
+        return configured or PROVIDER_BASE_URL.get(provider, DEFAULT_BASE_URL)
     if configured:
         return configured
     from .gcp import vertex_base_url
@@ -221,7 +230,9 @@ def _attempt(
                 # image; it does not need the deliberation.
                 **({"reasoning_effort": config.get("vision.reasoning_effort")}
                    if config.get("vision.reasoning_effort") else {}),
-                "usage": {"include": True},
+                # OpenRouter's extension; OpenAI rejects an argument it does not know.
+                **({"usage": {"include": True}}
+                   if (config.get("vision.provider") or "").lower() == OPENROUTER else {}),
                 "messages": [{
                     "role": "user",
                     "content": [
