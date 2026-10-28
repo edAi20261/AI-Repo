@@ -90,13 +90,13 @@ _DELETE_KIND = (
 _DELETE_IDS = (
     "DELETE FROM ai.user_memory "
     "WHERE user_id = %s::uuid AND source_conversation_id = %s::uuid "
-    "  AND memory_id::text = ANY(%s)"
+    "  AND memory_id = ANY(%s::uuid[])"
 )
 
 _RELABEL_IDS = (
     "UPDATE ai.user_memory SET kind = %s "
     "WHERE user_id = %s::uuid AND source_conversation_id = %s::uuid "
-    "  AND memory_id::text = ANY(%s)"
+    "  AND memory_id = ANY(%s::uuid[])"
 )
 
 

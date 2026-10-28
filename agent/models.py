@@ -187,6 +187,7 @@ class Citation(BaseModel):
     lesson_order: Optional[int] = None
     task_id: Optional[str] = None
     chunk_id: Optional[str] = None
+    supplementary: bool = False
 
 
 _NULL_WORDS = frozenset({"null", "none", "nil", "undefined"})

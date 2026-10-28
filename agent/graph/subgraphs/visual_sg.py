@@ -363,18 +363,11 @@ def _build_render(config, llm):
         out: list[dict] = []
         errors = 0
         for spec in specs:
-            kind = spec.get("kind")
             # `figure` = fetch a syllabus figure, never generate. Every other kind is a
             # specific generated artifact — never substitute a figure for it. (Image
             # generation is deferred, so there is no generate-a-picture path.)
-            if kind == "figure":
-                ref = _reuse_figure(spec, config)
-                if not ref:
-                    logger.info("no syllabus figure for a figure spec; skipped")
-                    continue
-            else:
-                ref, err = _safe_render(spec, common, state, slides_llm)
-                errors += err
+            ref, err = _safe_render(spec, common, state, slides_llm)
+            errors += err
             if ref:
                 if spec.get("item_id"):
                     ref["item_id"] = spec["item_id"]
@@ -398,34 +391,56 @@ def _safe_render(spec, common, state, llm) -> tuple[dict | None, int]:
         return None, 1
 
 
+def _params(spec: dict) -> dict:
+    return spec.get("params") or {}
+
+
+def _render_figure(spec: dict, common: dict, state: VisualState, llm) -> dict | None:
+    ref = _reuse_figure(spec, common["config"])
+    if not ref:
+        logger.info("no syllabus figure for a figure spec; skipped")
+    return ref
+
+
+def _render_slides(spec: dict, common: dict, state: VisualState, llm) -> dict:
+    # TODO: honour an explicit user-requested slide count (needs a count field threaded
+    # from the planner's visual spec); until then the config cap keeps outlines digestible.
+    max_slides = common["config"].get("render.slides.max_slides", 10)
+    text = R.powerpoint_points(_params(spec).get("content") or spec.get("description") or "",
+                               llm, language=state.get("language", "en"),
+                               instructions=state.get("instructions", ""),
+                               max_slides=max_slides)
+    return ArtifactRef(kind="slides", text=text).model_dump(exclude_none=True)
+
+
+def _render_math(spec: dict, common: dict, state: VisualState, llm) -> dict | None:
+    return R.gen_math_visual(_params(spec), **common)
+
+
+_RENDERERS = {
+    "figure": _render_figure,
+    "chart": lambda spec, common, state, llm: R.gen_chart(_params(spec), **common),
+    "mindmap": lambda spec, common, state, llm: R.gen_mindmap(_params(spec), **common),
+    "math": _render_math,
+    "geometry": _render_math,
+    "flashcards": lambda spec, common, state, llm: R.gen_flashcards(
+        _params(spec).get("cards") or [], title=_params(spec).get("title", "Flashcards"),
+        **common),
+    "pdf": lambda spec, common, state, llm: R.gen_pdf(
+        _params(spec).get("title", "Document"), _params(spec).get("blocks") or [], **common),
+    "slides": _render_slides,
+}
+
+RENDERABLE_KINDS = frozenset(_RENDERERS)
+
+
 def _dispatch(spec: dict, common: dict, state: VisualState, llm) -> dict | None:
     """Route one spec's ``kind`` to its render tool."""
-    kind = spec.get("kind")
-    params = spec.get("params") or {}
-    desc = spec.get("description") or ""
-    if kind == "chart":
-        return R.gen_chart(params, **common)
-    if kind == "mindmap":
-        return R.gen_mindmap(params, **common)
-    if kind in ("math", "geometry"):
-        return R.gen_math_visual(params, **common)
-    if kind == "flashcards":
-        return R.gen_flashcards(params.get("cards") or [],
-                                title=params.get("title", "Flashcards"), **common)
-    if kind == "pdf":
-        return R.gen_pdf(params.get("title", "Document"), params.get("blocks") or [],
-                         **common)
-    if kind == "slides":
-        # TODO: honour an explicit user-requested slide count (needs a count field threaded
-        # from the planner's visual spec); until then the config cap keeps outlines digestible.
-        max_slides = common["config"].get("render.slides.max_slides", 10)
-        text = R.powerpoint_points(params.get("content") or desc, llm,
-                                   language=state.get("language", "en"),
-                                   instructions=state.get("instructions", ""),
-                                   max_slides=max_slides)
-        return ArtifactRef(kind="slides", text=text).model_dump(exclude_none=True)
-    logger.warning("unknown visual kind %r; skipped", kind)
-    return None
+    renderer = _RENDERERS.get(spec.get("kind"))
+    if renderer is None:
+        logger.warning("unknown visual kind %r; skipped", spec.get("kind"))
+        return None
+    return renderer(spec, common, state, llm)
 
 
 def build_visual_sg(*, config, llm=None):

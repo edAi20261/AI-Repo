@@ -689,7 +689,7 @@ class_analytics:
   groups_limit: 5
 
 persona:
-  enabled: false
+  enabled: true
   store: postgres
   cache_ttl_seconds: 300
   examples_per_turn: 3
@@ -842,10 +842,11 @@ logging:
 
 # Overlays merged over the base, selected by APP_ENV.
 credits:
-  # Off until the backend's Prisma migrations create ai.credit_wallets and
-  # ai.credit_ledger (docs/BACKEND_INTEGRATION.md, "Credits"). Enabled against a
-  # database without them, every paid request is refused with 503.
-  enabled: false
+  # Fails closed: a paid call whose charge cannot be recorded is refused with 503
+  # rather than run free. That covers chat, so an unreachable database, or a
+  # user_id with no row in identity.users for the wallet to reference, stops the
+  # tutor for that user instead of giving away unmetered model calls.
+  enabled: true
   store: postgres              # postgres | memory
   connect_timeout_seconds: 2
   statement_timeout_ms: 1000
