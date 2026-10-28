@@ -8,9 +8,9 @@ next `prisma migrate`, so each table is written as the Prisma model plus the SQL
 it produces. `scripts/dev_ai_schema.sql` carries the same SQL for a local
 database.
 
-Until both tables exist, keep `persona.enabled: false`. With it off, a chat turn
-that names a teacher is answered by the default tutor and says so in the log, and
-the `/ai/personas` endpoints answer `503`.
+Both tables exist and `persona.enabled` is `true`. With it off, a chat turn that
+names a teacher is answered by the default tutor and says so in the log, and the
+`/ai/personas` endpoints answer `503`.
 
 ---
 

@@ -400,9 +400,8 @@ A user seen for the first time gets the default plan. Plans live in
 | `POST /ai/credits/{user_id}/grants` | `{ "amount": 100, "granted_by": "uuid", "note": "..." }` |
 | `PUT /ai/credits/{user_id}/plan` | `{ "plan": "basic", "changed_by": "uuid" }`; the allowance restarts at the new plan |
 
-**Credits are off** (`credits.enabled: false`): nothing is charged and the
-credits endpoints answer `503`. They go on once these two tables exist, which
-belong in your Prisma schema like every other `ai.*` table:
+**Credits are on** (`credits.enabled: true`). They live in these two tables,
+which belong in your Prisma schema like every other `ai.*` table:
 
 `ai.credit_wallets` — one row per user
 `user_id uuid PK → identity.users`, `plan varchar(50)`, `allowance int CHECK >= 0`,
@@ -418,8 +417,10 @@ belong in your Prisma schema like every other `ai.*` table:
 `cost_usd numeric(12,6)`, `created_at timestamptz default now()`,
 index `(user_id, created_at DESC)`.
 
-If this service cannot reach them while credits are on, paid calls answer `503`
-rather than run free.
+Credits fail closed. If this service cannot reach these tables, or the
+`user_id` has no row in `identity.users` for its wallet to reference, paid calls
+(chat included) answer `503` rather than run free. A new user starts on the free
+plan with 50 credits a month.
 
 ---
 
@@ -435,10 +436,8 @@ facts still come from the lesson, and the reply language is still the student's.
 
 Nothing is live until the teacher approves it. A new build is always a draft.
 
-**Before any of this works:** create `ai.teacher_personas` and
-`ai.teacher_persona_exemplars` (`docs/persona-schema-requests.md`), then set
-`persona.enabled: true`. Until then the endpoints answer `503` and chat ignores
-`teacher_id`.
+Personas are on (`persona.enabled: true`) and stored in `ai.teacher_personas`
+and `ai.teacher_persona_exemplars` (`docs/persona-schema-requests.md`).
 
 ### What the platform owns
 
@@ -528,13 +527,17 @@ one answers anything itself:
 
 **Reading aloud is off for now** (`voice.speak.enabled: false`), because it is most
 of the voice cost. `POST /ai/voice/speak` answers `503` with code
-`speaking_disabled`. Ask `GET /ai/voice/capabilities`, which returns
-`{ "transcribe": true, "speak": false }`, and show the speaker button only when
-`speak` is true. Turning it back on is a config change.
+`speaking_disabled`. Turning it back on is a config change.
+
+Ask `GET /ai/voice/capabilities` and show the mic only when `transcribe` is
+true, and the speaker button only when `speak` is true. Each is true only when
+that direction is turned on and its key is set, so with this service as it ships
+and the key present it returns `{ "transcribe": true, "speak": false }`.
 
 **Key this service needs:** `ELEVENLABS_API_KEY`. One key covers both
-directions. Without it, both endpoints answer `503` with `details.missing`
-naming the variable.
+directions. Without it, capabilities reports both false and both endpoints
+answer `503` with `details.missing` naming the variable, before any credit is
+taken.
 
 ### `POST /ai/voice/transcribe` (paid: `voice_transcribe`)
 

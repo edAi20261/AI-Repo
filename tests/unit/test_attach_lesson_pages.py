@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from scripts.attach_lesson_pages import _file_name, _spans
+from ingestion.lesson_pages import file_name as _file_name
+from scripts.attach_lesson_pages import _spans
 
 
 def test_a_lesson_runs_to_the_page_before_the_next_and_the_last_to_the_end():

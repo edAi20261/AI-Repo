@@ -107,7 +107,7 @@ def test_with_a_term_column_a_books_terms_are_stored_and_the_subject_put_in_term
     LessonCatalog(_config()).register(subject_id=SUBJECT, book_title="Book",
                                       lessons=_lessons([2, 2]))
     inserts = [(sql, args) for sql, args in db.statements if "INSERT INTO content.lessons" in sql]
-    assert all("term" in sql and args[-1] == 2 for sql, args in inserts)
+    assert all("term" in sql and args[-2] == 2 for sql, args in inserts)
     (order,) = [sql for sql, _ in db.statements if "row_number()" in sql]
     assert "ORDER BY term NULLS LAST, order_index" in order
     assert db.committed

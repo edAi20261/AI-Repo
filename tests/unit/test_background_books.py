@@ -32,41 +32,76 @@ def searched(monkeypatch):
 
     monkeypatch.setattr(tools, "get_embedder", lambda config: _Embedder())
     monkeypatch.setattr(tools, "_candidate_scores", candidates)
-    monkeypatch.setattr(tools, "_subjects_of", lambda ids, config: [SUBJECT])
     return seen
 
 
-def test_a_ministry_lesson_is_also_answered_from_its_subjects_external_books(searched):
-    """External books are filed under lessons of their own, so a search scoped
-    to the ministry lesson a student is on never reached them: the background
-    they were ingested to be was never read."""
+def test_a_lesson_scoped_search_reads_only_that_lessons_own_passages(searched):
+    """A search scoped to a lesson also read every external book of its subject.
+    Those books are whole-term study guides, so a student on the first lesson
+    of term one was taught from another lesson's revision and exam pages: over
+    120 lessons, 52% of the passages came from another book."""
     from agent.tools import rag_search
     from shared.config import get_config
 
-    rag_search("ما هي الذرة", [SYLLABUS], lecture_ids=[MINISTRY_LESSON], config=get_config())
+    rag_search("ما هي الذرة", [SYLLABUS], subject_id=SUBJECT, lecture_ids=[MINISTRY_LESSON],
+               config=get_config())
+    scope = searched["filter"]
+    assert not scope.should
+    assert ("lecture_id", [MINISTRY_LESSON]) in _conditions(scope)
+    assert ("namespace", [SYLLABUS]) in _conditions(scope)
+
+
+def test_a_subject_wide_search_still_reads_the_subjects_external_books(searched):
+    """Without a lesson the external books are the background they were
+    ingested to be, and only those of the subject asked about."""
+    from agent.tools import rag_search
+    from shared.config import get_config
+
+    rag_search("ما هي الذرة", [SYLLABUS], subject_id=SUBJECT, config=get_config())
     own, background = searched["filter"].should
-    assert ("lecture_id", [MINISTRY_LESSON]) in _conditions(own)
     assert ("namespace", [SYLLABUS]) in _conditions(own)
     assert ("namespace", BACKGROUND) in _conditions(background)
-    assert ("subject_id", [SUBJECT]) in _conditions(background)
+    assert ("subject_id", SUBJECT) in _conditions(searched["filter"])
 
 
-def test_background_is_never_searched_beyond_the_lessons_subject(searched, monkeypatch):
-    """A lesson whose subject cannot be found must not open the background of
-    every subject to it."""
-    import agent.tools as tools
-    from agent.tools import rag_search
-    from shared.config import get_config
+def test_the_scope_gate_weighs_a_lesson_against_other_lessons_not_external_books(searched):
+    """With external books out of a lesson's scope but still in the gate's
+    subject-wide comparison, a guide's copy of the selected lesson outscored the
+    lesson itself, and the lesson's own question was refused as belonging
+    elsewhere for 3 of 120 lessons."""
+    from agent.retrieval import answers_within_scope
 
-    monkeypatch.setattr(tools, "_subjects_of", lambda ids, config: [])
-    rag_search("q", [SYLLABUS], lecture_ids=[MINISTRY_LESSON], config=get_config())
+    answers_within_scope("ما هي الذرة", [SYLLABUS], 0.7, subject_id=SUBJECT, ratio=0.9)
     assert not searched["filter"].should
     assert ("namespace", [SYLLABUS]) in _conditions(searched["filter"])
 
 
+def test_the_model_is_told_a_background_passage_is_not_the_students_lesson():
+    """Background passages reached the model numbered and headed like the
+    lesson's own, so it taught another book's revision pages as the lesson."""
+    from agent.models import RetrievedChunk
+    from agent.prompts import SUPPLEMENTARY_PASSAGE
+    from agent.retrieval import render_context
+
+    def chunk(chunk_id, background):
+        return RetrievedChunk(
+            chunk_id=chunk_id, score=0.9, text=chunk_id, lecture_id="l", topic_ids=[],
+            page_from=3, page_to=3,
+            heading_path="الوحدة 1", language="ar", background=background)
+
+    context, citations = render_context([chunk("own", False), chunk("guide", True)])
+    own, guide = context.split("\n\n")
+    assert SUPPLEMENTARY_PASSAGE not in own
+    assert SUPPLEMENTARY_PASSAGE in guide and "الوحدة 1" not in guide
+    assert [c.supplementary for c in citations] == [False, True]
+
+
 def test_an_external_book_is_never_named_to_a_student_as_a_source():
     """Students must not learn the external books exist; a citation carried the
-    book's lesson title and pages into the sources under every answer."""
+    book's lesson title and pages into the sources under every answer. Named by
+    its subject alone it read as the student's own book, so it is marked as
+    supplementary."""
+    from agent.graph.nodes import SUPPLEMENTARY_MARK, _citation_where
     from agent.models import RetrievedChunk
     from agent.retrieval import cite
 
@@ -77,8 +112,10 @@ def test_an_external_book_is_never_named_to_a_student_as_a_source():
         lesson_order=0, background=True)
     citation = cite(chunk, 3)
     assert citation.subject_name == "العلوم"
+    assert citation.supplementary
     assert (citation.lecture_id, citation.lesson_title, citation.page_from,
             citation.page_to, citation.heading_path) == (None, None, None, None, None)
+    assert _citation_where(citation) == f"{SUPPLEMENTARY_MARK} العلوم"
 
 
 def test_an_external_book_lesson_is_filed_so_the_app_can_hide_it(fake_postgres):

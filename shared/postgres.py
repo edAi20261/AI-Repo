@@ -27,6 +27,8 @@ from __future__ import annotations
 import atexit
 import logging
 import threading
+import uuid
+from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from typing import Iterator, Optional
@@ -55,6 +57,27 @@ class _Held:
 def pg_url(raw: str) -> str:
     """Strip the SQLAlchemy driver suffix so psycopg accepts the URL."""
     return raw.replace("+asyncpg", "").replace("+psycopg", "")
+
+
+def uuid_ids(values: Iterable[object], *, what: str) -> list[str]:
+    """``values`` as canonical uuid strings, for a ``col = ANY(%s::uuid[])`` lookup.
+
+    Ids are compared as uuids so the index on the column can answer; cast to
+    text, every lookup scanned the whole table. Postgres rejects the statement
+    over one malformed id, which would fail a turn that every other id could
+    serve, so a value that is not a uuid is left out here and the omission is
+    logged with the lookup it was meant for.
+    """
+    kept, dropped = [], []
+    for value in values:
+        try:
+            kept.append(str(uuid.UUID(str(value))))
+        except ValueError:
+            dropped.append(str(value))
+    if dropped:
+        logger.warning("ids that are not uuids were left out of a lookup", extra={
+            "lookup": what, "dropped": len(dropped), "sample": dropped[:3]})
+    return kept
 
 
 def _pool_for(url: str, connect_timeout: int, statement_timeout_ms: int,

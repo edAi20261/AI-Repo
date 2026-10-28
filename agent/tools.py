@@ -19,7 +19,7 @@ from typing import Any
 from shared.backend import get_backend_client
 from shared.config import Config
 from shared.lexical import bm25_scores, ranks_from_scores, reciprocal_rank_fusion
-from shared.postgres import connect
+from shared.postgres import connect, uuid_ids
 from shared.vector_store import query_client
 from shared.embeddings import get_embedder
 
@@ -86,6 +86,7 @@ def rag_search(
     topic_ids: Sequence[str] | None = None,
     lecture_ids: Sequence[str] | None = None,
     ready_only: bool = True,
+    background: bool = True,
     config: Config | None = None,
 ) -> list[RetrievedChunk]:
     """Return the top-``k`` chunks most similar to ``query`` within ``namespaces``.
@@ -95,7 +96,8 @@ def rag_search(
     text from ``ai.chunks`` excluding non-``ready`` lectures (invariant 9).
     ``subject_id``/``grade``/``language``/``topic_ids``/``lecture_ids`` narrow the search
     further — all OPTIONAL payload filters on top of the namespace isolation; ``None`` means
-    that dimension is not scoped.
+    that dimension is not scoped. ``background=False`` keeps a subject-wide
+    syllabus search to the syllabus.
     """
     if not namespaces:
         raise ValueError("rag_search requires at least one namespace (invariant 1).")
@@ -140,7 +142,7 @@ def rag_search(
     fetch = k * 3 if ready_only else k
     if config.get("agent.hybrid.enabled"):
         fetch = max(fetch, config.get("agent.hybrid.candidates"))
-    background = _background_scope(namespaces, subject_id, lecture_ids, config)
+    background = _background_scope(namespaces, subject_id, lecture_ids) if background else None
     if background is None:
         scope = models.Filter(must=must + own, must_not=must_not)
     else:
@@ -149,7 +151,8 @@ def rag_search(
     scores, meta = _candidate_scores(
         query, [scope], config,
         collection=collection, limit=fetch, vector=vector, with_meta=True)
-    if not scores:
+    candidates = uuid_ids(scores, what="rag_search")
+    if not candidates:
         return []
 
     ready_clause = ""
@@ -159,11 +162,11 @@ def rag_search(
     sql = (
         "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
         "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
-        "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
+        "FROM ai.chunks c WHERE c.chunk_id = ANY(%s::uuid[])" + ready_clause
     )
 
     with connect(config) as conn, conn.cursor() as cur:
-        cur.execute(sql, (list(scores),))
+        cur.execute(sql, (candidates,))
         rows = cur.fetchall()
 
     out = [
@@ -189,30 +192,23 @@ def rag_search(
 
 
 def _background_scope(namespaces: Sequence[str], subject_id: str | None,
-                      lecture_ids: Sequence[str] | None, config: Config) -> list | None:
-    """Where the background a syllabus search also reads lives: the external
-    books of the same subject. A lesson's own id never matches them, since they
-    are filed under lessons of their own, so a lesson-scoped search reaches them
-    through its subject."""
+                      lecture_ids: Sequence[str] | None) -> list | None:
+    """Where the background a subject-wide syllabus search also reads lives:
+    the external books of the same subject.
+
+    A search scoped to lessons reads none of it. The external books are
+    whole-term study guides, and a passage similar to the lesson is usually
+    another lesson's revision or exam page: with them in a lesson's scope, 52%
+    of the top-8 passages over 120 published lessons came from another book,
+    and the tutor taught them as the lesson."""
     from qdrant_client import models
 
-    if SYLLABUS not in namespaces or BACKGROUND in namespaces:
-        return None
-    subjects = [subject_id] if subject_id else (
-        _subjects_of(lecture_ids, config) if lecture_ids else None)
-    if lecture_ids and not subjects:
+    if lecture_ids or SYLLABUS not in namespaces or BACKGROUND in namespaces:
         return None
     scope = [models.FieldCondition(key="namespace", match=models.MatchValue(value=BACKGROUND))]
-    if subjects:
-        scope.append(models.FieldCondition(key="subject_id", match=models.MatchAny(any=subjects)))
+    if subject_id:
+        scope.append(models.FieldCondition(key="subject_id", match=models.MatchValue(value=subject_id)))
     return scope
-
-
-def _subjects_of(lecture_ids: Sequence[str], config: Config) -> list[str]:
-    with connect(config) as conn, conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT subject_id::text FROM content.lessons "
-                    "WHERE id::text = ANY(%s)", (list(lecture_ids),))
-        return [row[0] for row in cur.fetchall()]
 
 
 def _candidate_scores(
@@ -413,8 +409,8 @@ def _resolve_topics_pg(vectors, subject_id, lecture_ids, k, threshold, config):
         sql += " AND subject_id = %s"
         params.append(subject_id)
     if lecture_ids:
-        sql += " AND lecture_id::text = ANY(%s)"
-        params.append([str(x) for x in lecture_ids])
+        sql += " AND lecture_id = ANY(%s::uuid[])"
+        params.append(uuid_ids(lecture_ids, what="resolve_topics"))
 
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
@@ -458,7 +454,7 @@ def get_topic_deps(
 
     found: dict[str, PrereqTopic] = {}
     with connect(config) as conn, conn.cursor() as cur:
-        seen: set[str] = {str(t) for t in topic_ids}
+        seen: set[str] = set(uuid_ids(topic_ids, what="get_topic_deps"))
         frontier: list[str] = list(seen)
         for level in range(1, depth + 1):
             if not frontier:
@@ -467,7 +463,7 @@ def get_topic_deps(
                 "SELECT d.prereq_topic_id::text, d.strength::text, t.label "
                 "FROM ai.topic_dependencies d "
                 "LEFT JOIN ai.topics t ON t.topic_id = d.prereq_topic_id "
-                "WHERE d.topic_id::text = ANY(%s)",
+                "WHERE d.topic_id = ANY(%s::uuid[])",
                 (frontier,),
             )
             next_frontier: list[str] = []
@@ -492,14 +488,15 @@ def get_topic_labels(
 ) -> dict[str, str]:
     """``{topic_id: label}`` for the given ids, from ``ai.topics``. Missing ids are
     absent from the result. For hydrating labels onto id-only rows (e.g. mastery)."""
-    if not topic_ids:
+    ids = uuid_ids(topic_ids, what="get_topic_labels")
+    if not ids:
         return {}
     config = config or Config.load()
     with connect(config) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT topic_id::text, label FROM ai.topics WHERE topic_id::text = ANY(%s)",
-                ([str(t) for t in topic_ids],))
+                "SELECT topic_id::text, label FROM ai.topics WHERE topic_id = ANY(%s::uuid[])",
+                (ids,))
             return {r[0]: r[1] or "" for r in cur.fetchall()}
 
 
@@ -520,10 +517,10 @@ def get_chunks_by_id(
     in, and a re-presentation that reshuffles its evidence reads as a different
     answer to the same question.
     """
-    if not chunk_ids:
+    wanted = uuid_ids(chunk_ids, what="get_chunks_by_id")
+    if not wanted:
         return []
     config = config or Config.load()
-    wanted = [str(c) for c in chunk_ids]
 
     ready_clause = ""
     if ready_only:
@@ -532,7 +529,7 @@ def get_chunks_by_id(
     sql = (
         "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
         "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
-        "FROM ai.chunks c WHERE c.chunk_id::text = ANY(%s)" + ready_clause
+        "FROM ai.chunks c WHERE c.chunk_id = ANY(%s::uuid[])" + ready_clause
     )
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute(sql, (wanted,))
@@ -573,8 +570,9 @@ def get_neighbours(
     lookup, not a search: ``score`` is 0.0. Navigation and apparatus are left
     out, as they are from a search.
     """
-    wanted = [(c.lecture_id, c.order_index) for c in anchors
-              if c.lecture_id and c.order_index is not None]
+    wanted = [(lesson, c.order_index) for c in anchors
+              if c.lecture_id and c.order_index is not None
+              for lesson in uuid_ids([c.lecture_id], what="get_neighbours")]
     if not wanted or window < 1:
         return []
     config = config or Config.load()
@@ -583,10 +581,10 @@ def get_neighbours(
         ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
                         "ai.lecture_ingestion WHERE status = 'ready')")
     ranges = " OR ".join(
-        "(c.lecture_id::text = %s AND c.order_index BETWEEN %s AND %s)" for _ in wanted)
+        "(c.lecture_id = %s::uuid AND c.order_index BETWEEN %s AND %s)" for _ in wanted)
     params: list[Any] = []
     for lecture_id, order in wanted:
-        params += [str(lecture_id), order - window, order + window]
+        params += [lecture_id, order - window, order + window]
     sql = (
         "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
         "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
@@ -626,7 +624,8 @@ def get_lesson_chunks(
     """
     if not namespaces:
         raise ValueError("get_lesson_chunks requires at least one namespace (invariant 1).")
-    if limit < 1:
+    lesson = uuid_ids([lecture_id], what="get_lesson_chunks")
+    if limit < 1 or not lesson:
         return []
     config = config or Config.load()
     ready_clause = ""
@@ -637,11 +636,11 @@ def get_lesson_chunks(
         "SELECT DISTINCT c.chunk_id::text, c.text, c.heading_path, c.page_from, "
         "c.page_to, c.lecture_id::text, c.language, c.topic_ids, c.order_index "
         "FROM ai.chunks c JOIN ai.vector_index v ON v.chunk_id = c.chunk_id "
-        "WHERE c.lecture_id::text = %s AND v.namespace = ANY(%s)"
+        "WHERE c.lecture_id = %s::uuid AND v.namespace = ANY(%s)"
         + ready_clause + " ORDER BY c.order_index"
     )
     with connect(config) as conn, conn.cursor() as cur:
-        cur.execute(sql, (str(lecture_id), list(namespaces)))
+        cur.execute(sql, (lesson[0], list(namespaces)))
         rows = [r for r in cur.fetchall() if chunk_kind(r[1] or "") not in NOT_CONTENT]
     if len(rows) > limit:
         step = (len(rows) - 1) / (limit - 1) if limit > 1 else 0
@@ -661,9 +660,9 @@ _LECTURE_TOPICS_SQL = (
     "SELECT t.topic_id::text, t.label, t.subject_id::text FROM ai.topics t "
     "LEFT JOIN (SELECT u.topic_id, min(c.order_index) AS first_seen "
     "FROM ai.chunks c CROSS JOIN LATERAL unnest(c.topic_ids) AS u(topic_id) "
-    "WHERE c.lecture_id::text = ANY(%s) GROUP BY u.topic_id) taught "
+    "WHERE c.lecture_id = ANY(%s::uuid[]) GROUP BY u.topic_id) taught "
     "ON taught.topic_id = t.topic_id "
-    "WHERE taught.topic_id IS NOT NULL OR t.lecture_id::text = ANY(%s) "
+    "WHERE taught.topic_id IS NOT NULL OR t.lecture_id = ANY(%s::uuid[]) "
     "ORDER BY taught.first_seen NULLS LAST, t.created_at LIMIT %s"
 )
 
@@ -685,10 +684,10 @@ def get_lecture_topics(
     passage does: a skill taught in two lessons is one topic, owned by the
     first, and the second lesson teaches it all the same.
     """
-    if not lecture_ids:
+    ids = uuid_ids(lecture_ids, what="get_lecture_topics")
+    if not ids:
         return []
     config = config or Config.load()
-    ids = [str(x) for x in lecture_ids]
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute(_LECTURE_TOPICS_SQL, (ids, ids, limit))
         return [ResolvedTopic(topic_id=r[0], label=r[1] or "", score=0.0, subject_id=r[2])
@@ -702,12 +701,15 @@ def get_subject_topics(
     config: Config | None = None,
 ) -> list[str]:
     """The labels of a subject's topics, in the order they were taught. A lookup."""
+    subject = uuid_ids([subject_id], what="get_subject_topics")
+    if not subject:
+        return []
     config = config or Config.load()
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT label FROM ai.topics WHERE subject_id::text = %s AND label <> '' "
+            "SELECT label FROM ai.topics WHERE subject_id = %s::uuid AND label <> '' "
             "AND " + NOT_BACKGROUND_TOPIC + " GROUP BY label ORDER BY min(created_at) LIMIT %s",
-            (str(subject_id), limit))
+            (subject[0], limit))
         return [r[0] for r in cur.fetchall()]
 
 
@@ -719,13 +721,14 @@ def get_topic_lectures(
     """``{topic_id: lecture_id}`` for the given ids, from ``ai.topics`` (a topic belongs to a
     lecture). Used to backfill an item's lecture_id from its resolved topic so a graded answer
     can move mastery (invariant 12) even when the caller didn't supply the lecture."""
-    if not topic_ids:
+    ids = uuid_ids(topic_ids, what="get_topic_lectures")
+    if not ids:
         return {}
     config = config or Config.load()
     with connect(config) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT topic_id::text, lecture_id::text FROM ai.topics "
-            "WHERE topic_id::text = ANY(%s)", ([str(t) for t in topic_ids],))
+            "WHERE topic_id = ANY(%s::uuid[])", (ids,))
         return {r[0]: r[1] for r in cur.fetchall() if r[1]}
 
 
@@ -855,8 +858,8 @@ def get_figures(
         clauses.append("f.topic_ids && %s::uuid[]")
         params.append([str(t) for t in topic_ids])
     if lecture_id:
-        clauses.append("f.lecture_id::text = %s")
-        params.append(str(lecture_id))
+        clauses.append("f.lecture_id = ANY(%s::uuid[])")
+        params.append(uuid_ids([lecture_id], what="get_figures"))
     sql = (
         "SELECT f.figure_id::text, f.lecture_id::text, f.s3_uri, f.caption, "
         "f.alt_text, f.page, f.topic_ids FROM ai.figures f WHERE "
@@ -1037,8 +1040,8 @@ def get_mastery(
            "FROM ai.mastery m" + join + " WHERE m.user_id = %s")
     args: list[Any] = [str(user_id)]
     if topic_ids:
-        sql += " AND m.topic_id::text = ANY(%s)"
-        args.append([str(t) for t in topic_ids])
+        sql += " AND m.topic_id = ANY(%s::uuid[])"
+        args.append(uuid_ids(topic_ids, what="get_mastery"))
     if subject_id:
         sql += " AND t.subject_id = %s"
         args.append(str(subject_id))
@@ -1149,10 +1152,11 @@ def get_recent_outcomes(
            "SELECT e.topic_id::text AS topic_id, e.partial_score, e.correct, "
            "row_number() OVER (PARTITION BY e.topic_id ORDER BY e.created_at DESC) AS n "
            "FROM ai.mastery_events e "
-           "WHERE e.user_id = %s AND e.topic_id::text = ANY(%s)) ranked "
+           "WHERE e.user_id = %s AND e.topic_id = ANY(%s::uuid[])) ranked "
            "WHERE n <= %s ORDER BY topic_id, n")
     with connect(config) as conn, conn.cursor() as cur:
-        cur.execute(sql, (str(user_id), [str(t) for t in topic_ids], int(per_topic)))
+        cur.execute(sql, (str(user_id), uuid_ids(topic_ids, what="recent_scores"),
+                          int(per_topic)))
         rows = cur.fetchall()
     out: dict[str, list[float]] = {}
     for tid, partial, correct in rows:
@@ -1267,7 +1271,7 @@ def get_top_mistakes(
     if subject_ids:
         sql += " AND t.subject_id = ANY(%s)"
         args.append([str(s) for s in subject_ids])
-    sql += (") x JOIN ai.mistake_tags tag ON tag.tag_id::text = x.tag_id::text "
+    sql += (") x JOIN ai.mistake_tags tag ON tag.tag_id = x.tag_id "
             "GROUP BY tag.tag_id, tag.label ORDER BY 3 DESC, 2 LIMIT %s")
     args.append(int(limit))
     with connect(config) as conn, conn.cursor() as cur:
@@ -1324,8 +1328,8 @@ def get_direct_prereqs(
             "SELECT d.topic_id::text, d.prereq_topic_id::text, t.label "
             "FROM ai.topic_dependencies d "
             "LEFT JOIN ai.topics t ON t.topic_id = d.prereq_topic_id "
-            "WHERE d.topic_id::text = ANY(%s)",
-            ([str(t) for t in topic_ids],))
+            "WHERE d.topic_id = ANY(%s::uuid[])",
+            (uuid_ids(topic_ids, what="get_direct_prereqs"),))
         rows = cur.fetchall()
     out: dict[str, list[tuple[str, str]]] = {}
     for tid, pid, label in rows:

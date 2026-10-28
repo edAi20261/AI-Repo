@@ -556,6 +556,10 @@ def test_a_book_run_across_machines_ends_in_the_index_one_machine_would_build(
 
 def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
         scanned_book, wired, monkeypatch, tmp_path):
+    """A split book's lessons were published with no pages, so each opened to an
+    empty page: every shown lesson is now attached its own pages before it is
+    published."""
+    import ingestion.books as books
     import ingestion.context as context
     import ingestion.distributed as distributed
     import ingestion.lesson as lesson
@@ -588,9 +592,19 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
 
     monkeypatch.setattr(distributed, "lessons_for", split)
 
+    class _S3:
+        stored: dict = {}
+
+        def upload(self, data, key, content_type="image/png"):
+            _S3.stored[key] = data
+            return f"s3://media/ai-artifacts/{key}"
+
+    monkeypatch.setattr(books, "get_uploader", lambda cfg: _S3())
+
     class _Catalog:
         registered: list = []
         settled: list = []
+        events: list = []
 
         def __init__(self, cfg):
             pass
@@ -598,7 +612,11 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
         def register(self, *, subject_id, book_title, lessons, namespace="syllabus"):
             _Catalog.registered.append((subject_id, [lsn["title"] for lsn in lessons]))
 
+        def attach(self, lesson_id, *, pdf, reason):
+            _Catalog.events.append(("attach", lesson_id, pdf["first_page"], pdf["last_page"]))
+
         def finished(self, lesson_id, *, status, errors, version):
+            _Catalog.events.append(("finished", lesson_id))
             _Catalog.settled.append((lesson_id, status))
 
         def stale(self, book_id, kept):
@@ -627,6 +645,10 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
     lessons = finished["lessons"]
     assert _Catalog.registered == [(subject, ["Lesson 1", "Lesson 2"])]
     assert sorted(_Catalog.settled) == sorted((lsn["lesson_id"], "ready") for lsn in lessons)
+    for lsn, pages in zip(lessons, [(1, 5), (6, 11)]):
+        attached = _Catalog.events.index(("attach", lsn["lesson_id"], *pages))
+        assert attached < _Catalog.events.index(("finished", lsn["lesson_id"]))
+    assert len(_S3.stored) == 2
     for chunk in finished["chunks"]:
         owner = lessons[0] if chunk.page_from < 6 else lessons[1]
         assert chunk.lecture_id == owner["lesson_id"]

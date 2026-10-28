@@ -149,15 +149,16 @@ the second customer.
   No attribution lines.
 - **Shared resources.** `DATABASE_URL` and Qdrant point at production. Reads are
   free; anything that writes gets confirmed first.
-- **Corpus licensing.** A book used to measure the pipeline is not a book we may
-  index. *Science Fusion* (Houghton Mifflin Harcourt, © 2017) is the fixture the
-  layout parser was measured against; its copyright page forbids reproduction
-  "by any information storage and retrieval system" without written permission,
-  which is what this pipeline is. It stays a local fixture: it is not in
-  `ai.chunks` and not in the index, and it must not be ingested or demoed from.
-  Permission, if it is ever wanted, goes through
-  customercare.hmhco.com/permission. Check the copyright page of anything new
-  before it reaches `ingest`.
+- **Corpus licensing.** Which books are indexed is the product owner's call,
+  made knowing what each copyright page says. Check the copyright page of
+  anything new before it reaches `ingest`, and name the clause to the owner when
+  it forbids storage in "any information storage and retrieval system", which
+  is what this pipeline is. *Science Fusion* and the *Engineering Design
+  Workbook* (Houghton Mifflin Harcourt) carry that clause; the owner chose on
+  2026-10-26 to index them anyway. Permission, if it is wanted, goes through
+  customercare.hmhco.com/permission. *Science Fusion* is also the fixture the
+  layout parser was measured against, so once it is indexed a measurement on it
+  is no longer a measurement on a book the pipeline has never seen.
 
 ## Layering
 
