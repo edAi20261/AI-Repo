@@ -10,6 +10,8 @@ word for lesson.
 
 from __future__ import annotations
 
+import pytest
+
 from agent.models import PlannedTask, RetrievedChunk, TurnUnderstanding
 
 LESSON = "11111111-1111-1111-1111-111111111111"
@@ -173,3 +175,75 @@ def test_a_lessons_topics_include_those_its_text_carries(fake_postgres):
 
     assert [t.topic_id for t in topics] == ["t-sub"]
     assert "unnest(c.topic_ids)" in db.sql[0] and "t.lecture_id = ANY(%s::uuid[])" in db.sql[0]
+
+
+class _NoSubjects:
+    def facts(self, subject_id):
+        from agent.models import SubjectFacts
+        return SubjectFacts(name="English", language="en")
+
+
+def _read_with(monkeypatch, study_scope):
+    from agent.graph import nodes
+
+    captured = {}
+
+    def fake_call(schema, messages, **kwargs):
+        captured["validate"] = kwargs["validate"]
+        captured["prompt"] = " ".join(messages[0].content.split())
+        return TurnUnderstanding(needs_syllabus=False, student_words="hi")
+
+    monkeypatch.setattr(nodes, "call_structured", fake_call)
+    node = nodes.build_understand(_config(), object(), _NoSubjects())
+    node({"pathway": "student", "message": _CHIP, "history": "", "conversation": {},
+          "study_scope": study_scope})
+    return captured
+
+
+_SELECTED = {"lecture_id": LESSON, "lesson_title": "Subtraction"}
+_CHIP = "Explain this topic"
+
+
+def _pointing(**task) -> TurnUnderstanding:
+    return TurnUnderstanding(needs_syllabus=True, student_words=_CHIP,
+                             tasks=[PlannedTask(type="explain", **task)])
+
+
+def test_a_request_that_only_points_at_the_selected_lesson_is_read_as_about_it(monkeypatch):
+    """The lesson screen's starter chips say "Explain this topic". The turn reading
+    was told only that "this lesson" meant the selected lesson, so it rewrote the
+    query to "the topic", and the reply was "The topic you're asking about is not
+    specified", recorded as a decline."""
+    prompt = _read_with(monkeypatch, _SELECTED)["prompt"]
+
+    assert "in any language" in prompt and "means that lesson" in prompt
+    assert "names no subject matter" in prompt
+    assert "names_subject_matter:" in prompt
+
+
+def test_a_pointing_request_inside_a_selected_lesson_is_sent_back_until_it_reads_the_lesson(
+        monkeypatch):
+    """A query of "the topic" with a lesson selected searched for nothing and
+    reached the answer with no subject to explain, so the tutor declined."""
+    validate = _read_with(monkeypatch, _SELECTED)["validate"]
+
+    with pytest.raises(ValueError, match="whole_lesson"):
+        validate(_pointing(query="the topic", names_subject_matter=False))
+    validate(_pointing(query="the topic", names_subject_matter=False, whole_lesson=True))
+
+
+def test_a_whole_lesson_reading_is_not_held_to_the_lessons_exact_title(monkeypatch):
+    """A whole-lesson task reads the lesson whatever its query says. Requiring the
+    title verbatim would fail every retry for a model that translated it, and the
+    turn would end with the tutor unavailable instead of an answer."""
+    captured = _read_with(monkeypatch, _SELECTED)
+
+    assert "write the lesson's title in the query" in captured["prompt"]
+    captured["validate"](_pointing(query="الطرح", names_subject_matter=False,
+                                   whole_lesson=True))
+
+
+def test_without_a_selected_lesson_a_pointing_request_is_not_forced_onto_one(monkeypatch):
+    validate = _read_with(monkeypatch, None)["validate"]
+
+    validate(_pointing(query="the topic", names_subject_matter=False))
