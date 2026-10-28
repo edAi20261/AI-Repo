@@ -15,6 +15,7 @@ runs first (invariant 8). BANK/HYBRID are built but config-off. ``validate`` enf
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
@@ -270,7 +271,8 @@ def _plan_coverage(state: AssessmentState) -> dict:
 def _retrieve_batch(state: AssessmentState) -> dict:
     namespaces = state.get("namespaces") or ["syllabus"]
     k = state.get("k_per_topic", 4)
-    topics = {slot["topic_id"] for slot in state.get("coverage", [])}
+    slots = Counter(slot["topic_id"] for slot in state.get("coverage", []))
+    topics = set(slots)
     by_topic: dict[str, list] = {}
     fallbacks = named = 0
     labels: dict[str, str] | None = None
@@ -310,12 +312,15 @@ def _retrieve_batch(state: AssessmentState) -> dict:
                 named += 1
         # A lesson whose passages carry no topic, or a request that names no
         # subject matter, finds nothing by text or by tag; inside one lesson the
-        # lesson itself is what to ask from.
-        if not chunks and lesson:
+        # lesson itself is what to ask from. Finding something is not enough: a
+        # lesson with no topics found one passage for its title, and the model
+        # wrote no questions at all from one passage for three slots.
+        if len(chunks) < slots[topic] and lesson:
             if whole is None:
                 whole = retrieval.whole_lesson(
                     lesson, namespaces, limit=max(k, len(state.get("coverage", []))))
-            chunks = whole
+            found = {c.chunk_id for c in chunks}
+            chunks = [*chunks, *(c for c in whole if c.chunk_id not in found)]
         by_topic[topic or ""] = chunks
     empty = sum(1 for chunks in by_topic.values() if not chunks)
     log = logger.warning if empty else logger.info
