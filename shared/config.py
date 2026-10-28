@@ -63,6 +63,26 @@ def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str
     return out
 
 
+MODEL_PROFILE_ENV = "MODEL_PROFILE"
+
+
+def _with_model_profile(data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` with the chosen ``model_profiles`` entry merged over it.
+
+    ``MODEL_PROFILE`` picks one for a run without editing the file; a name with
+    no profile stops the load, because falling back to the shipped one would
+    send the run to the gateway the operator was moving away from.
+    """
+    profiles = data.pop("model_profiles", {}) or {}
+    name = os.environ.get(MODEL_PROFILE_ENV) or data.get("model_profile")
+    if not name:
+        return data
+    if name not in profiles:
+        raise ValueError(f"model profile {name!r} is not one of {sorted(profiles)} "
+                         "under model_profiles in config.yaml")
+    return _deep_merge(data, profiles[name] or {})
+
+
 class Config:
     """Read-only view over the merged configuration. Values by dotted path;
     secrets via ``secret`` (environment only)."""
@@ -98,7 +118,7 @@ class Config:
         # An overlay named with nothing under it parses as None, not {}.
         overlay = overlays.get(app_env) or {}
         merged = _deep_merge(raw, overlay)
-        return cls(merged, app_env)
+        return cls(_with_model_profile(merged), app_env)
 
     # -- behavioural values (config.yaml) ------------------------------------
 

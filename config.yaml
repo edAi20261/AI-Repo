@@ -844,6 +844,33 @@ logging:
   file: null
   file_max_bytes: 10000000
 
+# Which vendor ingestion's models come from. One word, so a vendor that cannot
+# be paid for is left in one edit rather than five: on 2026-10-28 Vertex
+# billing was off and every model line of ingestion named Vertex. MODEL_PROFILE
+# picks one for a single run. gemini is what the lines above already say.
+model_profile: gemini
+model_profiles:
+  gemini: {}
+  # The gpt-4.1 family rather than gpt-5: it takes the temperature 0 and
+  # max_tokens these calls are made with. gpt-5 accepts neither, and reading a
+  # page should not deliberate, which is what reasoning_effort was buying down.
+  # Six pages of three books (two math, one scanned) on 2026-10-28, against
+  # gemini-2.5-flash: the same characters within 6% on every page, the scanned
+  # page included, in 11-33s a page against 19-43s. All four ingestion schemas
+  # (topics, dependencies, breakdown, terms) validated under strict json_schema.
+  openai:
+    vision:
+      provider: openai
+      model: gpt-4.1-mini
+      fallback_model: gpt-4.1
+      reasoning_effort: null
+    llm:
+      overrides:
+        extract_topics: { provider: openai, model: gpt-4.1-mini }
+        derive_deps:    { provider: openai, model: gpt-4.1-mini }
+        split_lessons:  { provider: openai, model: gpt-4.1, fallback_models: [gpt-4.1-mini] }
+
+
 # Overlays merged over the base, selected by APP_ENV.
 credits:
   # Fails closed: a paid call whose charge cannot be recorded is refused with 503

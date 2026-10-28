@@ -159,3 +159,55 @@ def test_a_timeout_is_the_gateway_being_slow_not_the_page_being_unreadable(monke
 
     assert _post(b"png", "read it", "a-model", _impatient_config(monkeypatch), label="t") == "the page"
     assert len(calls) == 2
+
+
+# --- a gateway is its address as well as its key ------------------------------
+
+def _recorded_post(monkeypatch):
+    """``httpx.post`` that answers once and keeps what it was sent."""
+    sent = {}
+
+    def post(url, **kwargs):
+        sent["url"], sent["body"] = url, kwargs["json"]
+        return _Reply(200, "the page")
+
+    monkeypatch.setattr("httpx.post", post)
+    return sent
+
+
+def test_a_page_for_openai_is_sent_to_openai(monkeypatch):
+    """Every gateway but Vertex was posted to OpenRouter's address, so pointing
+    vision at OpenAI sent an OpenAI key to OpenRouter and every page of the
+    book was rejected."""
+    from shared.vision import _post
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    sent = _recorded_post(monkeypatch)
+    config = get_config()
+    config.override("vision.provider", "openai")
+    try:
+        _post(b"png", "read it", "a-model", config, label="t")
+    finally:
+        config.override("vision.provider", "openrouter")
+
+    assert sent["url"].startswith("https://api.openai.com/v1/")
+
+
+def test_only_openrouter_is_asked_for_its_own_usage_field(monkeypatch):
+    """``usage: {include: true}`` is OpenRouter's extension. OpenAI rejects a
+    request carrying an argument it does not know, so the page is lost to a
+    field that was only ever there for cost accounting."""
+    from shared.vision import _post
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    sent = _recorded_post(monkeypatch)
+    config = get_config()
+    config.override("vision.provider", "openai")
+    try:
+        _post(b"png", "read it", "a-model", config, label="t")
+    finally:
+        config.override("vision.provider", "openrouter")
+    assert "usage" not in sent["body"]
+
+    _post(b"png", "read it", "a-model", _impatient_config(monkeypatch), label="t")
+    assert sent["body"]["usage"] == {"include": True}
