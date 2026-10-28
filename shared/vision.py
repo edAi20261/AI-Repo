@@ -129,6 +129,35 @@ def _project_from_credentials(config: Config) -> Optional[str]:
     return billed_project(config, credential_source(config))
 
 
+# What every gateway reads, by the bytes that open the file. Anything else is
+# redrawn as PNG: a textbook embeds its figures as JPEG 2000, which Gemini read
+# and OpenAI rejects as "an unsupported image".
+_SENDABLE = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF8", "image/gif"),
+)
+
+
+def _sendable(image: bytes) -> tuple[bytes, str]:
+    """The image in a format every gateway reads, and its media type.
+
+    A format that is already readable is left alone, so a phone photo is not
+    re-encoded several times larger as PNG.
+    """
+    for magic, media_type in _SENDABLE:
+        if image.startswith(magic):
+            return image, media_type
+    if image[:4] == b"RIFF" and image[8:12] == b"WEBP":
+        return image, "image/webp"
+    import fitz
+
+    pix = fitz.Pixmap(image)
+    if pix.colorspace and pix.colorspace.n != 3:
+        pix = fitz.Pixmap(fitz.csRGB, pix)
+    return pix.tobytes("png"), "image/png"
+
+
 class VisionUnavailable(RuntimeError):
     """Every model tried failed to produce a usable answer."""
 
@@ -214,7 +243,15 @@ def _attempt(
     """
     import httpx
 
-    encoded = base64.b64encode(image_png).decode()
+    try:
+        image, media_type = _sendable(image_png)
+    except Exception as error:
+        # Sent as it came: the gateway's rejection, if there is one, is logged
+        # with its reason below, and a gateway that reads it loses nothing.
+        logger.warning("vision image could not be converted", extra={
+            "label": label, "model": model, "error": type(error).__name__})
+        image, media_type = image_png, "image/png"
+    encoded = base64.b64encode(image).decode()
     try:
         response = httpx.post(
             f"{_base_url(config)}/chat/completions",
@@ -238,7 +275,7 @@ def _attempt(
                     "content": [
                         {"type": "text", "text": prompt},
                         {"type": "image_url",
-                         "image_url": {"url": f"data:image/png;base64,{encoded}"}},
+                         "image_url": {"url": f"data:{media_type};base64,{encoded}"}},
                     ],
                 }],
             },

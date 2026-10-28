@@ -211,3 +211,55 @@ def test_only_openrouter_is_asked_for_its_own_usage_field(monkeypatch):
 
     _post(b"png", "read it", "a-model", _impatient_config(monkeypatch), label="t")
     assert sent["body"]["usage"] == {"include": True}
+
+
+# --- an image goes up in a format every gateway reads ------------------------
+
+def _jpeg2000() -> bytes:
+    import fitz
+
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), False)
+    pix.clear_with(200)
+    return pix.pil_tobytes(format="JPEG2000")
+
+
+def test_a_figure_in_jpeg_2000_is_sent_as_an_image_openai_reads(monkeypatch):
+    """Textbook figures are embedded as JPEG 2000. They were posted as they came,
+    labelled PNG; Gemini read them, and OpenAI answered "You uploaded an
+    unsupported image" for every one, so 2,065 of a math book's figures went
+    without a caption."""
+    import base64
+
+    from shared.vision import _post
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    sent = _recorded_post(monkeypatch)
+    config = get_config()
+    config.override("vision.provider", "openai")
+    try:
+        _post(_jpeg2000(), "caption it", "a-model", config, label="t")
+    finally:
+        config.override("vision.provider", "openrouter")
+
+    url = sent["body"]["messages"][0]["content"][1]["image_url"]["url"]
+    header, encoded = url.split(",", 1)
+    assert header == "data:image/png;base64"
+    assert base64.b64decode(encoded)[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_a_photo_keeps_its_own_format(monkeypatch):
+    """A student's homework photo is a JPEG; calling it PNG mislabels it, and
+    re-encoding it as PNG would multiply its size."""
+    import io
+
+    from PIL import Image
+
+    from shared.vision import _post
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(buffer, format="JPEG")
+    sent = _recorded_post(monkeypatch)
+    _post(buffer.getvalue(), "read it", "a-model", _impatient_config(monkeypatch), label="t")
+
+    url = sent["body"]["messages"][0]["content"][1]["image_url"]["url"]
+    assert url.startswith("data:image/jpeg;base64,")
