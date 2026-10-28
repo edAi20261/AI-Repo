@@ -308,6 +308,42 @@ def test_the_frontend_can_ask_which_buttons_to_show(config, monkeypatch):
         "transcribe": True, "speak": False}
 
 
+def test_without_a_key_the_frontend_is_told_there_is_no_mic(config, monkeypatch):
+    """Capabilities said `transcribe: true` whether or not the speech key was set,
+    so the frontend showed a mic whose every recording came back 503."""
+    monkeypatch.setenv("AI_WEBHOOK_SHARED_SECRET", "token")
+    monkeypatch.delenv("ELEVENLABS_API_KEY")
+    config._data["voice"]["speak"]["enabled"] = True
+    with _client(config) as client:
+        response = client.get("/ai/voice/capabilities", headers=HEADERS)
+    assert response.status_code == 200
+    assert {k: response.json()[k] for k in ("transcribe", "speak")} == {
+        "transcribe": False, "speak": False}
+
+
+def test_a_recording_without_a_key_is_refused_before_a_credit_is_taken(config, monkeypatch):
+    """The mic the capabilities hide must also be refused when called, and refused
+    before billing: a reservation and its refund would be ledger noise for nothing."""
+    from system.billing import Billing
+    from system.runtime import AgentRuntime
+
+    monkeypatch.delenv("ELEVENLABS_API_KEY")
+    provider = _provider(monkeypatch, Reply(json=SCRIBE))
+    credits = Credits(InMemoryCreditStore(), CreditCatalog.from_config(config))
+    runtime = AgentRuntime(config, None, None, billing=Billing(credits),
+                           max_concurrency=1, timeout=5)
+
+    async def run():
+        await runtime.transcribe(b"OggS", "audio/webm", language=None, billed_user_id="s-1")
+
+    with pytest.raises(speech.SpeechUnavailable) as refused:
+        anyio.run(run)
+    assert refused.value.details == {"missing": "ELEVENLABS_API_KEY"}
+    assert provider.calls == []
+    entries, _ = credits.history("s-1", page=1, page_size=10)
+    assert [e.kind.value for e in entries if e.action] == []
+
+
 def test_a_refused_reply_is_never_charged(config, monkeypatch):
     """With speaking off, a request must be refused before a credit is taken,
     not charged and refunded: the ledger would fill with entries for nothing."""
