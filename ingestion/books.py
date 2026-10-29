@@ -445,6 +445,8 @@ INSERT INTO content.lessons
      status, ingestion_status)
 VALUES (%s, %s, %s, %s, %s, %s, %s{term_value}, 'draft', 'processing')
 ON CONFLICT (id) DO UPDATE SET
+    subject_id = EXCLUDED.subject_id,
+    order_index = EXCLUDED.order_index,
     source = EXCLUDED.source,
     status = CASE WHEN content.lessons.status = 'published' AND EXCLUDED.source <> %s
                   THEN 'draft' ELSE content.lessons.status END,

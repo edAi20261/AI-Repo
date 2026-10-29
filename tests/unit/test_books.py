@@ -171,6 +171,22 @@ def test_lessons_are_registered_under_the_subject_after_the_lessons_already_ther
     assert db.committed
 
 
+def test_a_book_ingested_again_under_another_subject_moves_its_lessons_there(fake_postgres):
+    """A book re-ingested into its right subject kept every lesson under the
+    subject it was first filed in, at that subject's numbering: the new subject
+    stayed empty and the old one kept showing the book."""
+    from shared.config import get_config
+
+    db = fake_postgres(fetchone=[(False,), (0,)])
+    LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Gem", lessons=[
+        {"lesson_id": lesson_id_for(BOOK, 0), "ordinal": 0, "title": "Lesson 0",
+         "unit_number": 1}])
+    (sql,) = [sql for sql, _ in db.statements if "INSERT INTO content.lessons" in sql]
+    updated = sql.split("DO UPDATE SET", 1)[1]
+    assert "subject_id = EXCLUDED.subject_id" in updated
+    assert "order_index = EXCLUDED.order_index" in updated
+
+
 def test_a_books_lessons_are_numbered_after_the_shown_lessons_only(fake_postgres):
     """Twelve background books came first in a subject, so the one shown was
     numbered from 583 and a student read "Lesson 588"."""
