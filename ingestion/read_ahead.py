@@ -142,6 +142,8 @@ def read_ahead(
                     # it: a quota rejection and a ruined scan look identical
                     # here, and only one of them reads on the next attempt.
                     count("unreadable")
+                    if result.answered:
+                        count("judged_unreadable")
                 else:
                     _extract._transcription_cache(cfg, math).put(
                         lecture_id, page_no, result, dpi=render_dpi)
