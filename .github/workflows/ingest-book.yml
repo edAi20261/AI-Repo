@@ -216,7 +216,10 @@ jobs:
   finish:
     needs: [prepare, embed]
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Lessons are finished four at a time and a rerun starts from the first one.
+    # Holt Mathematics Course 1 finished 106 of its 211 lessons in 120 minutes
+    # and was cancelled; six hours is the most GitHub gives one job.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-ingest
