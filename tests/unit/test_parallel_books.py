@@ -137,6 +137,14 @@ def test_a_page_that_fails_again_on_a_re_run_does_not_stop_the_book(monkeypatch)
                                     "layout_read": 0, "transcribed": 0}) == 0
 
 
+def test_one_unreadable_page_on_a_first_run_does_not_stop_the_book(monkeypatch):
+    """A reader of enVision Algebra 1 had one page of its 47 that needed a model.
+    The model answered that the page was unreadable, nothing else had failed,
+    and the whole 283-page book stopped as if the credential were dead."""
+    assert _read_with(monkeypatch, {"to_read": 1, "already_paid_for": 0,
+                                    "layout_read": 0, "transcribed": 0}) == 0
+
+
 def test_a_books_lessons_are_finished_several_at_a_time_in_book_order(monkeypatch):
     """One lesson at a time, a 36-lesson supplement spent an hour and a half
     in finish, almost all of it waiting on model calls."""
