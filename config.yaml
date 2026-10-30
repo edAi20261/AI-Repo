@@ -233,6 +233,17 @@ ingestion:
     # one page, a four-page lesson was sent back until the book was filed whole;
     # the shortest lesson that had taken in a term's revision ran 40 pages.
     oversized_lesson_min_pages: 20
+    # Start pages read off a table of contents are the printed page numbers,
+    # which differ from the outline's by the pages before page 1. Each lesson's
+    # title is looked for on its start page; when moving every start page by one
+    # amount finds far more of them, the start pages were read off the contents.
+    # Over the 128 split books of 30 Oct 2026, Holt Algebra 2 found 47% of its 53
+    # titles where given and 91% eighteen pages later; no other book of 10 or more
+    # lessons gained more than 17 points. Books of under 10 lessons gained up to 29
+    # from one or two titles printed a page off.
+    shifted_pages_gain: 0.3
+    shifted_pages_min_lessons: 10
+    shifted_pages_window: 40
     # Terms in a school year: the national curriculum has two. At three, on 27
     # Oct 2026 a model filed unit 3 of a first-term Arabic G8 book as term 3; a
     # trimester curriculum raises this, and the CHECK the backend adds with it.

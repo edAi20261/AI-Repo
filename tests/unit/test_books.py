@@ -550,3 +550,31 @@ def test_a_long_part_whose_pages_cannot_be_split_again_keeps_the_book(caplog):
                                  llm=model)
     assert [(lsn.page_from, lsn.page_to) for lsn in lessons][-1] == (13, 60)
     assert "could not be split again" in caplog.text
+
+
+def test_start_pages_read_off_the_contents_are_sent_back_to_the_outline_pages():
+    """Holt Algebra 2's lessons were filed 18 pages early: the model gave the page
+    numbers printed in the contents, and a student opening 6.4 read 6.1's
+    exercises."""
+    from shared.config import get_config
+
+    topics = ["Ratios", "Rates", "Percents", "Decimals", "Fractions", "Integers",
+              "Exponents", "Expressions", "Equations", "Inequalities", "Areas", "Volumes"]
+
+    def page(n: int) -> dict:
+        lesson = (n - 5) // 2 + 1
+        heading = f"1.{lesson} {topics[lesson - 1]}" if 5 <= n <= 27 and n % 2 else "Exercises"
+        return _page(n, heading, "practice")
+
+    pages = [page(n) for n in range(1, 31)]
+
+    def reply(first: int) -> str:
+        lessons = ", ".join(f'{{"title": "1.{n} {topic}", "start_page": {first + 2 * (n - 1)}}}'
+                            for n, topic in enumerate(topics, 1))
+        return f'{{"units": [{{"title": "Unit 1", "unit_number": 1, "lessons": [{lessons}]}}]}}'
+
+    model = _Replies(reply(2), reply(5))
+    lessons = detect_lessons({"lecture_id": BOOK, "parsed_pages": pages}, get_config(),
+                             llm=model)
+    assert "off by 3 pages" in model.prompts[1]
+    assert [lsn.page_from for lsn in lessons][1:4] == [7, 9, 11]
