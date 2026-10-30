@@ -285,6 +285,20 @@ def test_a_book_of_only_exams_can_be_all_sections():
             check(LessonBreakdown(sections=bad))
 
 
+def test_sections_listed_out_of_page_order_are_kept_in_page_order():
+    """Holt Mathematics Course 1 was sent back three times because the model
+    listed its back-of-book sections before its chapter reviews; every section
+    started on a page of its own, and the book was never ingested."""
+    check = _validator(1, 80, 3.5, 20, 3)
+    breakdown = _breakdown(1, 10, 20)
+    breakdown.sections = [SectionItem(title="Skills bank", start_page=60),
+                          SectionItem(title="Chapter 1 review", start_page=30)]
+    check(breakdown)
+    lessons = lessons_from(breakdown, book_id=BOOK, first_page=1, last_page=80)
+    assert [(lsn.title, lsn.page_from, lsn.page_to) for lsn in lessons][-2:] == [
+        ("Chapter 1 review", 30, 59), ("Skills bank", 60, 80)]
+
+
 def test_lessons_on_the_same_pages_of_a_background_book_are_filed_once():
     """Every lesson sharing pages held its own copy of them, and search drops
     repeats by chunk id, so one passage filled up to six results."""
