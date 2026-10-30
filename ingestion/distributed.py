@@ -134,13 +134,16 @@ def _cmd_read(args, config) -> int:
     print(json.dumps({"shard": args.shard, "of": args.of, **outcome}, ensure_ascii=False))
     asked = outcome.get("to_read", 0)
     kept = outcome.get("layout_read", 0) + outcome.get("transcribed", 0)
-    if asked and not kept and not outcome.get("already_paid_for"):
+    judged = outcome.get("judged_unreadable", 0)
+    if asked and not kept and not judged and not outcome.get("already_paid_for"):
         # Every call failed: a credential, a quota or the network, and the same
         # fault waits for the next machine. Stopping here is cheaper than six
         # more machines finding it. Not on a share already read before: what is
         # left there is the pages that failed last time, a re-run of one blank
         # page failing again said nothing about the credential and stopped the
-        # book, and prepare reads such a page again itself.
+        # book, and prepare reads such a page again itself. Nor when a model
+        # answered that a page is unreadable: the calls work, and that verdict
+        # is about the page, not a fault every page would meet.
         print("no page could be read; see the log above", file=sys.stderr)
         return 1
     return 0

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, field_validator
 
 BLOOM_LEVELS = {"remember", "understand", "apply", "analyze", "evaluate", "create"}
 # The platform owns ai.dependency_strength; these are its values. A model asked for
@@ -44,6 +44,19 @@ class PageTranscription(BaseModel):
     text: str = ""
     figures: list[FigureBox] = Field(default_factory=list)
     unreadable: bool = False
+    # Kept off the schema the model is shown: whether a model answered at all.
+    _unanswered: bool = PrivateAttr(default=False)
+
+    @classmethod
+    def unanswered(cls) -> "PageTranscription":
+        """A page no model answered for: a key, a quota or the network, not the page."""
+        page = cls(text="", figures=[], unreadable=True)
+        page._unanswered = True
+        return page
+
+    @property
+    def answered(self) -> bool:
+        return not self._unanswered
 
     @field_validator("figures", mode="before")
     @classmethod

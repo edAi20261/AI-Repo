@@ -137,6 +137,31 @@ def test_a_page_that_fails_again_on_a_re_run_does_not_stop_the_book(monkeypatch)
                                     "layout_read": 0, "transcribed": 0}) == 0
 
 
+def test_pages_a_model_calls_unreadable_on_a_first_run_do_not_stop_the_book(monkeypatch):
+    """A reader of enVision Algebra 1 had two of its 48 pages that needed a model.
+    The model answered that both were unreadable, nothing had failed, and the
+    whole 283-page book stopped as if the credential were dead."""
+    assert _read_with(monkeypatch, {"to_read": 2, "already_paid_for": 0,
+                                    "layout_read": 0, "transcribed": 0,
+                                    "unreadable": 2, "judged_unreadable": 2}) == 0
+
+
+def test_a_page_no_model_answered_is_told_apart_from_one_judged_unreadable(monkeypatch):
+    """Both used to come back as the same unreadable page, so the reader could
+    not tell a dead key from a blank scan."""
+    import ingestion.llm_provider as provider
+    from ingestion.schemas import PageTranscription
+    from shared.config import get_config
+
+    client = provider.OpenRouterVisionClient(get_config())
+    monkeypatch.setattr(provider, "read_image", lambda *a, **k: None)
+    assert not client.transcribe_page(b"png").answered
+    monkeypatch.setattr(provider, "read_image",
+                        lambda *a, **k: PageTranscription(unreadable=True))
+    judged = client.transcribe_page(b"png")
+    assert judged.unreadable and judged.answered
+
+
 def test_a_books_lessons_are_finished_several_at_a_time_in_book_order(monkeypatch):
     """One lesson at a time, a 36-lesson supplement spent an hour and a half
     in finish, almost all of it waiting on model calls."""

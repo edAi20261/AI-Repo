@@ -114,7 +114,7 @@ class OpenRouterVisionClient(VisionClient):
             image_png, template.render(language_hint=language_hint or ""),
             PageTranscription, config=self._config, label="transcribe_page")
         # A page nothing could read is flagged, never indexed blank.
-        return page or PageTranscription(text="", figures=[], unreadable=True)
+        return page or PageTranscription.unanswered()
 
     def caption_figure(
         self,
