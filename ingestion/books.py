@@ -479,7 +479,8 @@ def lessons_at(lessons: Sequence[Lesson], page: int) -> list[Lesson]:
 def _chunk_for(chunk, lesson: Lesson):
     return replace(chunk, lecture_id=lesson.lesson_id, lesson_title=lesson.label,
                    lesson_order=lesson.ordinal, chunk_id=None,
-                   topic_ids=list(chunk.topic_ids))
+                   topic_ids=list(chunk.topic_ids),
+                   namespace=namespace_of(lesson.apparatus, chunk.namespace))
 
 
 def file_under_lessons(state: IngestionState, lessons: Sequence[Lesson]) -> IngestionState:
@@ -494,6 +495,14 @@ def file_under_lessons(state: IngestionState, lessons: Sequence[Lesson]) -> Inge
                         for lesson in lessons_at(lessons, figure.page)]
     state["lessons"] = [{**asdict(lesson), "label": lesson.label} for lesson in lessons]
     return state
+
+
+def namespace_of(apparatus: bool, namespace: str) -> str:
+    """Where a lesson of a book is indexed. A book's apparatus teaches nothing a
+    student is shown, but its glossary, answers and references are what a tutor
+    explains a subject from; indexed under the syllabus they were cited to
+    students as if they were lessons of the book."""
+    return BACKGROUND if apparatus else namespace
 
 
 def shown(lesson: Mapping[str, Any], namespace: str) -> bool:
@@ -549,6 +558,7 @@ def lesson_states(state: IngestionState) -> list[IngestionState]:
             "lecture_id": lesson_id,
             "lesson_title": lesson["label"],
             "lesson_order": lesson["ordinal"],
+            "namespace": namespace_of(bool(lesson.get("apparatus")), namespace),
             "shown": shown(lesson, namespace),
             "lesson_pdf": lesson.get("pdf"),
             "lesson_pdf_error": lesson.get("pdf_error"),

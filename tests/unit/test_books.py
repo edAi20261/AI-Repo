@@ -578,3 +578,16 @@ def test_start_pages_read_off_the_contents_are_sent_back_to_the_outline_pages():
                              llm=model)
     assert "off by 3 pages" in model.prompts[1]
     assert [lsn.page_from for lsn in lessons][1:4] == [7, 9, 11]
+def test_book_apparatus_is_indexed_as_background_its_lessons_as_the_syllabus():
+    """A glossary, index and answer key were indexed under the syllabus, so the
+    tutor cited them to students as lessons of the book, and no subject-wide
+    answer used them as the background they are."""
+    from shared.namespaces import BACKGROUND
+
+    state = {"lecture_id": BOOK, "book_id": BOOK, "subject_id": SUBJECT,
+             "namespace": SYLLABUS, "chunks": [_chunk(n) for n in (2, 12, 29)],
+             "figures": []}
+    file_under_lessons(state, _revision_and_index())
+    assert [c.namespace for c in state["chunks"]] == [SYLLABUS, SYLLABUS, BACKGROUND]
+    assert [p["namespace"] for p in lesson_states(state)] == [
+        SYLLABUS, SYLLABUS, SYLLABUS, BACKGROUND]
