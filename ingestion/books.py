@@ -9,7 +9,9 @@ lesson.
 from __future__ import annotations
 
 import logging
+import re
 import statistics
+import unicodedata
 import uuid
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Mapping, Optional, Sequence
@@ -137,8 +139,52 @@ def _oversized(entries: Sequence[_Entry], first_page: int, last_page: int,
             if to - start + 1 > max(ratio * typical, min_pages)]
 
 
+_LESSON_NUMBER = re.compile(r"(\d+)\s*([.\-])\s*(\d+)")
+
+
+def _plain(text: str) -> str:
+    bare = "".join(ch for ch in unicodedata.normalize("NFKD", text)
+                   if unicodedata.category(ch) != "Mn")
+    return " ".join(re.sub(r"[^\w.\-]", " ", unicodedata.normalize("NFKC", bare).lower()).split())
+
+
+def _printed_on(title: str, text: str) -> bool:
+    plain = _plain(title)
+    number = _LESSON_NUMBER.search(plain)
+    if number and re.search(rf"(?<![\d.]){number.group(1)}\s*\{number.group(2)}\s*"
+                            rf"{number.group(3)}(?!\d)", text):
+        return True
+    words = [w for w in plain.split() if len(w) > 3 and not re.fullmatch(r"[\d.\-]+", w)]
+    return bool(words) and sum(w in text for w in words) / len(words) >= 0.6
+
+
+@dataclass(frozen=True)
+class ShiftCheck:
+    pages: Mapping[int, str]
+    gain: float
+    min_lessons: int
+    window: int
+
+
+def _shifted(items: Sequence, check: ShiftCheck) -> Optional[tuple[int, float, float]]:
+    """How far the start pages are off, with the share of titles found where
+    given and where moved, when moving them all by one amount finds far more."""
+    if len(items) < check.min_lessons:
+        return None
+    pages = {page: _plain(text) for page, text in check.pages.items()}
+
+    def found(offset: int) -> float:
+        return sum(_printed_on(item.title, pages.get(item.start_page + offset, "") + " "
+                               + pages.get(item.start_page + offset + 1, ""))
+                   for item in items) / len(items)
+
+    given = found(0)
+    best, offset = max((found(k), k) for k in range(-check.window, check.window + 1) if k)
+    return (offset, given, best) if best - given >= check.gain else None
+
+
 def _validator(first_page: int, last_page: int, oversized_ratio: float,
-               oversized_min_pages: int, max_term: int):
+               oversized_min_pages: int, max_term: int, shift: Optional[ShiftCheck] = None):
     questioned: set[str] = set()
 
     def check(breakdown: LessonBreakdown) -> None:
@@ -178,6 +224,15 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
             raise ValueError("every lesson and section needs its title as printed in the "
                              "book; a lesson whose pages show only its number is titled "
                              "with that number as printed")
+        off = _shifted(items, shift) if shift else None
+        if off:
+            offset, given, best = off
+            raise ValueError(
+                f"the start pages look off by {offset} pages: {given:.0%} of the lessons "
+                f"have their title on the page given, {best:.0%} on the page {abs(offset)} "
+                f"{'after' if offset > 0 else 'before'} it. Start pages are the outline's "
+                "page numbers, in brackets at the start of each line, not the numbers "
+                "printed in the table of contents")
         check_terms([entry.term for entry in _entries(breakdown)], max_term)
         long = _oversized(_entries(breakdown), first_page, last_page, oversized_ratio,
                           oversized_min_pages)
@@ -243,8 +298,13 @@ def _split(pages: Sequence[ParsedPage], config, llm: Any, settings) -> LessonBre
         return call_structured(
             LessonBreakdown, prompt, task=TASK, config=config, llm=llm,
             label="lesson_breakdown",
-            validate=_validator(numbers[0], numbers[-1], settings["oversized_lesson_ratio"],
-                                settings["oversized_lesson_min_pages"], settings["max_term"]))
+            validate=_validator(
+                numbers[0], numbers[-1], settings["oversized_lesson_ratio"],
+                settings["oversized_lesson_min_pages"], settings["max_term"],
+                ShiftCheck(pages={p.meta.page: _page_text(p) for p in pages},
+                           gain=settings["shifted_pages_gain"],
+                           min_lessons=settings["shifted_pages_min_lessons"],
+                           window=settings["shifted_pages_window"])))
     except StructuredValidationFailure as error:
         raise BreakdownFailed(f"could not split the book into lessons: {error}") from error
 
