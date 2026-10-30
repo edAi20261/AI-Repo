@@ -497,3 +497,56 @@ def test_long_lessons_are_questioned_once_per_book(caplog):
     with caplog.at_level("WARNING", logger="ingestion.books"):
         check(_breakdown(1, 11, 21, 31, 36))
     assert "kept" in caplog.text
+
+
+def _units(*starts: int) -> str:
+    lessons = ", ".join(f'{{"title": "Lesson {n}", "start_page": {s}}}'
+                        for n, s in enumerate(starts, 1))
+    return f'{{"units": [{{"title": "Unit 1", "unit_number": 1, "lessons": [{lessons}]}}]}}'
+
+
+def test_a_lesson_that_runs_on_through_later_chapters_is_split_on_its_own_pages():
+    """Holt Algebra 2's breakdown stopped at "7.5 Zeros of Polynomial Functions",
+    which then held pages 458-941, chapters 7 to 14; asked again over the whole
+    book, the model named the same lesson, and it was kept."""
+    from shared.config import get_config
+
+    pages = [_page(n, f"Heading {n}", f"text {n}") for n in range(1, 61)]
+    whole = _units(1, 5, 9, 13)
+    model = _Replies(whole, whole, _units(13, 25, 37, 49))
+    lessons = detect_lessons({"lecture_id": BOOK, "parsed_pages": pages}, get_config(),
+                             llm=model)
+    assert [(lsn.page_from, lsn.page_to) for lsn in lessons] == [
+        (1, 4), (5, 8), (9, 12), (13, 24), (25, 36), (37, 48), (49, 60)]
+    assert "[13]" in model.prompts[2] and "[12]" not in model.prompts[2]
+
+
+def test_a_long_part_that_is_one_lesson_is_kept_whole_after_its_pages_are_read_again():
+    """A play read whole is one long lesson; read again on its own pages it is
+    still one, and stays one."""
+    from shared.config import get_config
+
+    pages = [_page(n, f"Heading {n}", f"text {n}") for n in range(1, 61)]
+    whole = _units(1, 5, 9, 13)
+    model = _Replies(whole, whole, _units(13))
+    lessons = detect_lessons({"lecture_id": BOOK, "parsed_pages": pages}, get_config(),
+                             llm=model)
+    assert [(lsn.page_from, lsn.page_to) for lsn in lessons] == [
+        (1, 4), (5, 8), (9, 12), (13, 60)]
+    assert len(model.prompts) == 3
+
+
+
+def test_a_long_part_whose_pages_cannot_be_split_again_keeps_the_book(caplog):
+    """Into Literature was never ingested while every attempt at its 55-page play
+    failed the split; a second reading that fails must not fail the book."""
+    from shared.config import get_config
+
+    pages = [_page(n, f"Heading {n}", f"text {n}") for n in range(1, 61)]
+    whole = _units(1, 5, 9, 13)
+    model = _Replies(whole, whole, "not a breakdown")
+    with caplog.at_level("ERROR", logger="ingestion.books"):
+        lessons = detect_lessons({"lecture_id": BOOK, "parsed_pages": pages}, get_config(),
+                                 llm=model)
+    assert [(lsn.page_from, lsn.page_to) for lsn in lessons][-1] == (13, 60)
+    assert "could not be split again" in caplog.text
