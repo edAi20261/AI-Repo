@@ -224,22 +224,84 @@ def detect_lessons(state: IngestionState, config, *, llm: Any = None) -> list[Le
             return []
         llm = get_llm(config, TASK)
     numbers = sorted(p.meta.page for p in pages)
+    breakdown = _split(pages, config, llm, settings)
+    breakdown = _split_long_parts(breakdown, pages, config, llm, settings,
+                                  lecture_id=state["lecture_id"])
+    shared = settings["shared_pages"][state.get("namespace") or SYLLABUS]
+    return lessons_from(breakdown, book_id=state["lecture_id"],
+                        first_page=numbers[0], last_page=numbers[-1], shared_pages=shared,
+                        term=state.get("term"))
+
+
+def _split(pages: Sequence[ParsedPage], config, llm: Any, settings) -> LessonBreakdown:
+    numbers = sorted(p.meta.page for p in pages)
     opening, outline = book_outline(pages)
     prompt = LESSON_BREAKDOWN_PROMPT.render(
         page_count=len(numbers), opening_pages=opening, outline=outline,
         schema=schema_hint(LessonBreakdown))
     try:
-        breakdown = call_structured(
+        return call_structured(
             LessonBreakdown, prompt, task=TASK, config=config, llm=llm,
             label="lesson_breakdown",
             validate=_validator(numbers[0], numbers[-1], settings["oversized_lesson_ratio"],
                                 settings["oversized_lesson_min_pages"], settings["max_term"]))
     except StructuredValidationFailure as error:
         raise BreakdownFailed(f"could not split the book into lessons: {error}") from error
-    shared = settings["shared_pages"][state.get("namespace") or SYLLABUS]
-    return lessons_from(breakdown, book_id=state["lecture_id"],
-                        first_page=numbers[0], last_page=numbers[-1], shared_pages=shared,
-                        term=state.get("term"))
+
+
+def _long_parts(entries: Sequence[_Entry], first_page: int, last_page: int, ratio: float,
+                min_pages: int) -> list[tuple[_Entry, int, int]]:
+    spans = _spans(entries, first_page, last_page)
+    lessons = [to - start + 1 for entry, (start, to) in zip(entries, spans) if not entry.section]
+    if len(lessons) < 3:
+        return []
+    limit = max(ratio * statistics.median(lessons), min_pages)
+    return [(entry, start, to) for entry, (start, to) in zip(entries, spans)
+            if to - start + 1 > limit]
+
+
+def _split_long_parts(breakdown: LessonBreakdown, pages: Sequence[ParsedPage], config,
+                      llm: Any, settings, *, lecture_id: str) -> LessonBreakdown:
+    """The breakdown, with every part still far longer than the book's lessons
+    split again on its own pages.
+
+    Over a whole book's outline a model can stop listing lessons partway and
+    leave the rest of the book under the last one it named: Holt Algebra 2's
+    "7.5 Zeros of Polynomial Functions" held pages 458-941, chapters 7 to 14,
+    and Reveal Math Course 1's "Module 5 Test Practice" held Modules 6 to 10.
+    Asked again over the whole book, the model named the same lesson. A part
+    that is one long lesson, such as a play read whole, comes back as itself and
+    is kept as it is."""
+    numbers = sorted(p.meta.page for p in pages)
+    long = _long_parts(_entries(breakdown), numbers[0], numbers[-1],
+                       settings["oversized_lesson_ratio"], settings["oversized_lesson_min_pages"])
+    units, sections = list(breakdown.units), list(breakdown.sections)
+    for entry, start, to in long:
+        span = [p for p in pages if start <= p.meta.page <= to]
+        try:
+            inner = _split(span, config, llm, settings)
+        except BreakdownFailed:
+            logger.error("a long part could not be split again; kept whole",
+                         extra={"lecture_id": lecture_id, "part": entry.title,
+                                "pages": f"{start}-{to}"}, exc_info=True)
+            continue
+        later = [unit.model_copy(update={
+            "lessons": [item for item in unit.lessons if item.start_page > start]})
+            for unit in inner.units]
+        found = [unit for unit in later if unit.lessons]
+        found_sections = [item for item in inner.sections if item.start_page > start]
+        if not found and not found_sections:
+            logger.warning("a long part holds no other lesson or section; kept whole",
+                           extra={"lecture_id": lecture_id, "part": entry.title,
+                                  "pages": f"{start}-{to}"})
+            continue
+        logger.info("a long part was split again",
+                    extra={"lecture_id": lecture_id, "part": entry.title,
+                           "pages": f"{start}-{to}",
+                           "found": sum(len(u.lessons) for u in found) + len(found_sections)})
+        units += found
+        sections += found_sections
+    return LessonBreakdown(units=units, sections=sections)
 
 
 def lessons_for(state: IngestionState, config, *, llm: Any = None) -> list[Lesson]:
