@@ -162,7 +162,9 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
             raise ValueError(f"a unit is not a lesson, but these units are listed as their "
                              f"own lesson: {posing}. List the lessons inside them")
         starts = [item.start_page for item in items]
-        section_starts = [item.start_page for item in breakdown.sections]
+        # Sections are filed in page order whatever order they are listed in, so
+        # only two starting on one page is wrong.
+        section_starts = sorted(item.start_page for item in breakdown.sections)
         outside = [s for s in starts + section_starts if not first_page <= s <= last_page]
         if outside:
             raise ValueError(f"start pages {outside} are outside the book "
@@ -170,8 +172,8 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
         if any(b < a for a, b in zip(starts, starts[1:])):
             raise ValueError(f"start pages must not go back in book order; got {starts}")
         if any(b <= a for a, b in zip(section_starts, section_starts[1:])):
-            raise ValueError("each section starts on its own page, after the one before "
-                             f"it; got {section_starts}")
+            raise ValueError("each section starts on a page of its own, not one another "
+                             f"section starts on; got {section_starts}")
         if any(not item.title for item in [*items, *breakdown.sections]):
             raise ValueError("every lesson and section needs its title as printed in the "
                              "book; a lesson whose pages show only its number is titled "
