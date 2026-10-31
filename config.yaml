@@ -879,7 +879,11 @@ model_profiles:
       overrides:
         extract_topics: { provider: openai, model: gpt-4.1-mini }
         derive_deps:    { provider: openai, model: gpt-4.1-mini }
-        split_lessons:  { provider: openai, model: gpt-4.1, fallback_models: [gpt-4.1-mini] }
+        # A book's breakdown is one long read: Holt Algebra 2's outline is 1,112
+        # lines. On 31 Oct 2026, gpt-4.1 gave the contents' printed page numbers on
+        # every attempt (43% of titles on their start pages) and the book failed;
+        # gpt-5.5 split it into all 14 chapters in 133 s, every title on its page.
+        split_lessons:  { provider: openai, model: gpt-5.5, fallback_models: [gpt-4.1] }
 
 
 # Overlays merged over the base, selected by APP_ENV.
