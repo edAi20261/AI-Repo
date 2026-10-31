@@ -591,3 +591,22 @@ def test_book_apparatus_is_indexed_as_background_its_lessons_as_the_syllabus():
     assert [c.namespace for c in state["chunks"]] == [SYLLABUS, SYLLABUS, BACKGROUND]
     assert [p["namespace"] for p in lesson_states(state)] == [
         SYLLABUS, SYLLABUS, SYLLABUS, BACKGROUND]
+
+
+def test_an_answer_key_read_again_on_its_own_pages_stays_hidden_apparatus():
+    """Read alone, Holt Algebra 2's selected answers looked like a run of lessons,
+    and came back as 150 one-page lessons headed "LESSON 7.1", all shown to
+    students."""
+    from shared.config import get_config
+
+    pages = [_page(n, f"Heading {n}", f"text {n}") for n in range(1, 61)]
+    whole = ('{"units": [{"title": "Unit 1", "unit_number": 1, "lessons": ['
+             '{"title": "Lesson 1", "start_page": 1}, {"title": "Lesson 2", "start_page": 5}, '
+             '{"title": "Lesson 3", "start_page": 9}]}], '
+             '"sections": [{"title": "Selected Answers", "start_page": 13, "apparatus": true}]}')
+    model = _Replies(whole, _units(13, 25, 37))
+    lessons = detect_lessons({"lecture_id": BOOK, "parsed_pages": pages}, get_config(),
+                             llm=model)
+    assert len(model.prompts) == 2
+    assert [(lsn.page_from, lsn.apparatus) for lsn in lessons] == [
+        (1, False), (5, False), (9, False), (13, True), (25, True), (37, True)]

@@ -26,7 +26,7 @@ from .layout.blocks import ParsedPage
 from .layout.bridge import parsed_pages
 from .lesson import ID_NAMESPACE, UNTITLED
 from .prompts import LESSON_BREAKDOWN_PROMPT, LESSON_TERMS_PROMPT
-from .schemas import LessonBreakdown, LessonTerms
+from .schemas import LessonBreakdown, LessonTerms, SectionItem
 from .state import IngestionState
 
 logger = logging.getLogger(__name__)
@@ -320,6 +320,22 @@ def _long_parts(entries: Sequence[_Entry], first_page: int, last_page: int, rati
             if to - start + 1 > limit]
 
 
+def _within_section(section: _Entry, units: Sequence, sections: Sequence[SectionItem]
+                    ) -> list[SectionItem]:
+    """What a section read again on its own pages holds, as parts of that section.
+
+    Read alone, a book's contents pages look like a list of chapters and its
+    answer key like a run of lessons: Holt Algebra 2's selected answers came back
+    as 150 one-page lessons headed "LESSON 7.1", and Holt Mathematics Course 1's
+    contents as twelve chapters, all shown to students. Pages of a section stay
+    a section, and pages of the book's apparatus stay apparatus."""
+    lessons = [SectionItem(title=item.title, start_page=item.start_page, term=unit.term,
+                           apparatus=section.apparatus)
+               for unit in units for item in unit.lessons]
+    return [item.model_copy(update={"apparatus": item.apparatus or section.apparatus})
+            for item in [*sections, *lessons]]
+
+
 def _split_long_parts(breakdown: LessonBreakdown, pages: Sequence[ParsedPage], config,
                       llm: Any, settings, *, lecture_id: str) -> LessonBreakdown:
     """The breakdown, with every part still far longer than the book's lessons
@@ -350,6 +366,9 @@ def _split_long_parts(breakdown: LessonBreakdown, pages: Sequence[ParsedPage], c
             for unit in inner.units]
         found = [unit for unit in later if unit.lessons]
         found_sections = [item for item in inner.sections if item.start_page > start]
+        if entry.section:
+            found_sections = _within_section(entry, found, found_sections)
+            found = []
         if not found and not found_sections:
             logger.warning("a long part holds no other lesson or section; kept whole",
                            extra={"lecture_id": lecture_id, "part": entry.title,
