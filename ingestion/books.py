@@ -158,6 +158,25 @@ def _printed_on(title: str, text: str) -> bool:
     return bool(words) and sum(w in text for w in words) / len(words) >= 0.6
 
 
+def _listed_again(items: Sequence) -> list[str]:
+    """Titles that are only the number of a lesson listed before them: the
+    practice pages at the back of a book, headed "LESSON 1-4" over again."""
+    seen: set[tuple[str, str]] = set()
+    again = []
+    for item in items:
+        plain = _plain(item.title)
+        number = _LESSON_NUMBER.search(plain)
+        if not number:
+            continue
+        key = (number.group(1), number.group(3))
+        rest = [w for w in _LESSON_NUMBER.sub(" ", plain, count=1).split()
+                if not re.fullmatch(r"[\d.\-]+", w)]
+        if key in seen and len(rest) <= 1:
+            again.append(item.title)
+        seen.add(key)
+    return again
+
+
 @dataclass(frozen=True)
 class ShiftCheck:
     pages: Mapping[int, str]
@@ -186,6 +205,7 @@ def _shifted(items: Sequence, check: ShiftCheck) -> Optional[tuple[int, float, f
 def _validator(first_page: int, last_page: int, oversized_ratio: float,
                oversized_min_pages: int, max_term: int, shift: Optional[ShiftCheck] = None):
     questioned: set[str] = set()
+    repeats_questioned: list[str] = []
 
     def check(breakdown: LessonBreakdown) -> None:
         items = [item for unit in breakdown.units for item in unit.lessons]
@@ -234,6 +254,18 @@ def _validator(first_page: int, last_page: int, oversized_ratio: float,
                 "page numbers, in brackets at the start of each line, not the numbers "
                 "printed in the table of contents")
         check_terms([entry.term for entry in _entries(breakdown)], max_term)
+        again = _listed_again(items)
+        if again and repeats_questioned:
+            logger.warning("lessons titled only with an earlier lesson's number kept "
+                           "after being questioned", extra={"lessons": again})
+        elif again:
+            repeats_questioned.extend(again)
+            raise ValueError(
+                f"these lessons carry only the number of a lesson already listed: {again}. "
+                "Each lesson is listed once, where it is taught. Pages later in the book "
+                "that go back over lessons already listed, such as extra practice, skills "
+                "practice or review headed with those lessons' numbers, are one section: "
+                "list them under sections with the page where they start")
         long = _oversized(_entries(breakdown), first_page, last_page, oversized_ratio,
                           oversized_min_pages)
         if long and questioned:

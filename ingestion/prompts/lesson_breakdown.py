@@ -28,6 +28,11 @@ Listening, Vocabulary), a single exercise, the book's cover or introduction.
 Review pages, tests and question banks that close a unit belong to that unit's
 last lesson.
 
+Each lesson is listed once, where it is taught. Pages later in the book that go
+back over lessons already listed, such as extra practice, skills practice or
+review at the back of the book headed with those lessons' numbers, are not
+those lessons again: list them as one section, with the page where they start.
+
 Some parts of a book belong to no single lesson: revision of the whole term,
 model exams, weekly or monthly assessments, exam papers, answer keys, a grammar
 or vocabulary reference for the whole book. They are often at the end of the
