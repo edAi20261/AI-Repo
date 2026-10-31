@@ -34,8 +34,9 @@ import math
 import os
 import pickle
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from shared.logging import setup_logging
 from shared.metering import start_meter
@@ -167,6 +168,7 @@ def _cmd_prepare(args, config) -> int:
         "texts": texts,
         "digest": texts_digest(texts),
         "cost": meter.as_dict(),
+        "prepared_at": datetime.now(timezone.utc),
     })
     print(json.dumps({"chunks": len(texts), "stats": state.get("stats", {}),
                       "cost": meter.as_dict()}, ensure_ascii=False, default=str))
@@ -260,7 +262,7 @@ def _cmd_finish(args, config) -> int:
         state.setdefault("stats", {})["embed"] = {"embedded": 0}
     ctx = PipelineContext.build(config)
     if state.get("lessons"):
-        state = _finish_book(state, ctx, config)
+        state = _finish_book(state, ctx, config, since=prepared.get("prepared_at"))
     else:
         state = run_stages(state, ctx, ("topics", "dependencies", "index"))
     cost = meter.as_dict()
@@ -274,11 +276,15 @@ def _cmd_finish(args, config) -> int:
 _STAGES = ("topics", "dependencies", "index")
 
 
-def _finish_lesson(part: dict, ctx: PipelineContext, catalog: LessonCatalog):
+def _finish_lesson(part: dict, ctx: PipelineContext, catalog: LessonCatalog,
+                   indexed: frozenset[str] = frozenset()):
     try:
-        done = run_stages(part, ctx, _STAGES)
-        status = done.get("ingestion_status") or "ready"
-        errors = done.get("errors", [])
+        if part["lecture_id"] in indexed:
+            done, status, errors = part, "ready", []
+        else:
+            done = run_stages(part, ctx, _STAGES)
+            status = done.get("ingestion_status") or "ready"
+            errors = done.get("errors", [])
     except Exception as error:
         logger.exception("lesson failed", extra={"lecture_id": part["lecture_id"]})
         done, status, errors = part, "failed", [f"{type(error).__name__}: {error}"]
@@ -297,7 +303,7 @@ def _finish_lesson(part: dict, ctx: PipelineContext, catalog: LessonCatalog):
 
 
 def _finish_lessons(parts: list[dict], ctx: PipelineContext, catalog: LessonCatalog,
-                    workers: int):
+                    workers: int, indexed: frozenset[str] = frozenset()):
     """Every lesson of a book through topics, prerequisites and the index, several
     at a time, returned in book order.
 
@@ -312,20 +318,35 @@ def _finish_lessons(parts: list[dict], ctx: PipelineContext, catalog: LessonCata
                    "chunk_store", "vector_store"):
         getattr(ctx, shared)
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = [pool.submit(contextvars.copy_context().run, _finish_lesson, part, ctx, catalog)
+        futures = [pool.submit(contextvars.copy_context().run, _finish_lesson, part, ctx, catalog,
+                               indexed)
                    for part in parts]
         return [future.result() for future in futures]
 
 
-def _finish_book(state: dict, ctx: PipelineContext, config) -> dict:
+def _finish_book(state: dict, ctx: PipelineContext, config,
+                 since: Optional[datetime] = None) -> dict:
+    """Every lesson of the book through topics, prerequisites and the index.
+
+    A job stops at six hours, and Holt Mathematics Course 1 needed more: its
+    finish was cancelled with 113 of its lessons done, and running it again
+    began from the first lesson. A lesson indexed since this book was prepared
+    is not taken through the model again, only attached and published."""
     catalog = LessonCatalog(config)
     catalog.register(subject_id=state["subject_id"], book_title=state.get("lesson_title"),
                      lessons=state["lessons"], namespace=state.get("namespace") or SYLLABUS)
+    indexed = frozenset(catalog.indexed_since(
+        [lesson["lesson_id"] for lesson in state["lessons"]], since) if since else ())
+    if indexed:
+        logger.info("lessons already indexed by an earlier attempt are not read again",
+                    extra={"lecture_id": state["lecture_id"], "indexed": len(indexed),
+                           "lessons": len(state["lessons"])})
     results: list[dict] = []
     totals = {"chunks_written": 0, "figures_written": 0, "points_upserted": 0}
     topics = edges = 0
     for part, done, status, errors in _finish_lessons(lesson_states(state), ctx, catalog,
-                                                      config.get("ingestion.books.finish_workers")):
+                                                      config.get("ingestion.books.finish_workers"),
+                                                      indexed):
         stats = done.get("stats", {})
         for key in totals:
             totals[key] += stats.get("index", {}).get(key, 0)

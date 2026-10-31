@@ -214,3 +214,70 @@ def test_a_lesson_no_student_is_shown_needs_no_pages(monkeypatch):
     _, _, status, _ = distributed._finish_lesson(_part(shown=False, pdf=None), None, catalog)
     assert status == "ready"
     assert catalog.calls == [("finished", "lesson-1", "ready", ())]
+
+
+def test_a_lesson_indexed_by_an_earlier_attempt_is_published_without_reading_it_again(
+        monkeypatch):
+    """Holt Mathematics Course 1's finish was cancelled at six hours with 113
+    lessons done; running it again took every lesson through the model again."""
+    import ingestion.distributed as distributed
+
+    def stages(part, ctx, names):
+        raise AssertionError("an indexed lesson was read again")
+
+    monkeypatch.setattr(distributed, "run_stages", stages)
+    catalog = _Catalog()
+    _, _, status, _ = distributed._finish_lesson(
+        _part(shown=True, pdf={"key": "k"}), None, catalog, frozenset({"lesson-1"}))
+    assert status == "ready"
+    assert catalog.calls == [("attach", "lesson-1"), ("finished", "lesson-1", "ready", ())]
+
+
+def test_a_book_finished_again_reads_only_the_lessons_not_yet_indexed(monkeypatch):
+    from datetime import datetime, timezone
+
+    import ingestion.distributed as distributed
+    from ingestion.books import file_under_lessons, lessons_from
+    from ingestion.schemas import LessonBreakdown, LessonItem, UnitItem
+    from shared.config import get_config
+
+    book = "0743ec4c-b00d-5e17-b573-9b60b5593a26"
+    breakdown = LessonBreakdown(units=[UnitItem(title="Unit 1", unit_number=1, lessons=[
+        LessonItem(title=f"Lesson {n}", start_page=n) for n in (1, 2, 3)])])
+    lessons = lessons_from(breakdown, book_id=book, first_page=1, last_page=3)
+    state = file_under_lessons({"lecture_id": book, "book_id": book, "chunks": [],
+                                "figures": [], "subject_id": "s"}, lessons)
+    prepared_at = datetime(2026, 10, 30, 20, tzinfo=timezone.utc)
+    asked: list = []
+
+    class Catalog(_Catalog):
+        def __init__(self, config):
+            super().__init__()
+
+        def register(self, **kwargs):
+            pass
+
+        def attach(self, lesson_id, *, pdf, reason):
+            pass
+
+        def indexed_since(self, ids, since):
+            asked.append(since)
+            return ids[:2]
+
+        def stale(self, book_id, kept):
+            return []
+
+        def archive(self, ids):
+            pass
+
+    read: list = []
+    monkeypatch.setattr(distributed, "LessonCatalog", Catalog)
+    monkeypatch.setattr(distributed, "run_stages",
+                        lambda part, ctx, names: read.append(part["lecture_id"]) or part)
+    monkeypatch.setattr(distributed, "_finish_lessons",
+                        lambda parts, ctx, catalog, workers, indexed=frozenset():
+                        [distributed._finish_lesson(p, ctx, catalog, indexed) for p in parts])
+    done = distributed._finish_book(state, None, get_config(), since=prepared_at)
+    assert asked == [prepared_at]
+    assert read == [lessons[2].lesson_id]
+    assert [r["status"] for r in done["lesson_results"]] == ["ready"] * 3

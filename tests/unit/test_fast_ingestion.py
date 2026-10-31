@@ -619,6 +619,9 @@ def test_a_book_is_split_into_its_lessons_and_each_is_indexed_under_its_own_id(
             _Catalog.events.append(("finished", lesson_id))
             _Catalog.settled.append((lesson_id, status))
 
+        def indexed_since(self, lesson_ids, since):
+            return []
+
         def stale(self, book_id, kept):
             return []
 
