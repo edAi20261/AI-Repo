@@ -633,3 +633,21 @@ def test_lessons_whose_numbers_repeat_with_titles_of_their_own_are_not_questione
     check = _validator(1, 5, 3.5, 20, 3)
     check(_numbered("(1 - 1) Produit cartésien", "(1 - 2) Les fonctions",
                     "[1 - 1] Résolution d'un système", "[1 - 2] Les vecteurs"))
+
+
+def test_a_new_part_of_a_book_at_a_place_once_archived_is_not_kept_archived(fake_postgres):
+    """A lesson's id is its place in the book. Split again, ScienceFusion Module A
+    put Lesson 3 and Lesson 4 where its archived glossary and index had been;
+    both were read and indexed, then stayed archived and were never shown."""
+    from shared.config import get_config
+
+    state = {"lecture_id": BOOK, "book_id": BOOK, "subject_id": SUBJECT, "chunks": [],
+             "figures": []}
+    file_under_lessons(state, _revision_and_index())
+    db = fake_postgres(fetchone=[(False,), (0,)])
+    LessonCatalog(get_config()).register(subject_id=SUBJECT, book_title="Gem",
+                                         lessons=state["lessons"])
+    sql = next(sql for sql, _ in db.statements if "INSERT INTO content.lessons" in sql)
+    status = " ".join(sql.split("status = CASE", 1)[1].split("END", 1)[0].split())
+    assert ("WHEN content.lessons.status = 'archived' AND content.lessons.title "
+            "IS DISTINCT FROM EXCLUDED.title THEN 'draft'") in status
