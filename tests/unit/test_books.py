@@ -610,3 +610,26 @@ def test_an_answer_key_read_again_on_its_own_pages_stays_hidden_apparatus():
     assert len(model.prompts) == 2
     assert [(lsn.page_from, lsn.apparatus) for lsn in lessons] == [
         (1, False), (5, False), (9, False), (13, True), (25, True), (37, True)]
+def _numbered(*titles: str) -> LessonBreakdown:
+    return LessonBreakdown(units=[UnitItem(title="Unit 1", unit_number=1, lessons=[
+        LessonItem(title=title, start_page=n) for n, title in enumerate(titles, 1)])])
+
+
+def test_practice_pages_headed_with_lessons_already_listed_are_sent_back_once(caplog):
+    """Holt Mathematics Course 1's back pages, headed "LESSON 1-4", "LESSON 1-5"
+    over again, were listed as 140 one-page lessons after the book's own."""
+    check = _validator(1, 6, 3.5, 20, 3)
+    practice = _numbered("1-1 Ratios", "1-2 Rates", "1-3 Percents", "LESSON 1-1", "LESSON 1-2")
+    with pytest.raises(ValueError, match="already listed"):
+        check(practice)
+    with caplog.at_level("WARNING", logger="ingestion.books"):
+        check(practice)
+    assert "kept after being questioned" in caplog.text
+
+
+def test_lessons_whose_numbers_repeat_with_titles_of_their_own_are_not_questioned():
+    """A French mathematics book numbers its algebra and its geometry from 1 - 1
+    each, and an English book groups lessons as "Lessons 3 - 4"."""
+    check = _validator(1, 5, 3.5, 20, 3)
+    check(_numbered("(1 - 1) Produit cartésien", "(1 - 2) Les fonctions",
+                    "[1 - 1] Résolution d'un système", "[1 - 2] Les vecteurs"))
