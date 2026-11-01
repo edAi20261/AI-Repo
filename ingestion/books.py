@@ -621,6 +621,11 @@ def lesson_states(state: IngestionState) -> list[IngestionState]:
     return states
 
 
+# A lesson's id is its place in the book, so a book split again can put a
+# different part at a place whose old part was archived. ScienceFusion Module A's
+# Lesson 3 and Lesson 4 and Holt Algebra 2's lessons 58 to 100 were read and
+# indexed, then kept archived and never shown. The same part archived again
+# stays archived.
 def _upsert_lesson(with_term: bool) -> str:
     term_column, term_value, term_update = (
         (", term", ", %s", "\n    term = EXCLUDED.term,") if with_term else ("", "", ""))
@@ -633,7 +638,10 @@ ON CONFLICT (id) DO UPDATE SET
     subject_id = EXCLUDED.subject_id,
     order_index = EXCLUDED.order_index,
     source = EXCLUDED.source,
-    status = CASE WHEN content.lessons.status = 'published' AND EXCLUDED.source <> %s
+    status = CASE WHEN content.lessons.status = 'archived'
+                       AND content.lessons.title IS DISTINCT FROM EXCLUDED.title
+                  THEN 'draft'
+                  WHEN content.lessons.status = 'published' AND EXCLUDED.source <> %s
                   THEN 'draft' ELSE content.lessons.status END,
     title = EXCLUDED.title,
     description = EXCLUDED.description,
