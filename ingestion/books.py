@@ -664,6 +664,11 @@ WHERE id = %(lesson_id)s
 
 _EXISTING = "SELECT id::text FROM content.lessons WHERE id = ANY(%s::uuid[])"
 
+_INDEXED_SINCE = """
+SELECT lecture_id::text FROM ai.lecture_ingestion
+WHERE lecture_id = ANY(%s::uuid[]) AND status = 'ready' AND ingested_at >= %s
+"""
+
 _ARCHIVE = """
 UPDATE content.lessons SET status = 'archived', updated_at = now()
 WHERE id = ANY(%s::uuid[])
@@ -766,6 +771,12 @@ class LessonCatalog:
             with conn.cursor() as cur:
                 cur.execute(_FINISH_LESSON, params)
             conn.commit()
+
+    def indexed_since(self, lesson_ids: Sequence[str], since) -> list[str]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_INDEXED_SINCE, (list(lesson_ids), since))
+                return [row[0] for row in cur.fetchall()]
 
     def stale(self, book_id: str, kept: int) -> list[str]:
         candidates = [lesson_id_for(book_id, n) for n in range(kept, kept + STALE_SEARCH)]
