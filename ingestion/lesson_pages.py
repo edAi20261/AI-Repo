@@ -83,10 +83,22 @@ def uploader_id(config: Config) -> str:
     return user
 
 
-# A lesson already attached is left alone: a re-ingest overwrites the same
-# object, so the attachment it has still shows the lesson's pages.
+# A lesson's own pages, stored by ingestion, are pointed at what was just cut.
+# Left alone, a lesson filed under another subject since kept its old object,
+# and 181 published lessons showed the pages of the lesson that had held their
+# place in an earlier split. A file someone else attached is never touched.
 _ATTACH = """
-WITH media AS (
+WITH own AS (
+    SELECT a.media_id FROM content.lesson_attachments a
+    JOIN content.media_assets m ON m.id = a.media_id
+    WHERE a.lesson_id = %(lesson)s AND m.uploaded_by = %(uploader)s
+), refreshed AS (
+    UPDATE content.media_assets m
+    SET s3_bucket = %(bucket)s, s3_key = %(key)s, file_name = %(file_name)s,
+        size_bytes = %(size)s
+    FROM own WHERE m.id = own.media_id
+    RETURNING m.id
+), media AS (
     INSERT INTO content.media_assets
         (uploaded_by, s3_bucket, s3_key, file_name, mime_type, size_bytes)
     SELECT %(uploader)s, %(bucket)s, %(key)s, %(file_name)s, %(mime_type)s, %(size)s

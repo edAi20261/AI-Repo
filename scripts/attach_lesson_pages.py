@@ -5,7 +5,8 @@ out of a book had none: a student opened it to an empty page. Ingestion now
 attaches them itself (``ingestion.lesson_pages``); this does the same, with the
 same functions, for the lessons ingested before it did. A lesson that already
 has an attachment, and a lesson of the book that is not shown (its glossary or
-index, filed as background), is left alone.
+index, filed as background), is left alone; ``--refresh`` cuts again the pages of
+lessons whose attachment ingestion made, for a book split again since.
 
 A lesson's pages run from the first page any of its passages came from to the
 page before the next lesson's, counting every lesson of the book, shown or not;
@@ -40,7 +41,10 @@ from shared.storage import get_uploader, s3_client
 _LESSONS = """
 SELECT l.id::text, l.subject_id::text, l.title,
        (SELECT min(c.page_from) FROM ai.chunks c WHERE c.lecture_id = l.id),
-       EXISTS (SELECT 1 FROM content.lesson_attachments a WHERE a.lesson_id = l.id)
+       EXISTS (SELECT 1 FROM content.lesson_attachments a
+               JOIN content.media_assets m ON m.id = a.media_id
+               WHERE a.lesson_id = l.id
+                 AND NOT (%(refresh)s AND m.uploaded_by = %(uploader)s))
        OR l.source <> %(shown_source)s
 FROM content.lessons l
 WHERE l.id = ANY(%(ids)s::uuid[]) AND l.status <> 'archived'
@@ -66,13 +70,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--book", help="the book's id, when it is not the one --source gives")
     parser.add_argument("--uploader", help="the user the pages are stored as, when not "
                                            "the one LESSON_PAGES_UPLOADER names")
+    parser.add_argument("--refresh", action="store_true",
+                        help="cut again the pages of lessons already attached by ingestion")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
 
     config = get_config()
     book_id = args.book or book_id_for(args.source)
+    uploader = args.uploader or lesson_pages.uploader_id(config)
     params = {"ids": [book_id] + [lesson_id_for(book_id, n) for n in range(STALE_SEARCH)],
-              "shown_source": config.get("ingestion.books.lesson_source")[SYLLABUS]}
+              "shown_source": config.get("ingestion.books.lesson_source")[SYLLABUS],
+              "refresh": args.refresh, "uploader": uploader}
     with connect_once(config) as conn, conn.cursor() as cur:
         cur.execute(_LESSONS, params)
         rows = cur.fetchall()
@@ -97,7 +105,6 @@ def main(argv: list[str] | None = None) -> int:
             print("dry run: nothing changed; pass --apply to attach")
             return 0
 
-        uploader = args.uploader or lesson_pages.uploader_id(config)
         storage = get_uploader(config)
         for (lesson_id, subject_id, title, _, _), first, last in todo:
             stored = lesson_pages.store(storage, book, subject_id=subject_id,

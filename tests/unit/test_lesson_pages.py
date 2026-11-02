@@ -281,3 +281,22 @@ def test_a_book_finished_again_reads_only_the_lessons_not_yet_indexed(monkeypatc
     assert asked == [prepared_at]
     assert read == [lessons[2].lesson_id]
     assert [r["status"] for r in done["lesson_results"]] == ["ready"] * 3
+
+
+def test_a_lesson_split_again_has_its_own_attachment_pointed_at_its_new_pages(
+        fake_postgres, monkeypatch):
+    """A lesson already attached kept its old object: filed under another subject
+    since, 181 published lessons showed the pages of the lesson that held their
+    place in an earlier split, under that lesson's name."""
+    from ingestion.books import LessonCatalog, lesson_id_for
+    from shared.config import get_config
+
+    monkeypatch.setenv("LESSON_PAGES_UPLOADER", UPLOADER)
+    db = fake_postgres()
+    pdf = {"bucket": "media", "key": "ai-artifacts/lessons/s2/l.pdf", "file_name": "Two.pdf",
+           "size_bytes": 99, "first_page": 4, "last_page": 6}
+    LessonCatalog(get_config()).attach(lesson_id_for(BOOK, 0), pdf=pdf, reason=None)
+    (sql, _), = [(sql, args) for sql, args in db.statements if "media_assets" in sql]
+    flat = " ".join(sql.split())
+    assert "UPDATE content.media_assets m SET s3_bucket = %(bucket)s, s3_key = %(key)s" in flat
+    assert "m.uploaded_by = %(uploader)s" in flat
