@@ -10,6 +10,7 @@ these same functions.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -37,7 +38,10 @@ class StoredPages:
 
 
 def file_name(title: str, lesson_id: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in " -_" else " " for ch in title)
+    # A vowel mark is part of the letter it sits on: replaced by a space, it
+    # broke every Arabic word of a title into single letters.
+    safe = "".join(ch if ch.isalnum() or unicodedata.category(ch).startswith("M")
+                   or ch in " -_" else " " for ch in title)
     return f"{' '.join(safe.split())[:120] or lesson_id}.pdf"
 
 

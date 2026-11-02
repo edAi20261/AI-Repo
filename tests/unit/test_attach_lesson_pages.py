@@ -21,3 +21,10 @@ def test_a_lesson_with_no_passages_is_not_given_pages():
 def test_the_attachment_is_named_after_the_lesson_in_its_own_script():
     assert _file_name("الدرس الأول: تركيب الذرة", "id") == "الدرس الأول تركيب الذرة.pdf"
     assert _file_name("???", "lesson-id") == "lesson-id.pdf"
+
+
+def test_a_title_with_vowel_marks_keeps_its_words_in_the_file_name():
+    """A vowel mark is not a letter, so each one became a space: the attachment
+    of "لَا تَلُمْنِي فِي هَوَاهَا" was named "ل ا ت ل م ن ي ف ي ه و اه ا.pdf"."""
+    assert _file_name("لَا تَلُمْنِي فِي هَوَاهَا", "id") == "لَا تَلُمْنِي فِي هَوَاهَا.pdf"
+    assert _file_name("Café crème: déjà vu", "id") == "Café crème déjà vu.pdf"
