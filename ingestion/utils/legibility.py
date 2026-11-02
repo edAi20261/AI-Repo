@@ -10,12 +10,21 @@ check passes it through as clean digital text. Two text-based signals catch it:
     against a per-language common-word list; checked only past a min length so short
     readable pages are not misjudged.
 
+A third signal is independent of both: a text layer that stores each letter's drawn
+shape (Unicode presentation forms, decomposition tagged initial, medial, final or
+isolated) instead of the letter. Copied as text, it broke words apart and cut vowel
+marks from their letters, and a student's own spelling no longer matched it.
+
 The word check is fuzzy (a readable page with no function words trips it), so a hit is
 treated as suspicion: the caller routes flagged pages to vision, which reads any
 language and reports a page it truly cannot read.
 """
 
 from __future__ import annotations
+
+import unicodedata
+
+_SHAPES = ("<initial>", "<medial>", "<final>", "<isolated>")
 
 
 def _is_arabic(ch: str) -> bool:
@@ -36,6 +45,11 @@ def is_garbage(text: str, cfg: dict) -> bool:
     visible = [c for c in text if not c.isspace()]
     if not visible:
         return False
+
+    letters = [c for c in visible if c.isalpha()]
+    shaped = sum(1 for c in letters if unicodedata.decomposition(c).startswith(_SHAPES))
+    if letters and shaped / len(letters) >= cfg.get("shaped_letter_ratio", 0.02):
+        return True
 
     # (1) symbol ratio — language-agnostic, catches symbol-junk at any length.
     symbols = sum(1 for c in visible if not c.isalnum())

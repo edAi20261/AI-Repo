@@ -394,6 +394,11 @@ ingestion:
       symbol_ratio: 0.45         # non-alphanumeric share above this: symbol-junk (any length)
       word_check_min_chars: 80   # run the word check only past this length
       min_word_hits: 3           # Latin page below this many common-word hits: cipher garbage
+      # Share of a page's letters stored as drawn shapes, not letters. Over 47,895
+      # pages indexed by 2 Nov 2026, the 157 with 50 or more such letters were all
+      # broken text (145 with vowel marks cut from their letters); 2% caught all 157
+      # and flagged 3 pages of 1-9 lam-alef ligatures, 1% flagged 11, 5% missed 2.
+      shaped_letter_ratio: 0.02
       stopwords:                 # per-language common words; symbol check needs none
         ar: [في, من, على, التي, كان, إلى, هذا, عن, مع, أن]
         en: [the, of, and, is, to, in, a, are, for, with, that]
