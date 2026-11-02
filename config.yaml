@@ -930,6 +930,9 @@ credits:
     persona_build:    { credits: 5, per: 1 }
     voice_transcribe: { credits: 1, per: 1 }
     voice_speak:      { credits: 1, per: 1 }
+    # One generation call drafts the whole quiz, so ten questions cost about one chat
+    # turn. Estimated like the rest, not measured.
+    assessment_generate: { credits: 1, per: 10 }
 
 environments:
   local:

@@ -23,6 +23,7 @@ from agent.analytics import learner_summary
 from agent.class_analytics import class_analytics
 from agent.credits import Action
 from agent.graph import build_graph
+from agent.graph.assessment import run_assessment
 from agent.graph.grade import run_grade, run_reviewed
 from agent.graph.report import run_class_report, run_report, stored_scopes
 from agent.graph.subgraphs import build_visual_sg
@@ -67,6 +68,10 @@ def _unreadable(result: HomeworkCapture) -> bool:
 
 def _unmarked(result: MarkedHomework) -> bool:
     return result.unreadable or result.degraded
+
+
+def _short(result: dict[str, Any]) -> bool:
+    return not result.get("complete")
 
 
 def _unheard(result: Heard) -> bool:
@@ -145,6 +150,12 @@ class AgentRuntime:
         return await self._billed(billed_user_id, Action.GRADE_ANSWERS,
                                   partial(run_grade, payload, config=self._config),
                                   units=len(payload["submissions"]), failed=_degraded)
+
+    async def generate_assessment(self, payload: dict[str, Any], *,
+                                  billed_user_id: str) -> Metered:
+        return await self._billed(billed_user_id, Action.ASSESSMENT_GENERATE,
+                                  partial(run_assessment, payload, config=self._config),
+                                  units=payload["count"], failed=_short)
 
     async def record_reviewed(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._offload(run_reviewed, payload, config=self._config)

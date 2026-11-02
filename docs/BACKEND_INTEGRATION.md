@@ -212,6 +212,44 @@ syllabus exactly as `/ai/grade` grades it, with `source: "uploaded"`. Returns:
 - Answer keys are not used here yet: a photographed page carries no question ids
   to match a stored rubric on. Answers are graded against the lessons.
 
+### Generating a practice quiz
+
+`POST /ai/assessments/generate`
+
+```json
+{
+  "user_id": "uuid",
+  "user_type": "student | teacher",
+  "billed_user_id": "uuid",
+  "lecture_ids": ["uuid"],
+  "subject_id": "uuid",
+  "topic_ids": ["uuid"],
+  "focus": "the water cycle",
+  "count": 10,
+  "types": ["mcq", "true_false", "short_answer", "essay"],
+  "difficulty": "easy | medium | hard | mixed",
+  "language": "ar | en | fr | de"
+}
+```
+
+Send `lecture_ids`, `subject_id` or both. `count` is 1 up to
+`assessment.max_count` for the `user_type` (20 for a student, 200 for a teacher);
+a larger count is a `422`, never quietly capped. `types` is shared out evenly over
+`count`; without it the configured mix is used. Questions are written in the
+subject's language when it is known.
+
+Returns `questions[]`, each `{id, type, question, options, multiple_correct,
+answer, correct_answer, explanation, difficulty, topic_id, lecture_id}`, plus
+`requested_count`, `count`, `requested_types`, `types`, `complete`, `shortfall`,
+`degraded`, `language`, `intro` and `usage`. To mark an answer, send
+`question`, `correct_answer`, `type`, `topic_id`, `lecture_id` and `difficulty`
+as a submission to `POST /ai/grade`.
+
+**`complete: false`** means fewer questions came back than were asked for, and
+`shortfall` says why: `generation_failed` (retry), `not_enough_content` (the
+lessons have too little text for that many questions; widen the scope or ask
+for fewer) or `items_rejected`. A short quiz is not charged.
+
 ---
 
 ## 3. Student analysis and reports
@@ -371,6 +409,7 @@ fell back to string matching, an unreadable homework photo).
 | `POST /ai/classes/report` | `billed_user_id` | 2 |
 | `POST /ai/homework/capture` | `billed_user_id` (query) | 1 |
 | `POST /ai/homework/mark` | `billed_user_id` (query) | 3 per page |
+| `POST /ai/assessments/generate` | `billed_user_id` | 1 per 10 questions asked for |
 
 `billed_user_id` is required on every call in this table except chat; send the
 account of whoever asked.

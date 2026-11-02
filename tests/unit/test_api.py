@@ -25,6 +25,27 @@ from system.settings import Settings
 TOKEN = "test-service-token"
 
 
+def _assessment(returned: int, *, requested: dict, shortfall=None) -> dict:
+    items = [
+        {"type": "mcq", "question": "Which gas does a fire need?", "topic_id": "t1",
+         "lecture_id": "l1", "answer": ["Oxygen"], "explanation": None, "difficulty": "easy",
+         "bloom": None, "points": None, "multiple_correct": False,
+         "options": [{"text": "Oxygen", "is_correct": True},
+                     {"text": "Helium", "is_correct": False}]},
+        {"type": "short_answer", "question": "Name the three sides of the fire triangle.",
+         "topic_id": "t1", "lecture_id": "l1", "answer": "Fuel, oxygen and heat",
+         "explanation": None, "difficulty": "easy", "bloom": None, "points": None,
+         "multiple_correct": False, "options": None},
+    ][:returned]
+    actual: dict = {}
+    for item in items:
+        actual[item["type"]] = actual.get(item["type"], 0) + 1
+    return {"subject_id": "s1", "intro": "Two questions on fire.", "items": items,
+            "count": len(items), "type_mix": actual, "requested_type_mix": requested,
+            "source": "generated", "language": "en", "complete": shortfall is None,
+            "degraded": shortfall == "generation_failed", "shortfall": shortfall}
+
+
 class StubRuntime:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
@@ -37,6 +58,7 @@ class StubRuntime:
         self.attached: list[tuple[str, dict]] = []
         self.attach_error: Exception | None = None
         self.render_error: Exception | None = None
+        self.assessment: dict = _assessment(2, requested={"mcq": 1, "short_answer": 1})
 
     async def chat(self, payload):
         self.calls.append(("chat", payload))
@@ -63,6 +85,11 @@ class StubRuntime:
             "source": "practice",
             "degraded": False,
         }, Meter())
+
+    async def generate_assessment(self, payload, *, billed_user_id):
+        self.calls.append(("generate_assessment", payload))
+        self.billed.append(billed_user_id)
+        return Metered(self.assessment, Meter())
 
     async def report(self, payload, *, billed_user_id):
         self.calls.append(("report", payload))
@@ -1092,3 +1119,67 @@ def test_capture_needs_the_service_token(client):
         headers={"x-service-token": "nope"},
     )
     assert response.status_code == 401
+
+
+# --- assessments --------------------------------------------------------------
+
+ASSESSMENT_BODY = {
+    "user_id": "s-1", "user_type": "student", "billed_user_id": "s-1",
+    "lecture_ids": ["l1"], "count": 2, "types": ["mcq", "short_answer"],
+    "difficulty": "easy",
+}
+
+
+def test_a_generated_quiz_carries_what_grading_needs_for_every_question(client):
+    response = client.post("/ai/assessments/generate", json=ASSESSMENT_BODY, headers=auth())
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["complete"] and body["count"] == body["requested_count"] == 2
+    assert body["shortfall"] is None
+    mcq, short = body["questions"]
+    assert mcq["id"] == "q1" and mcq["correct_answer"] == "Oxygen"
+    assert short["correct_answer"] == "Fuel, oxygen and heat"
+    assert {q["lecture_id"] for q in body["questions"]} == {"l1"}
+
+    _, payload = client.runtime.calls[-1]
+    assert payload["count"] == 2 and payload["lecture_ids"] == ["l1"]
+    assert "billed_user_id" not in payload
+    assert client.runtime.billed[-1] == "s-1"
+
+
+def test_a_short_quiz_says_it_is_short_and_why(client):
+    """Practice quizzes built on /ai/chat came back with fewer questions than asked
+    and nothing in the response said so."""
+    client.runtime.assessment = _assessment(
+        1, requested={"mcq": 1, "short_answer": 1}, shortfall="not_enough_content")
+
+    body = client.post("/ai/assessments/generate", json=ASSESSMENT_BODY, headers=auth()).json()
+
+    assert body["complete"] is False
+    assert (body["requested_count"], body["count"]) == (2, 1)
+    assert body["shortfall"] == "not_enough_content"
+
+
+def test_a_count_over_the_configured_limit_is_refused_not_capped(client):
+    limit = get_config().get("assessment.max_count.student")
+    body = {**ASSESSMENT_BODY, "count": limit + 1}
+
+    response = client.post("/ai/assessments/generate", json=body, headers=auth())
+
+    assert response.status_code == 422
+    assert response.json()["error"]["details"]["limit"] == limit
+    assert not client.runtime.calls
+
+
+@pytest.mark.parametrize("change", [
+    {"lecture_ids": None},
+    {"count": 0},
+    {"types": ["mcq", "mcq"]},
+    {"types": ["matching"]},
+    {"billed_user_id": None},
+])
+def test_an_assessment_request_outside_the_contract_is_refused(client, change):
+    body = {k: v for k, v in {**ASSESSMENT_BODY, **change}.items() if v is not None}
+    response = client.post("/ai/assessments/generate", json=body, headers=auth())
+    assert response.status_code == 422

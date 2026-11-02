@@ -382,7 +382,7 @@ def _option_text(option: Any) -> str:
     return str(option or "").strip()
 
 
-def _answer_key_of(question: dict) -> str:
+def answer_key_of(question: dict) -> str:
     """A stored question's correct answer, whichever way the platform keeps it: model
     answer text, the options marked correct, or a rubric."""
     if question.get("correct_answer_text"):
@@ -402,7 +402,7 @@ def _walkthrough_blocks(questions: list[dict]) -> str:
         blocks.append(
             f"Block id={_block_id(i)}: type={q.get('question_type') or 'short_answer'}\n"
             f"Question: {_question_text(q)}{listed}\n"
-            f"Correct answer: {_answer_key_of(q) or '(none given)'}\n"
+            f"Correct answer: {answer_key_of(q) or '(none given)'}\n"
             f"Explanation: {q.get('explanation') or '(none given)'}"
         )
     return "\n\n".join(blocks)
@@ -443,7 +443,7 @@ def _walkthrough_result(questions: list[dict], walkthrough: Walkthrough | None,
     }
     if walkthrough is not None:
         result["walkthrough"] = {"note": walkthrough.note, "items": [
-            {"question": _question_text(q), "correct_answer": _answer_key_of(q) or None,
+            {"question": _question_text(q), "correct_answer": answer_key_of(q) or None,
              "explanation": step.explanation or None, "question_id": q.get("id")}
             for q, step in zip(questions, walkthrough.items)]}
     return result

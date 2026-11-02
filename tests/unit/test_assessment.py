@@ -567,3 +567,125 @@ def test_a_lesson_quiz_with_a_passage_for_every_question_does_not_read_the_lesso
         "coverage": [{"topic_id": None, "type": "mcq", "difficulty": "easy"}] * 2,
     })
     assert out["chunks_by_topic"][""] == found
+
+
+class _SequencedLLM:
+    """Answers each call with the next reply, recording every prompt it was sent."""
+
+    def __init__(self, *replies):
+        self._replies = list(replies)
+        self.conversations = []
+
+    def invoke(self, messages):
+        self.conversations.append(messages)
+
+        class _R:
+            pass
+        r = _R()
+        r.content = self._replies[min(len(self.conversations), len(self._replies)) - 1]
+        return r
+
+
+def _two_slots():
+    c = _chunk()
+    return [({"type": "mcq", "topic_id": "tA", "difficulty": "easy"}, c),
+            ({"type": "short_answer", "topic_id": "tB", "difficulty": "easy"}, c)]
+
+
+_FULL_BATCH = (
+    '{"items": ['
+    '{"id": "b1", "question": "Q1", "type": "mcq", "options": ["A","B"], "correct_indices": [0]},'
+    '{"id": "b2", "question": "Q2", "type": "short_answer", "answer": "fuel"}]}')
+
+
+def test_a_question_left_empty_is_sent_back_to_the_model_not_dropped():
+    """A practice quiz asked for N questions came back with fewer and nothing said so.
+    A block the model answered with an empty question was dropped while the batch
+    was being built, after the structured call had already accepted it."""
+    from agent.graph.subgraphs.assessment_sg import _batch_generate
+
+    short = ('{"items": ['
+             '{"id": "b1", "question": "Q1", "type": "mcq", "options": ["A","B"], '
+             '"correct_indices": [0]},'
+             '{"id": "b2", "question": ""}]}')
+    llm = _SequencedLLM(short, _FULL_BATCH)
+
+    items, _ = _batch_generate(llm, _two_slots(), {"language": "en", "query": "fire"})
+
+    assert len(items) == 2
+    assert len(llm.conversations) == 2
+    assert "b2" in str(llm.conversations[1][-1])
+
+
+def test_a_question_of_the_wrong_type_is_sent_back_to_the_model():
+    """An mcq slot answered with a true/false item has no options, so it was dropped
+    as malformed after the call returned, and the quiz came back short."""
+    from agent.graph.subgraphs.assessment_sg import _batch_generate
+
+    wrong = ('{"items": ['
+             '{"id": "b1", "question": "Q1", "type": "true_false", "answer": "true"},'
+             '{"id": "b2", "question": "Q2", "type": "short_answer", "answer": "fuel"}]}')
+    llm = _SequencedLLM(wrong, _FULL_BATCH)
+
+    items, _ = _batch_generate(llm, _two_slots(), {"language": "en", "query": "fire"})
+
+    assert [item.type for item in items] == ["mcq", "short_answer"]
+    assert "b1" in str(llm.conversations[1][-1])
+
+
+def test_a_model_that_never_fills_every_block_fails_loudly():
+    """Retries exhausted is a failure the generate node degrades on, never a short quiz."""
+    from shared.structured import StructuredOutputError
+    from agent.graph.subgraphs.assessment_sg import _batch_generate
+
+    short = ('{"items": ['
+             '{"id": "b1", "question": "Q1", "type": "mcq", "options": ["A","B"], '
+             '"correct_indices": [0]},'
+             '{"id": "b2", "question": null}]}')
+    with pytest.raises(StructuredOutputError):
+        _batch_generate(_SequencedLLM(short), _two_slots(), {"language": "en", "query": "x"})
+
+
+def test_a_quiz_short_of_passages_says_so_rather_than_coming_back_quietly_short(monkeypatch):
+    """A scope with nothing to ask from produced an empty quiz that looked like a
+    finished one."""
+    monkeypatch.setattr(qmod.retrieval, "retrieve", lambda *a, **k: [])
+    monkeypatch.setattr(qmod, "get_topic_chunks", lambda *a, **k: [])
+    monkeypatch.setattr(qmod, "get_topic_labels", lambda ids, **k: {})
+    graph = build_assessment_sg(config=get_config(), llm=None)
+    out = graph.invoke({
+        "query": "fire", "subject_id": "sub1", "topic_ids": ["t1"],
+        "namespaces": ["syllabus"], "language": "en", "item_source": "generated",
+        "type_mix": {"mcq": 2}, "k_per_topic": 1, "adaptive": False,
+    })
+    assessment = out["assessment"]
+    assert assessment["count"] == 0 and not assessment["complete"]
+    assert assessment["shortfall"] == "not_enough_content"
+
+
+def test_the_endpoint_builds_the_quiz_it_was_asked_for_in_the_subjects_language(monkeypatch):
+    """The structured request's count, types and difficulty reach the generator as the
+    chat's would, and the questions follow the subject's language, not the caller's."""
+    from agent.graph import assessment as entry
+    from agent.models import SubjectFacts
+
+    seen = {}
+
+    class _Graph:
+        def invoke(self, state):
+            seen.update(state)
+            return {"assessment": {"items": [], "complete": True}}
+
+    monkeypatch.setattr(entry, "_subject_facts", lambda client, sid: SubjectFacts(language="ar"))
+    monkeypatch.setattr(entry, "build_assessment_sg", lambda **k: _Graph())
+    monkeypatch.setattr(entry, "maybe_llm", lambda *a: None)
+
+    entry.run_assessment({
+        "user_id": "u1", "subject_id": "sub1", "lecture_ids": ["l1"], "count": 5,
+        "types": ["mcq", "true_false"], "difficulty": "hard", "language": "en",
+    }, config=get_config())
+
+    assert seen["type_mix"] == {"mcq": 3, "true_false": 2}
+    assert seen["difficulty"] == "hard"
+    assert seen["lecture_ids"] == ["l1"]
+    assert seen["language"] == "ar"
