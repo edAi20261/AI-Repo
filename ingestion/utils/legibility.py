@@ -22,6 +22,7 @@ language and reports a page it truly cannot read.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 _SHAPES = ("<initial>", "<medial>", "<final>", "<isolated>")
@@ -31,11 +32,18 @@ def _is_arabic(ch: str) -> bool:
     return "؀" <= ch <= "ۿ"
 
 
-def stores_letter_shapes(text: str, cfg: dict) -> bool:
-    """True when a text layer holds letters' drawn shapes rather than the letters."""
+def misencoded(text: str, cfg: dict) -> bool:
+    """True when a text layer was written in a way its script cannot be read from:
+    letters' drawn shapes instead of the letters, or letters in an order the
+    script never puts them in (a ligature whose two letters were stored the
+    wrong way round turned every "الأول" of an ICT book into "األول")."""
     letters = [c for c in text if c.isalpha()]
     shaped = sum(1 for c in letters if unicodedata.decomposition(c).startswith(_SHAPES))
-    return bool(letters) and shaped / len(letters) >= cfg.get("shaped_letter_ratio", 0.02)
+    if letters and shaped / len(letters) >= cfg.get("shaped_letter_ratio", 0.02):
+        return True
+    words = text.split()
+    impossible = sum(len(re.findall(sequence, text)) for sequence in cfg.get("impossible_sequences", []))
+    return bool(words) and impossible / len(words) >= cfg.get("impossible_sequence_ratio", 0.01)
 
 
 def is_garbage(text: str, cfg: dict) -> bool:
@@ -53,7 +61,7 @@ def is_garbage(text: str, cfg: dict) -> bool:
     if not visible:
         return False
 
-    if stores_letter_shapes(text, cfg):
+    if misencoded(text, cfg):
         return True
 
     # (1) symbol ratio — language-agnostic, catches symbol-junk at any length.

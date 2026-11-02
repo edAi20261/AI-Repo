@@ -22,7 +22,7 @@ from ..context import PipelineContext
 from ..schemas import FigureCaption
 from ..state import Element, Figure, IngestionState, PageResult
 
-from ..utils import is_garbage, normalise_text, pdf, stores_letter_shapes
+from ..utils import is_garbage, normalise_text, pdf, misencoded
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
 from ..layout import (
@@ -452,7 +452,7 @@ def _layout_plan(
         reading_direction=_page_direction(page, layout_cfg),
     )
     blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
-    legible = not (garbage_cfg and stores_letter_shapes(pdf.page_text(page), garbage_cfg))
+    legible = not (garbage_cfg and misencoded(pdf.page_text(page), garbage_cfg))
     return meta, blocks, choose_tier(page, char_count=char_count, blocks=blocks,
                                      legible=legible)
 

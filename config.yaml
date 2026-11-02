@@ -399,6 +399,13 @@ ingestion:
       # broken text (145 with vowel marks cut from their letters); 2% caught all 157
       # and flagged 3 pages of 1-9 lam-alef ligatures, 1% flagged 11, 5% missed 2.
       shaped_letter_ratio: 0.02
+      # Letter sequences a script never writes, as regular expressions: an alef
+      # before a hamza-alef and lam is a lam-alef ligature stored back to front.
+      # On 13,013 Arabic pages indexed by 3 Nov 2026 every sampled match was such
+      # a swap ("األول", "االحتراق"); at 1% of a page's words 232 pages qualify,
+      # 74 of them in the ICT G8 book, 0.5% adds 87 pages of single stray matches.
+      impossible_sequences: ["ا[أإآا]ل"]
+      impossible_sequence_ratio: 0.01
       stopwords:                 # per-language common words; symbol check needs none
         ar: [في, من, على, التي, كان, إلى, هذا, عن, مع, أن]
         en: [the, of, and, is, to, in, a, are, for, with, that]

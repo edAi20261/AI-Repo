@@ -956,6 +956,8 @@ def test_subject_is_math_forces_vision_route(tmp_path):
 _GARBAGE_CFG = {
     "symbol_ratio": 0.45,
     "shaped_letter_ratio": 0.02,
+    "impossible_sequences": ["ا[أإآا]ل"],
+    "impossible_sequence_ratio": 0.01,
     "word_check_min_chars": 80,
     "min_word_hits": 3,
     "stopwords": {
@@ -1618,3 +1620,13 @@ def test_ligatures_and_superscripts_do_not_send_a_page_to_vision():
     page = ("The inﬁnite geometric series has a sum when the ratio is less than one, "
             "and x² + y² = r² is the circle of radius r in the plane that we draw. ") * 2
     assert is_garbage(page, _GARBAGE_CFG) is False
+
+
+def test_a_text_layer_with_ligatures_stored_back_to_front_is_read_by_vision():
+    """An ICT book stored its lam-alef ligatures back to front: every "الأول" was
+    indexed as "األول" and every "الإجراء" as "اإلجراء", in its lesson titles too."""
+    from ingestion.utils import is_garbage
+
+    page = "الدرس األول: األنظمة الذكية وتأثيرها على التغيرات في اإلجراءات والعمليات في من على " * 3
+    assert is_garbage(page, _GARBAGE_CFG) is True
+    assert is_garbage(page.replace("األ", "الأ").replace("اإل", "الإ"), _GARBAGE_CFG) is False

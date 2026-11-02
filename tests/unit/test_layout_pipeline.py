@@ -768,3 +768,19 @@ def test_a_tidy_page_whose_text_layer_stores_letter_shapes_is_read_by_vision(mon
     _, _, wanted = extract._layout_plan(_Page(), 1, {"lecture_id": "d"}, {}, 900,
                                         {"shaped_letter_ratio": 0.02})
     assert wanted == TEXT_LAYER
+
+
+def test_a_tidy_page_whose_ligatures_are_stored_back_to_front_is_read_by_vision(monkeypatch):
+    """The layout router read an ICT book's clean pages as text, ligatures swapped."""
+    import importlib
+
+    extract = importlib.import_module("ingestion.stages.extract")
+    blocks = [_block("Tides", "heading", y=50), _block(PROSE, y=120)]
+    monkeypatch.setattr(extract, "parse_page", lambda page, meta, direction: type(
+        "Parsed", (), {"blocks": blocks})())
+    monkeypatch.setattr(extract.pdf, "page_text",
+                        lambda page: "الدرس األول: األنظمة الذكية في اإلجراءات " * 4)
+    monkeypatch.setattr(extract, "_page_direction", lambda page, cfg: "rtl")
+    cfg = {"impossible_sequences": ["ا[أإآا]ل"], "impossible_sequence_ratio": 0.01}
+    _, _, wanted = extract._layout_plan(_Page(), 1, {"lecture_id": "d"}, {}, 900, cfg)
+    assert wanted == VISION
