@@ -317,7 +317,7 @@ def _parse(monkeypatch, *, blocks, tier, vision=None, cache=None, char_count=900
     got = ex._parse_layout(
         _Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
         {"reading_direction": "ltr"}, char_count, counts, cache,
-        render_dpi=200, config=None)
+        render_dpi=200, config=None, garbage_cfg={})
     return got, counts
 
 
@@ -396,7 +396,7 @@ def test_a_stored_vision_parse_is_not_paid_for_again(monkeypatch):
 
     got = ex._parse_layout(
         _Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
-        {"reading_direction": "ltr"}, 0, {}, cache, render_dpi=200, config=None)
+        {"reading_direction": "ltr"}, 0, {}, cache, render_dpi=200, config=None, garbage_cfg={})
 
     assert [b["text"] for b in got["blocks"]] == ["from the cache"]
     assert cache.puts == []
@@ -423,7 +423,7 @@ def test_a_latin_page_is_read_left_to_right_whatever_the_setting_says(monkeypatc
 
     ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
                      {"reading_direction": "rtl"}, 900, {}, None,
-                     render_dpi=200, config=None)
+                     render_dpi=200, config=None, garbage_cfg={})
     assert seen["direction"] == "ltr"
 
 
@@ -443,7 +443,7 @@ def test_an_arabic_page_is_read_right_to_left_without_being_told(monkeypatch):
                         lambda page: "جابر بن حيان عالم عربي اشتهر في الكيمياء")
 
     ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
-                     {}, 900, {}, None, render_dpi=200, config=None)
+                     {}, 900, {}, None, render_dpi=200, config=None, garbage_cfg={})
     assert seen["direction"] == "rtl"
 
 
@@ -465,7 +465,7 @@ def test_a_direction_set_by_hand_still_wins(monkeypatch):
 
     ex._parse_layout(_Page(), 7, {"lecture_id": "11111111-1111-1111-1111-111111111111"},
                      {"reading_direction": "rtl", "detect_direction": False}, 900, {}, None,
-                     render_dpi=200, config=None)
+                     render_dpi=200, config=None, garbage_cfg={})
     assert seen["direction"] == "rtl"
 
 
@@ -679,7 +679,7 @@ def _layout_fakes(monkeypatch, extract, pages, reader):
     monkeypatch.setattr(extract.pdf, "page_char_count", lambda page: 0)
     monkeypatch.setattr(extract.pdf, "render_page_png", lambda page, dpi: b"png")
     monkeypatch.setattr(extract, "_layout_plan",
-                        lambda page, page_no, state, cfg, chars: (
+                        lambda page, page_no, state, cfg, chars, garbage_cfg: (
                             extract.PageMeta(doc_id="d", page=page_no, width=600.0,
                                              height=600.0, reading_direction="ltr"),
                             [], extract.VISION))
@@ -708,7 +708,7 @@ def test_the_layout_reads_of_a_book_overlap(monkeypatch):
     out = extract._prefetch_layout_reads(
         object(), {"lecture_id": "11111111-1111-1111-1111-111111111111"},
         layout_cfg={}, cache=None, min_chars=40, render_dpi=300, config=None,
-        workers=4, counts=counts)
+        workers=4, counts=counts, garbage_cfg={})
 
     assert len(out) == 8
     assert counts["layout_read_by_vision"] == 8
@@ -734,13 +734,37 @@ def test_a_page_no_model_could_read_is_not_paid_for_twice(monkeypatch):
 
     planned = extract._prefetch_layout_reads(
         object(), state, layout_cfg={}, cache=None, min_chars=40, render_dpi=300,
-        config=None, workers=2, counts=counts)
+        config=None, workers=2, counts=counts, garbage_cfg={})
     assert counts["layout_unread"] == 3
     assert sorted(asked) == [0, 1, 2]
 
     for page_no in range(3):
         extract._parse_layout(
             None, page_no, state, {}, 0, counts, None,
-            render_dpi=300, config=None, planned=planned[page_no])
+            render_dpi=300, config=None, garbage_cfg={},
+            planned=planned[page_no])
 
     assert sorted(asked) == [0, 1, 2], "the loop asked a second time"
+
+
+def test_a_tidy_page_whose_text_layer_stores_letter_shapes_is_read_by_vision(monkeypatch):
+    """An Arabic ministry book's pages were two clean columns, so the router
+    trusted their text layer, which held letters' drawn shapes: "الدرس الأول"
+    was stored as "اﻟﺪ رْ سُ اﻷ َو ل" in every lesson of the book."""
+    import importlib
+
+    extract = importlib.import_module("ingestion.stages.extract")
+
+    blocks = [_block("Tides", "heading", y=50), _block(PROSE, y=120)]
+    monkeypatch.setattr(extract, "parse_page", lambda page, meta, direction: type(
+        "Parsed", (), {"blocks": blocks})())
+    monkeypatch.setattr(extract.pdf, "page_text",
+                        lambda page: "اﻟﺪ رْ سُ اﻷ َو ل: ﺗَﺎرِﻳﺨﻨَﺎ أﺳ َﺎسٌ ﻟﻤ ُﺴْﺘ َﻘْﺒَﻠﻨَﺎ " * 4)
+    monkeypatch.setattr(extract, "_page_direction", lambda page, cfg: "rtl")
+    _, _, wanted = extract._layout_plan(_Page(), 1, {"lecture_id": "d"}, {}, 900,
+                                        {"shaped_letter_ratio": 0.02})
+    assert wanted == VISION
+    monkeypatch.setattr(extract.pdf, "page_text", lambda page: PROSE)
+    _, _, wanted = extract._layout_plan(_Page(), 1, {"lecture_id": "d"}, {}, 900,
+                                        {"shaped_letter_ratio": 0.02})
+    assert wanted == TEXT_LAYER

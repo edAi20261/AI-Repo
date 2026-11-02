@@ -22,7 +22,7 @@ from ..context import PipelineContext
 from ..schemas import FigureCaption
 from ..state import Element, Figure, IngestionState, PageResult
 
-from ..utils import is_garbage, normalise_text, pdf
+from ..utils import is_garbage, normalise_text, pdf, stores_letter_shapes
 from ..utils.richtext import to_blocks
 from ..utils.s3 import StorageError, figure_key, figure_prefix
 from ..layout import (
@@ -121,7 +121,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
         layout_reads = _prefetch_layout_reads(
             doc, state, layout_cfg=layout_cfg, cache=cache, min_chars=min_chars,
             render_dpi=render_dpi, config=cfg, counts=counts,
-            workers=ocr.get("page_workers", DEFAULT_WORKERS))
+            workers=ocr.get("page_workers", DEFAULT_WORKERS), garbage_cfg=garbage_cfg)
 
     transcribed: dict[int, Any] = {}
     if vision_enabled:
@@ -136,7 +136,7 @@ def _extract(state: IngestionState, ctx: PipelineContext, doc: Any) -> Ingestion
         if layout_on:
             parsed = _parse_layout(
                 page, page_no, state, layout_cfg, char_count, counts, cache,
-                render_dpi=render_dpi, config=cfg,
+                render_dpi=render_dpi, config=cfg, garbage_cfg=garbage_cfg,
                 planned=layout_reads.get(page_no))
             if parsed is not None:
                 parsed_pages.append(parsed)
@@ -435,6 +435,7 @@ def _page_direction(page: Any, layout_cfg: dict) -> str:
 
 def _layout_plan(
     page: Any, page_no: int, state: IngestionState, layout_cfg: dict, char_count: int,
+    garbage_cfg: dict,
 ) -> tuple[PageMeta, list, int]:
     """How this page should be read, decided from its text layer alone.
 
@@ -451,7 +452,9 @@ def _layout_plan(
         reading_direction=_page_direction(page, layout_cfg),
     )
     blocks = parse_page(page, meta, direction=meta.reading_direction).blocks
-    return meta, blocks, choose_tier(page, char_count=char_count, blocks=blocks)
+    legible = not (garbage_cfg and stores_letter_shapes(pdf.page_text(page), garbage_cfg))
+    return meta, blocks, choose_tier(page, char_count=char_count, blocks=blocks,
+                                     legible=legible)
 
 
 def _parse_layout(
@@ -465,6 +468,7 @@ def _parse_layout(
     *,
     render_dpi: int,
     config: Any,
+    garbage_cfg: dict,
     planned: Optional[tuple] = None,
 ) -> Optional[dict]:
     """This page as typed blocks in reading order, or ``None`` when no tier can.
@@ -480,7 +484,8 @@ def _parse_layout(
     if planned is not None:
         meta, blocks, wanted, prefetched, already_tried = planned
     else:
-        meta, blocks, wanted = _layout_plan(page, page_no, state, layout_cfg, char_count)
+        meta, blocks, wanted = _layout_plan(page, page_no, state, layout_cfg, char_count,
+                                            garbage_cfg)
         prefetched, already_tried = None, False
     counts[f"layout_wants_tier{wanted}"] = counts.get(f"layout_wants_tier{wanted}", 0) + 1
 
@@ -733,6 +738,7 @@ def _prefetch_transcriptions(
 def _prefetch_layout_reads(
     doc: Any, state: IngestionState, *, layout_cfg: dict, cache: Optional[PageCache],
     min_chars: int, render_dpi: int, config: Any, workers: int, counts: dict,
+    garbage_cfg: dict,
 ) -> dict[int, tuple]:
     """Every page the layout parser needs a model for, read several at a time.
 
@@ -750,7 +756,7 @@ def _prefetch_layout_reads(
     plans: list[tuple] = []
     for page_no, page in pdf.iter_pages(doc):
         meta, blocks, wanted = _layout_plan(
-            page, page_no, state, layout_cfg, pdf.page_char_count(page))
+            page, page_no, state, layout_cfg, pdf.page_char_count(page), garbage_cfg)
         plans.append((page_no, page, meta, blocks, wanted))
 
     needs_model = [plan for plan in plans if layout_needs_model(plan[3], plan[4])]
