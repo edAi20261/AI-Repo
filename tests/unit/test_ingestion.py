@@ -955,6 +955,7 @@ def test_subject_is_math_forces_vision_route(tmp_path):
 
 _GARBAGE_CFG = {
     "symbol_ratio": 0.45,
+    "shaped_letter_ratio": 0.02,
     "word_check_min_chars": 80,
     "min_word_hits": 3,
     "stopwords": {
@@ -1598,3 +1599,22 @@ def test_a_reused_topic_keeps_the_lesson_that_owns_it():
     assert store._engine.calls == []
     assert store.read_topic_owners(["t-sub"]) == {"t-sub": "lec-1"}
     assert store._engine.calls[0][1] == {"topic_ids": ["t-sub"]}
+
+
+def test_a_text_layer_of_letter_shapes_is_read_by_vision():
+    """Arabic ministry books stored each letter's drawn shape, not the letter, and
+    copied as text "الدرس الأول" became "اﻟﺪ رْ سُ اﻷ َو ل" in 189 lessons."""
+    from ingestion.utils import is_garbage
+
+    shaped = "اﻟﺪ رْ سُ اﻷ َو ل: ﺗَﺎرِﻳﺨﻨَﺎ ... أﺳ َﺎسٌ ﻟﻤ ُﺴْﺘ َﻘْﺒَﻠﻨَﺎ في من على " * 3
+    assert is_garbage(shaped, _GARBAGE_CFG) is True
+
+
+def test_ligatures_and_superscripts_do_not_send_a_page_to_vision():
+    """A ligature like "ﬁ" or a power like "x²" is a compatibility character too,
+    but the letters around it are text and read as such."""
+    from ingestion.utils import is_garbage
+
+    page = ("The inﬁnite geometric series has a sum when the ratio is less than one, "
+            "and x² + y² = r² is the circle of radius r in the plane that we draw. ") * 2
+    assert is_garbage(page, _GARBAGE_CFG) is False
