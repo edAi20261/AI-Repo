@@ -31,6 +31,13 @@ def _is_arabic(ch: str) -> bool:
     return "؀" <= ch <= "ۿ"
 
 
+def stores_letter_shapes(text: str, cfg: dict) -> bool:
+    """True when a text layer holds letters' drawn shapes rather than the letters."""
+    letters = [c for c in text if c.isalpha()]
+    shaped = sum(1 for c in letters if unicodedata.decomposition(c).startswith(_SHAPES))
+    return bool(letters) and shaped / len(letters) >= cfg.get("shaped_letter_ratio", 0.02)
+
+
 def is_garbage(text: str, cfg: dict) -> bool:
     """True when a page's extracted text looks unrecoverable and should go to vision.
 
@@ -46,9 +53,7 @@ def is_garbage(text: str, cfg: dict) -> bool:
     if not visible:
         return False
 
-    letters = [c for c in visible if c.isalpha()]
-    shaped = sum(1 for c in letters if unicodedata.decomposition(c).startswith(_SHAPES))
-    if letters and shaped / len(letters) >= cfg.get("shaped_letter_ratio", 0.02):
+    if stores_letter_shapes(text, cfg):
         return True
 
     # (1) symbol ratio — language-agnostic, catches symbol-junk at any length.

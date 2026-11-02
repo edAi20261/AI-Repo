@@ -194,7 +194,8 @@ def test_after_reading_ahead_the_extract_stage_renders_nothing_and_buys_nothing(
         layout = extract._prefetch_layout_reads(
             doc, _state(), layout_cfg=wired.config.ingestion["layout"],
             cache=wired.layout_cache, min_chars=40, render_dpi=300,
-            config=wired.config, workers=4, counts=counts)
+            config=wired.config, workers=4, counts=counts,
+            garbage_cfg=wired.config.ingestion["ocr"]["garbage"])
         words = extract._prefetch_transcriptions(
             doc, _state(), wired.ctx, min_chars=40, render_dpi=300, is_math=False,
             garbage_cfg={}, default_lang="en", workers=4, counts=counts)

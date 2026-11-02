@@ -32,7 +32,8 @@ SCATTERED_MIN_BLOCKS = 6
 SCATTERED_FIGURE_OVERLAP = 0.40
 
 
-def choose_tier(page: Any, *, char_count: int, blocks: Sequence[Any]) -> int:
+def choose_tier(page: Any, *, char_count: int, blocks: Sequence[Any],
+                legible: bool = True) -> int:
     """Which parser this page needs.
 
     ``blocks`` are the already-parsed text-layer blocks, so the decision costs
@@ -43,9 +44,13 @@ def choose_tier(page: Any, *, char_count: int, blocks: Sequence[Any]) -> int:
     the book carries a rotated block — and reading that as evidence of scattered
     text sent all forty pages of a slice to the vision tier, which is both the
     slowest answer and the wrong one.
+
+    A text layer that is not legible goes to vision however tidy its blocks are:
+    an Arabic ministry book's two clean columns of letter shapes were read as
+    text, and its lessons stored with words broken apart.
     """
     blocks = [b for b in blocks if not b.is_furniture]
-    if char_count < MIN_CHARS or not blocks:
+    if char_count < MIN_CHARS or not blocks or not legible:
         return VISION
     if _is_simple(page, blocks):
         return TEXT_LAYER

@@ -199,7 +199,7 @@ def _plan(
             chars = pdf.page_char_count(page)
             if layout_on:
                 meta, blocks, wanted = _extract._layout_plan(
-                    page, page_no, state, layout_cfg, chars)
+                    page, page_no, state, layout_cfg, chars, garbage_cfg)
                 if _extract.layout_needs_model(blocks, wanted):
                     layout_meta[page_no] = meta
             if vision_on:
