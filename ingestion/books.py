@@ -502,6 +502,35 @@ def _merged(entries: Sequence[_Entry]) -> list[_Entry]:
     return merged
 
 
+def _unit_numbers(entries: Sequence[_Entry]) -> list[int]:
+    """The unit every part of a book belongs to, in book order.
+
+    The app groups a subject's lessons by unit, and a part with none fell outside
+    every group: 628 published lessons, chapter reviews and tests and whole books
+    whose units carry no number among them. A section belongs to the unit of the
+    lesson before it, and one before the first lesson to the first unit; units the
+    book does not number are numbered in the order they come."""
+    numbered: dict[str, int] = {}
+    own: list[Optional[int]] = []
+    for entry in entries:
+        if entry.section:
+            own.append(None)
+        elif entry.unit_number is not None:
+            own.append(entry.unit_number)
+        else:
+            if entry.unit_title not in numbered:
+                taken = {e.unit_number for e in entries if e.unit_number is not None}
+                numbered[entry.unit_title] = next(n for n in range(1, len(entries) + 2)
+                                                  if n not in taken and n not in numbered.values())
+            own.append(numbered[entry.unit_title])
+    first = next((n for n in own if n is not None), 1)
+    filled, current = [], first
+    for number in own:
+        current = number if number is not None else current
+        filled.append(current)
+    return filled
+
+
 def lessons_from(breakdown: LessonBreakdown, *, book_id: str, first_page: int,
                  last_page: int, shared_pages: str = COPY,
                  term: Optional[int] = None) -> list[Lesson]:
@@ -512,8 +541,9 @@ def lessons_from(breakdown: LessonBreakdown, *, book_id: str, first_page: int,
     entries = _entries(breakdown)
     if shared_pages == MERGE:
         entries = _merged(entries)
+    units = _unit_numbers(entries)
     return [Lesson(lesson_id=lesson_id_for(book_id, ordinal), ordinal=ordinal,
-                   title=entry.title, unit_number=entry.unit_number,
+                   title=entry.title, unit_number=units[ordinal],
                    unit_title=entry.unit_title, page_from=page_from, page_to=page_to,
                    term=entry.term if term is None else term, apparatus=entry.apparatus)
             for ordinal, (entry, (page_from, page_to))

@@ -651,3 +651,23 @@ def test_a_new_part_of_a_book_at_a_place_once_archived_is_not_kept_archived(fake
     status = " ".join(sql.split("status = CASE", 1)[1].split("END", 1)[0].split())
     assert ("WHEN content.lessons.status = 'archived' AND content.lessons.title "
             "IS DISTINCT FROM EXCLUDED.title THEN 'draft'") in status
+
+
+def test_every_part_of_a_book_belongs_to_a_unit_the_app_can_group_it_under():
+    """The app groups lessons by unit, and 628 published lessons had none: chapter
+    reviews and tests filed as sections, and books whose units carry no number."""
+    numbered = LessonBreakdown(units=[
+        UnitItem(title="Unit 1", unit_number=1, lessons=[LessonItem(title="1-1 A", start_page=3)]),
+        UnitItem(title="Unit 2", unit_number=2, lessons=[LessonItem(title="2-1 B", start_page=10)])],
+        sections=[SectionItem(title="How to use this book", start_page=1),
+                  SectionItem(title="Chapter 1 Review", start_page=8)])
+    lessons = lessons_from(numbered, book_id=BOOK, first_page=1, last_page=20)
+    assert [(lsn.title, lsn.unit_number) for lsn in lessons] == [
+        ("How to use this book", 1), ("1-1 A", 1), ("Chapter 1 Review", 1), ("2-1 B", 2)]
+
+    unnumbered = LessonBreakdown(units=[
+        UnitItem(title="Ratios", lessons=[LessonItem(title="Rates", start_page=1)]),
+        UnitItem(title="Percents", lessons=[LessonItem(title="Markups", start_page=9),
+                                            LessonItem(title="Taxes", start_page=15)])])
+    lessons = lessons_from(unnumbered, book_id=BOOK, first_page=1, last_page=20)
+    assert [lsn.unit_number for lsn in lessons] == [1, 2, 2]
