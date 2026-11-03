@@ -579,8 +579,8 @@ ASSESSMENT_BATCH_PROMPT = Prompt(
     language_rule=LanguageRule.CONTENT,
     template="""You write a set of assessment items in ONE pass. Each item is grounded
 ONLY in ITS OWN context block below — do not use facts outside that item's context, and do not
-mix contexts between items. If an item's context cannot support a fair question, return an empty
-question for that item.
+mix contexts between items. Every block gets a question of the type it asks for; when a context is
+thin, ask about the plainest fact it states.
 
 {language}
 {instructions}

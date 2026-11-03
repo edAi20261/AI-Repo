@@ -26,6 +26,7 @@ from .ingestion_jobs import IngestionJobManager
 from .middleware import RequestContextMiddleware
 from .notifier import build_notifier
 from .routers import (
+    assessments,
     chat,
     classes,
     credits,
@@ -93,7 +94,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         )
 
     register_exception_handlers(app)
-    for module in (health, chat, grading, homework, reports, learners, classes, topics,
+    for module in (health, chat, grading, assessments, homework, reports, learners, classes, topics,
                    ingestion, memory, credits, personas, voice):
         app.include_router(module.router)
     return app

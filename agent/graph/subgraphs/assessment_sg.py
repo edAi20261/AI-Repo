@@ -19,12 +19,19 @@ from collections import Counter
 from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage
+from pydantic import ValidationError
 
 from shared.language import name_of
 from shared.structured import align_by_id, call_structured, schema_hint
 
 from ... import retrieval
-from ...models import QUESTION_TYPES, AssessmentItem, AssessmentOption, DraftBatch
+from ...models import (
+    QUESTION_TYPES,
+    AssessmentItem,
+    AssessmentOption,
+    DraftBatch,
+    ItemDraft,
+)
 from ...prompts import ASSESSMENT_BATCH_PROMPT
 from ...retrieval import DEFAULT_MIN_SCORE
 from ...tools import (
@@ -73,6 +80,7 @@ class AssessmentState(TypedDict, total=False):
     items: list[AssessmentItem]      # typed, DB-shaped; dumped to dicts in `assessment`
     intro: str                       # one line above the quiz, in the reply language
     degraded: bool                   # true when the generation LLM call failed
+    unbound: int                     # slots dropped because no passage could ground them
     assessment: dict[str, Any]
 
 
@@ -389,9 +397,13 @@ def _stub_items(bound: list[tuple[dict, object]]) -> list[AssessmentItem]:
 def _build_generate(llm, config):
     def _generate(state: AssessmentState) -> dict:
         bound = _bind_chunks(state)
+        unbound = len(state.get("coverage", [])) - len(bound)
+        if unbound:
+            logger.warning("generate: slots with no passage to ask from",
+                           extra={"slots": len(state.get("coverage", [])), "unbound": unbound})
         if not bound:
             logger.info("generate", extra={"items": 0})
-            return {"items": []}
+            return {"items": [], "unbound": unbound}
         if llm is None:                          # dev/test: no key -> deterministic stub
             items = _stub_items(bound)
         else:
@@ -400,11 +412,11 @@ def _build_generate(llm, config):
             except Exception:
                 # Runtime failure: degrade rather than emit placeholder questions.
                 logger.error("assessment generation failed; degrading", exc_info=True)
-                return {"items": [], "degraded": True}
+                return {"items": [], "degraded": True, "unbound": unbound}
             logger.info("generate", extra={"items": len(items), "calls": 1})
-            return {"items": items, "intro": intro}
+            return {"items": items, "intro": intro, "unbound": unbound}
         logger.info("generate", extra={"items": len(items), "calls": 0})
-        return {"items": items}
+        return {"items": items, "unbound": unbound}
 
     return _generate
 
@@ -438,7 +450,7 @@ def _batch_generate(
         DraftBatch,
         [HumanMessage(content=prompt_text)],
         task="assessment", config=config, llm=llm, label="assessment",
-        validate=lambda b: align_by_id(expected, b.items, what="question"),
+        validate=lambda b: _every_block_answered(bound, expected, b),
     )
     drafts = align_by_id(expected, batch.items, what="question")
 
@@ -448,6 +460,36 @@ def _batch_generate(
         if item is not None:
             items.append(item)
     return items, batch.intro.strip()
+
+
+def _every_block_answered(
+    bound: list[tuple[dict, object]], expected: list[str], batch: DraftBatch,
+) -> None:
+    """Raise, for the model to fix, when any block lacks a usable question of its type.
+
+    A draft with an empty question, or of a type its block did not ask for, used to
+    pass this call and be dropped while the items were built: a quiz asked for N
+    questions came back with fewer and nothing said so.
+    """
+    drafts = align_by_id(expected, batch.items, what="question")
+    problems = [f"block {block}: {problem}"
+                for block, (slot, _), draft in zip(expected, bound, drafts)
+                if (problem := _draft_problem(slot["type"], draft))]
+    if problems:
+        raise ValueError("every block needs its own question of the type it asks for; "
+                         + "; ".join(problems))
+
+
+def _draft_problem(wanted: str, draft: ItemDraft) -> str | None:
+    if not (draft.question or "").strip():
+        return "the question is empty"
+    if draft.type and draft.type != wanted:
+        return f"it is a {draft.type} question, the block asks for {wanted}"
+    try:
+        ItemDraft.model_validate({**draft.model_dump(), "type": wanted})
+    except ValidationError as exc:
+        return "; ".join(error["msg"] for error in exc.errors())
+    return None
 
 
 def _block_id(index: int) -> str:
@@ -518,8 +560,27 @@ def _validate(state: AssessmentState) -> dict:
         "complete": all(actual.get(t, 0) >= int(type_mix.get(t, 0)) for t in QUESTION_TYPES),
         "degraded": state.get("degraded", False),   # LLM failure -> friendly note in compose
     }
-    logger.info("validate", extra={"kept": len(kept), "complete": assessment["complete"]})
+    assessment["shortfall"] = _shortfall(assessment, state.get("unbound", 0))
+    log = logger.warning if assessment["shortfall"] else logger.info
+    log("validate", extra={"kept": len(kept), "complete": assessment["complete"],
+                           "shortfall": assessment["shortfall"]})
     return {"assessment": assessment, "items": kept}
+
+
+def _shortfall(assessment: dict[str, Any], unbound: int) -> str | None:
+    """Why fewer questions came back than were asked for, or None when none are missing.
+
+    ``generation_failed``: the model call failed. ``not_enough_content``: the scope had
+    too few passages to ground every question. ``items_rejected``: questions were
+    dropped as malformed after generation.
+    """
+    if assessment["complete"]:
+        return None
+    if assessment["degraded"]:
+        return "generation_failed"
+    if unbound:
+        return "not_enough_content"
+    return "items_rejected"
 
 
 # --- routing + build --------------------------------------------------------

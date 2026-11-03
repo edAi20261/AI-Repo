@@ -149,6 +149,8 @@ def test_with_credits_disabled_the_credits_api_says_so(monkeypatch):
         {"question": "2+2?", "student_answer": "4"}]}}),
     ("post", "/ai/classes/report", {"json": {"class_id": "c1", "user_ids": ["s1"]}}),
     ("get", "/ai/reports/s-1", {}),
+    ("post", "/ai/assessments/generate", {"json": {
+        "user_id": "s-1", "user_type": "student", "lecture_ids": ["l1"], "count": 3}}),
     ("post", "/ai/homework/capture", {"files": {"image": ("p.png", b"\x89PNG", "image/png")}}),
     ("post", "/ai/homework/mark", {"params": {"user_id": "s-1"},
                                    "files": {"image": ("p.png", b"\x89PNG", "image/png")}}),

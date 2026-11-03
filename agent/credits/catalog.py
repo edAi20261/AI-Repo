@@ -20,6 +20,7 @@ class Action(StrEnum):
     PERSONA_BUILD = "persona_build"
     VOICE_TRANSCRIBE = "voice_transcribe"
     VOICE_SPEAK = "voice_speak"
+    ASSESSMENT_GENERATE = "assessment_generate"
 
 
 @dataclass(frozen=True)

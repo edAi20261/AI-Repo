@@ -177,41 +177,55 @@ def _subject_instructions(facts: SubjectFacts, *, with_figure: bool = False) -> 
             if with_figure else MATH_PROMPT_INSTRUCTIONS)
 
 
-def _build_assessment_adapter(compiled, config: Config, subjects: SubjectDirectory):
-    q = config.get("assessment", {}) or {}
-    quiz_follows_subject = config.get("language.quiz_single_language", True)
+def quiz_language(facts: SubjectFacts, turn_language: str, config: Config) -> str:
+    """The language a quiz's questions are written in.
 
+    Questions are material a student will sit, so they follow the subject's language
+    when it is known — an IGCSE physics quiz stays in English even for an
+    Arabic-speaking student. Everything addressed TO the student (feedback, reports,
+    captions, the quiz's intro) follows the turn instead.
+    """
+    if config.get("language.quiz_single_language", True) and facts.language:
+        return facts.language
+    return turn_language
+
+
+def assessment_inputs(config: Config, facts: SubjectFacts, *, turn_language: str,
+                      overrides: dict, **scope) -> dict:
+    """assessment_sg's input state: the request's ``overrides`` where given, else the
+    ``assessment`` block of config. Shared by the chat adapter and the endpoint, so a
+    quiz built either way is built from the same defaults."""
+    q = config.get("assessment", {}) or {}
+    return {
+        **scope,
+        "query": overrides.get("query") or "",
+        "topic_ids": overrides.get("topic_ids") or [],
+        "language": quiz_language(facts, turn_language, config),
+        "reply_language": turn_language,
+        "instructions": _subject_instructions(facts),
+        "item_source": overrides.get("item_source") or q.get("item_source", "generated"),
+        "type_mix": overrides.get("type_mix") or q.get("type_mix", {}),
+        "difficulty": overrides.get("difficulty") or q.get("difficulty", "mixed"),
+        "k_per_topic": q.get("k_per_topic", 4),
+        "min_score": config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE),
+        "adaptive": q.get("adaptive", True),
+        "focus": overrides.get("focus"),
+    }
+
+
+def _build_assessment_adapter(compiled, config: Config, subjects: SubjectDirectory):
     def adapter(payload) -> dict:
-        task = payload["task"]
-        params = task.get("params", {})
+        params = payload["task"].get("params", {})
         facts = subjects.facts(payload.get("subject_id"))
-        # Questions are material a student will sit, so they follow the subject's
-        # language when it is known — an IGCSE physics quiz stays in English even
-        # for an Arabic-speaking student. Everything addressed TO the student
-        # (feedback, reports, captions) follows the student instead.
-        language = (facts.language or payload.get("language", "en")
-                    if quiz_follows_subject else payload.get("language", "en"))
-        # (1) translate in: each `params.X or q.get(X)` = per-request override, else config default.
-        result = compiled.invoke({
-            "query": params.get("query", ""),
-            "topic_ids": params.get("topic_ids") or [],
-            "lecture_ids": lecture_filter(payload),
-            "subject_id": payload.get("subject_id"),
-            "namespaces": payload.get("namespaces") or ["syllabus"],
-            "language": language,
-            "reply_language": payload.get("language", "en"),
-            "instructions": _subject_instructions(facts),
-            "grade": payload.get("grade"),
-            "user_id": payload.get("user_id"),
-            "item_source": params.get("item_source") or q.get("item_source", "generated"),
-            "type_mix": params.get("type_mix") or q.get("type_mix", {}),
-            "difficulty": params.get("difficulty") or q.get("difficulty", "mixed"),
-            "k_per_topic": q.get("k_per_topic", 4),
-            "min_score": config.get("agent.min_score", retrieval.DEFAULT_MIN_SCORE),
-            "adaptive": q.get("adaptive", True),
-            "focus": params.get("focus"),
-        })
-        return {"assessment": result.get("assessment", {})}   # (2) translate out
+        result = compiled.invoke(assessment_inputs(
+            config, facts, turn_language=payload.get("language", "en"), overrides=params,
+            lecture_ids=lecture_filter(payload),
+            subject_id=payload.get("subject_id"),
+            namespaces=payload.get("namespaces") or ["syllabus"],
+            grade=payload.get("grade"),
+            user_id=payload.get("user_id"),
+        ))
+        return {"assessment": result.get("assessment", {})}
 
     return adapter
 
