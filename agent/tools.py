@@ -25,6 +25,18 @@ from shared.embeddings import get_embedder
 
 logger = logging.getLogger(__name__)
 
+# Archiving is the platform's, and it tells this service nothing: the passages
+# of an archived lesson stay in the index, and 1,619 of them (a retired copy of
+# a book, demo lessons, archived study guides) were still answering students.
+# Every read of passages is filtered here, whatever ``ready_only`` says.
+_NOT_ARCHIVED = (" AND c.lecture_id NOT IN (SELECT id FROM content.lessons "
+                 "WHERE status = 'archived')")
+_READY = " AND c.lecture_id IN (SELECT lecture_id FROM ai.lecture_ingestion WHERE status = 'ready')"
+
+
+def _served(ready_only: bool) -> str:
+    return _NOT_ARCHIVED + (_READY if ready_only else "")
+
 from .mastery import Mastery, MasteryParams, status
 from shared.matching import NOT_CONTENT, chunk_kind
 from shared.namespaces import BACKGROUND, NOT_BACKGROUND_TOPIC, SYLLABUS
@@ -155,10 +167,7 @@ def rag_search(
     if not candidates:
         return []
 
-    ready_clause = ""
-    if ready_only:
-        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
-                        "ai.lecture_ingestion WHERE status = 'ready')")
+    ready_clause = _served(ready_only)
     sql = (
         "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
         "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
@@ -522,10 +531,7 @@ def get_chunks_by_id(
         return []
     config = config or Config.load()
 
-    ready_clause = ""
-    if ready_only:
-        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
-                        "ai.lecture_ingestion WHERE status = 'ready')")
+    ready_clause = _served(ready_only)
     sql = (
         "SELECT c.chunk_id::text, c.text, c.heading_path, c.page_from, c.page_to, "
         "c.lecture_id::text, c.language, c.topic_ids, c.order_index "
@@ -576,10 +582,7 @@ def get_neighbours(
     if not wanted or window < 1:
         return []
     config = config or Config.load()
-    ready_clause = ""
-    if ready_only:
-        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
-                        "ai.lecture_ingestion WHERE status = 'ready')")
+    ready_clause = _served(ready_only)
     ranges = " OR ".join(
         "(c.lecture_id = %s::uuid AND c.order_index BETWEEN %s AND %s)" for _ in wanted)
     params: list[Any] = []
@@ -628,10 +631,7 @@ def get_lesson_chunks(
     if limit < 1 or not lesson:
         return []
     config = config or Config.load()
-    ready_clause = ""
-    if ready_only:
-        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
-                        "ai.lecture_ingestion WHERE status = 'ready')")
+    ready_clause = _served(ready_only)
     sql = (
         "SELECT DISTINCT c.chunk_id::text, c.text, c.heading_path, c.page_from, "
         "c.page_to, c.lecture_id::text, c.language, c.topic_ids, c.order_index "
@@ -796,10 +796,7 @@ def get_topic_chunks(
         raise ValueError("get_topic_chunks requires at least one namespace (invariant 1).")
     config = config or Config.load()
 
-    ready_clause = ""
-    if ready_only:
-        ready_clause = (" AND c.lecture_id IN (SELECT lecture_id FROM "
-                        "ai.lecture_ingestion WHERE status = 'ready')")
+    ready_clause = _served(ready_only)
     sql = (
         "SELECT DISTINCT c.chunk_id::text, c.text, c.heading_path, c.page_from, "
         "c.page_to, c.lecture_id::text, c.language, c.topic_ids, c.order_index "
