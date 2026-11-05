@@ -9,8 +9,8 @@ index, filed as background), is left alone; ``--refresh`` cuts again the pages o
 lessons whose attachment ingestion made, for a book split again since.
 
 A lesson's pages run from the first page any of its passages came from to the
-page before the next lesson's, counting every lesson of the book, shown or not;
-the last runs to the end of the book.
+page before the next lesson's, counting every lesson of the book, shown or not,
+and stop at the last page holding one of its passages or figures.
 
     python -m scripts.attach_lesson_pages --source s3://bucket/book.pdf          # dry run
     python -m scripts.attach_lesson_pages --source s3://bucket/book.pdf --apply
@@ -45,7 +45,9 @@ SELECT l.id::text, l.subject_id::text, l.title,
                JOIN content.media_assets m ON m.id = a.media_id
                WHERE a.lesson_id = l.id
                  AND NOT (%(refresh)s AND m.uploaded_by = %(uploader)s))
-       OR l.source <> %(shown_source)s
+       OR l.source <> %(shown_source)s,
+       GREATEST((SELECT max(c.page_to) FROM ai.chunks c WHERE c.lecture_id = l.id),
+                (SELECT max(f.page) FROM ai.figures f WHERE f.lecture_id = l.id))
 FROM content.lessons l
 WHERE l.id = ANY(%(ids)s::uuid[]) AND l.status <> 'archived'
 ORDER BY l.order_index
@@ -58,7 +60,9 @@ def _spans(rows: list[tuple], page_count: int) -> list[tuple[tuple, int, int]]:
     spans = []
     for n, row in enumerate(located):
         later = [other[3] for other in located[n + 1:] if other[3] > row[3]]
-        spans.append((row, row[3], later[0] - 1 if later else page_count))
+        span_end = later[0] - 1 if later else page_count
+        spans.append((row, row[3], lesson_pages.own_last_page(
+            row[3], span_end, [row[5]] if row[5] is not None else [])))
     return spans
 
 
@@ -96,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         book = fitz.open(local)
         spans = _spans(rows, book.page_count)
         todo = [(row, first, last) for row, first, last in spans if not row[4]]
-        for (lesson_id, _, title, _, attached), first, last in spans:
+        for (lesson_id, _, title, _, attached, _), first, last in spans:
             state = "skipped" if attached else "to attach"
             print(f"{lesson_id}  p{first}-{last:<4} {state:<9}  {title[:70]}")
         print(f"{len(rows)} lessons, {len(todo)} to attach, "
@@ -106,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         storage = get_uploader(config)
-        for (lesson_id, subject_id, title, _, _), first, last in todo:
+        for (lesson_id, subject_id, title, _, _, _), first, last in todo:
             stored = lesson_pages.store(storage, book, subject_id=subject_id,
                                         lesson_id=lesson_id, title=title,
                                         first_page=first, last_page=last)

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 from shared.config import Config
@@ -47,6 +47,18 @@ def file_name(title: str, lesson_id: str) -> str:
 
 def storage_key(subject_id: str, lesson_id: str) -> str:
     return f"lessons/{subject_id}/{lesson_id}.pdf"
+
+
+def own_last_page(first_page: int, span_end: int, content_pages: Iterable[int]) -> int:
+    """The last page of a lesson's PDF: its span's end, or the last page in its span
+    that holds anything of the lesson, whichever comes first.
+
+    A span ends where the next lesson or section begins, and back matter nobody
+    listed as a section bounds nothing: Reveal Math 14-7 teaches pp.904-917 and
+    was shown as a 133-page PDF of answer pages. A lesson with nothing filed under
+    it keeps its span."""
+    inside = [page for page in content_pages if first_page <= page <= span_end]
+    return max(inside) if inside else span_end
 
 
 def cut(book: Any, first_page: int, last_page: int) -> bytes:

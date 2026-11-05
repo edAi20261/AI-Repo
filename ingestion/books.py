@@ -13,6 +13,7 @@ import re
 import statistics
 import unicodedata
 import uuid
+from collections import defaultdict
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Mapping, Optional, Sequence
 
@@ -605,14 +606,21 @@ def store_lesson_pages(state: IngestionState, book_path: str, config, *,
     if not todo:
         return state
     uploader = uploader if uploader is not None else get_uploader(config)
+    content: dict[str, list[int]] = defaultdict(list)
+    for chunk in state.get("chunks", []):
+        content[chunk.lecture_id].append(chunk.page_to)
+    for figure in state.get("figures", []):
+        content[figure.lecture_id].append(figure.page)
     book = pdf.open_document(book_path)
     try:
         for lesson in todo:
+            last_page = lesson_pages.own_last_page(lesson["page_from"], lesson["page_to"],
+                                                   content[lesson["lesson_id"]])
             try:
                 stored = lesson_pages.store(
                     uploader, book, subject_id=state["subject_id"],
                     lesson_id=lesson["lesson_id"], title=lesson["title"],
-                    first_page=lesson["page_from"], last_page=lesson["page_to"])
+                    first_page=lesson["page_from"], last_page=last_page)
             except Exception as error:
                 lesson["pdf_error"] = f"{type(error).__name__}: {error}"
                 logger.error("lesson pages not stored: %s", lesson["pdf_error"],
