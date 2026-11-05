@@ -1,0 +1,61 @@
+# Check the live stores against what the platform promises a student, every
+# night and after every book.
+#
+# Each rule in scripts/check_integrity.py is a failure that reached a reviewer
+# before anything noticed it. A failed run is the day it happened, not the
+# month after; the offenders are attached to the run as integrity.json.
+#
+# Read-only: it needs the same database, Qdrant and S3 secrets as ingestion,
+# and writes nothing to any of them.
+
+name: Integrity check
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_run:
+    workflows: ["Ingest a book"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pdfs:
+        description: "suspects (by size) or all (open every shown lesson's PDF)"
+        type: choice
+        options: [suspects, all]
+        default: suspects
+
+concurrency:
+  group: integrity
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_ENV: ${{ vars.INGEST_APP_ENV || 'production' }}
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  QDRANT_URL: ${{ secrets.QDRANT_URL }}
+  QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+  S3_BUCKET: ${{ secrets.S3_BUCKET }}
+  S3_REGION: ${{ secrets.S3_REGION }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ingest
+      - name: Check
+        env:
+          PDFS: ${{ inputs.pdfs || 'suspects' }}
+        run: python -m scripts.check_integrity --pdfs "$PDFS" --json integrity.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integrity
+          path: integrity.json
+          if-no-files-found: ignore
