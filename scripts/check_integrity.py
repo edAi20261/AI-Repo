@@ -36,8 +36,9 @@ SHOWN = "published"
 # head every page repeats; three of them shared is a copied section.
 SHARED_PASSAGE_CHARS = 300
 SHARED_PASSAGES = 3
-# The lesson PDF may hold the figure-only pages that end its last passage's page
-# range without a passage of their own.
+# A lesson's PDF ends at its last page holding a passage or a figure
+# (ingestion.lesson_pages.own_last_page); a figure page past the last passage
+# is the slack.
 PDF_SLACK_PAGES = 2
 # A PDF whose bytes per lesson page are this many times its subject's median is
 # opened; the 133-page PDF of a 14-page lesson stood at 9x.

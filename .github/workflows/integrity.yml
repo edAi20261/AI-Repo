@@ -1,5 +1,7 @@
 # Check the live stores against what the platform promises a student, every
-# night and after every book.
+# night and after every book. Every lesson PDF is opened once a week; nightly,
+# only those whose size per page stands out are. Size missed PDFs whose extra
+# pages are as heavy as the lesson's own (the Texas test booklets).
 #
 # Each rule in scripts/check_integrity.py is a failure that reached a reviewer
 # before anything noticed it. A failed run is the day it happened, not the
@@ -13,6 +15,7 @@ name: Integrity check
 on:
   schedule:
     - cron: "30 1 * * *"
+    - cron: "0 2 * * 0"
   workflow_run:
     workflows: ["Ingest a book"]
     types: [completed]
@@ -45,13 +48,13 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-ingest
       - name: Check
         env:
-          PDFS: ${{ inputs.pdfs || 'suspects' }}
+          PDFS: ${{ inputs.pdfs || (github.event.schedule == '0 2 * * 0' && 'all') || 'suspects' }}
         run: python -m scripts.check_integrity --pdfs "$PDFS" --json integrity.json
       - if: always()
         uses: actions/upload-artifact@v4
