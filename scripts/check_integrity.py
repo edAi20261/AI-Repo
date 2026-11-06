@@ -33,7 +33,9 @@ from shared.vector_store import query_client
 SEARCHED = (SYLLABUS, BACKGROUND)
 SHOWN = "published"
 # A passage this long is a paragraph of the book, not a heading or a running
-# head every page repeats; three of them shared is a copied section.
+# head every page repeats; three of them shared, on more than one page, is a
+# copied section. Two sections that share one page both carry it on purpose
+# (ingestion.books.COPY).
 SHARED_PASSAGE_CHARS = 300
 SHARED_PASSAGES = 3
 # A lesson's PDF ends at its last page holding a passage or a figure
@@ -60,22 +62,24 @@ class Result:
 
 
 def shared_passages(rows: Iterable[tuple]) -> list[tuple]:
-    """Pairs of lessons of one subject holding the same long passages.
+    """Pairs of lessons of one subject holding the same long passages on more
+    than one page.
 
-    ``rows``: (subject_id, lesson_id, title, passage_hash)."""
+    ``rows``: (subject_id, lesson_id, title, passage_hash, page)."""
     holders: dict[tuple, set] = defaultdict(set)
-    titles = {}
-    for subject, lesson, title, digest in rows:
+    titles, pages = {}, {}
+    for subject, lesson, title, digest, page in rows:
         holders[(subject, digest)].add(lesson)
         titles[lesson] = title
-    pairs: dict[tuple, int] = defaultdict(int)
-    for lessons in holders.values():
+        pages[(subject, digest)] = page
+    shared: dict[tuple, list] = defaultdict(list)
+    for key, lessons in holders.items():
         ordered = sorted(lessons)
         for i, first in enumerate(ordered):
             for second in ordered[i + 1:]:
-                pairs[(first, second)] += 1
-    return sorted(((titles[a], titles[b], n) for (a, b), n in pairs.items()
-                   if n >= SHARED_PASSAGES), key=lambda p: -p[2])
+                shared[(first, second)].append(pages[key])
+    return sorted(((titles[a], titles[b], len(on)) for (a, b), on in shared.items()
+                   if len(on) >= SHARED_PASSAGES and len(set(on)) > 1), key=lambda p: -p[2])
 
 
 def out_of_order(rows: Iterable[tuple]) -> list[tuple]:
@@ -146,7 +150,8 @@ GROUP BY s.name, l.id, l.title, i.topic_count
 """
 
 _PASSAGES = f"""
-SELECT l.subject_id::text, l.id::text, l.title, md5(regexp_replace(c.text, '\\s+', '', 'g'))
+SELECT l.subject_id::text, l.id::text, l.title, md5(regexp_replace(c.text, '\\s+', '', 'g')),
+       c.page_from
 FROM ai.chunks c JOIN content.lessons l ON l.id = c.lecture_id
 WHERE l.status <> 'archived' AND length(c.text) > {SHARED_PASSAGE_CHARS}
   AND EXISTS (SELECT 1 FROM ai.vector_index v WHERE v.chunk_id = c.chunk_id AND v.namespace = '{SYLLABUS}')
@@ -252,7 +257,8 @@ def check(config, *, all_pdfs: bool) -> list[Result]:
             topics.offenders.append(f"{subject} | {title} | only other lessons' topics")
 
     copies = Result("R5 no lesson holds another's passages",
-                    f"no two lessons share {SHARED_PASSAGES}+ passages over {SHARED_PASSAGE_CHARS} characters")
+                    f"no two lessons share {SHARED_PASSAGES}+ passages over {SHARED_PASSAGE_CHARS} "
+                    "characters on more than one page")
     copies.offenders = [f"{a} | {b} | {n} shared" for a, b, n in shared_passages(passages)]
 
     fit = Result("R6 a lesson's PDF is its own pages",
