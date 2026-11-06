@@ -9,14 +9,22 @@ from scripts.check_integrity import (
 def test_two_lessons_filed_the_same_section_are_reported_as_copies():
     """21 paired readings each held both texts and the unit's writing task: the
     split gave both selections the same pages, so every passage was filed twice."""
-    rows = [("s", "a", "Thank You, M'am", h) for h in "xyzw"]
-    rows += [("s", "b", "A Police Stop", h) for h in "xyzv"]
+    rows = [("s", "a", "Thank You, M'am", h, p) for h, p in zip("xyzw", (88, 89, 90, 91))]
+    rows += [("s", "b", "A Police Stop", h, p) for h, p in zip("xyzv", (88, 89, 90, 100))]
     assert shared_passages(rows) == [("Thank You, M'am", "A Police Stop", 3)]
 
 
 def test_a_passage_two_subjects_share_is_not_a_copy():
     """The same book is filed under more than one grade on purpose."""
-    rows = [("s1", "a", "A", h) for h in "xyz"] + [("s2", "b", "B", h) for h in "xyz"]
+    rows = [("s1", "a", "A", h, 1) for h in "xyz"] + [("s2", "b", "B", h, 2) for h in "xyz"]
+    assert shared_passages(rows) == []
+
+
+def test_two_sections_that_start_on_one_page_may_both_carry_it():
+    """Ingestion gives a page two sections share to both (shared_pages: copy):
+    StudySync's library guide puts CATALOG and CARD SERVICES on one page."""
+    rows = [("s", "a", "CATALOG", h, 766) for h in "xyz"]
+    rows += [("s", "b", "CARD SERVICES", h, 766) for h in "xyz"]
     assert shared_passages(rows) == []
 
 
