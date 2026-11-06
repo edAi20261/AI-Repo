@@ -102,6 +102,11 @@ def out_of_order(rows: Iterable[tuple]) -> list[tuple]:
     return found
 
 
+def lesson_pages_span(first_page: int, last_passage_page: int, last_figure_page: int | None) -> int:
+    """Pages a lesson runs over: its passages and its figures, as its PDF is cut."""
+    return max(last_passage_page, last_figure_page or last_passage_page) - first_page + 1
+
+
 def pdf_suspects(rows: Iterable[tuple]) -> list[tuple]:
     """Lessons whose PDF is heavy for the pages they teach, against their subject.
 
@@ -166,7 +171,8 @@ GROUP BY l.id
 
 _PDFS = f"""
 SELECT l.subject_id::text, l.id::text, l.title, m.size_bytes,
-       max(c.page_to) - min(c.page_from) + 1, m.s3_bucket, m.s3_key
+       min(c.page_from), max(c.page_to),
+       (SELECT max(f.page) FROM ai.figures f WHERE f.lecture_id = l.id), m.s3_bucket, m.s3_key
 FROM content.lessons l
 JOIN content.lesson_attachments a ON a.lesson_id = l.id
 JOIN content.media_assets m ON m.id = a.media_id AND m.mime_type = 'application/pdf'
@@ -218,7 +224,8 @@ def check(config, *, all_pdfs: bool) -> list[Result]:
         borrowed = rows(_BORROWED_TOPICS)
         passages = rows(_PASSAGES)
         order = rows(_ORDER)
-        pdfs = rows(_PDFS)
+        pdfs = [(subject, lesson, title, size, lesson_pages_span(first, last, figure), bucket, key)
+                for subject, lesson, title, size, first, last, figure, bucket, key in rows(_PDFS)]
         empty = rows(_EMPTY_SUBJECTS)
     points = _points(config)
 

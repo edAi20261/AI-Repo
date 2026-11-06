@@ -1,5 +1,6 @@
 from scripts.check_integrity import (
     Result,
+    lesson_pages_span,
     out_of_order,
     pdf_suspects,
     shared_passages,
@@ -59,3 +60,12 @@ def test_a_warning_never_fails_the_check():
     assert not Result("R9", "", ["empty subject"], warning=True).failed
     assert Result("R2", "", ["archived lesson"]).failed
     assert not Result("R2", "", []).failed
+
+
+def test_exercise_pages_holding_only_figures_are_the_lessons_own_pages():
+    """McGraw G8 25.2 Line Graphs: text on pp.352-354, its graph exercises on pp.355-358."""
+    assert lesson_pages_span(352, 354, 358) == 7
+
+
+def test_a_lesson_without_figures_spans_its_passages():
+    assert lesson_pages_span(149, 157, None) == 9
