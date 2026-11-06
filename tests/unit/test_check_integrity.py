@@ -4,6 +4,7 @@ from scripts.check_integrity import (
     out_of_order,
     pdf_suspects,
     shared_passages,
+    stale_sizes,
 )
 
 
@@ -69,3 +70,13 @@ def test_exercise_pages_holding_only_figures_are_the_lessons_own_pages():
 
 def test_a_lesson_without_figures_spans_its_passages():
     assert lesson_pages_span(149, 157, None) == 9
+
+
+def test_a_pdf_record_whose_size_is_not_its_file_is_reported():
+    """Holt C2 1-12: the record said 312,877 bytes for a 2,392,165-byte file."""
+    records = [("1-12", 312_877, 2_392_165), ("1-13", 400_000, 400_000)]
+    assert stale_sizes(records) == ["1-12 | recorded 312877 bytes, file 2392165"]
+
+
+def test_a_pdf_missing_from_storage_is_reported():
+    assert stale_sizes([("1-14", 500, None)]) == ["1-14 | recorded 500 bytes, file missing"]
