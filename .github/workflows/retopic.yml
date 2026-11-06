@@ -1,0 +1,56 @@
+# Find the topics of lessons again, from the passages they already have.
+#
+# The plan needs the embedder and the topic model, which run here and not on a
+# laptop. It writes nothing to any store: the plan is attached to the run as
+# retopic-plan.json, reviewed, and applied with
+#   python -m scripts.retopic_lessons apply --plan retopic-plan.json --apply
+# Same secrets as "Ingest a book".
+
+name: Plan topics again
+
+on:
+  workflow_dispatch:
+    inputs:
+      lessons:
+        description: "Lesson ids (content.lessons.id), separated by commas or spaces"
+        required: true
+      models:
+        description: "Whose models name the topics (model_profiles in config.yaml)"
+        type: choice
+        options: [gemini, openai]
+        default: openai
+
+permissions:
+  contents: read
+
+env:
+  APP_ENV: ${{ vars.INGEST_APP_ENV || 'production' }}
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  QDRANT_URL: ${{ secrets.QDRANT_URL }}
+  QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+  GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  MODEL_PROFILE: ${{ inputs.models }}
+  LESSONS: ${{ inputs.lessons }}
+  PYTHONUNBUFFERED: "1"
+  TOKENIZERS_PARALLELISM: "false"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ingest
+        with:
+          model: "true"
+      - name: Plan
+        run: |
+          printf '%s\n' $LESSONS > lessons.txt
+          python -m scripts.retopic_lessons plan --lessons lessons.txt --out retopic-plan.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retopic-plan
+          path: retopic-plan.json
+          if-no-files-found: ignore
