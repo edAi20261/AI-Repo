@@ -56,6 +56,15 @@ def by_namespace(rows: list[tuple]) -> dict[str, list[str]]:
     return {namespace: sorted(lessons) for namespace, lessons in grouped.items()}
 
 
+def as_json(vector):
+    """A point's vectors as JSON: the sparse half is an object, not a list."""
+    if not isinstance(vector, dict):
+        return vector
+    return {name: (value if isinstance(value, list) else
+                   {"indices": list(value.indices), "values": list(value.values)})
+            for name, value in vector.items()}
+
+
 def orphans(point_ids: set[str], passage_ids: set[str]) -> list[str]:
     return sorted(point_ids - passage_ids)
 
@@ -126,7 +135,7 @@ def unindex(config, lessons: list[str] | None, apply: bool) -> int:
                                    with_payload=True, with_vectors=True) if stray else []
     with gzip.open(backup, "wt") as out:
         json.dump({"rows": rows, "orphans": [
-            {"id": str(p.id), "payload": p.payload, "vector": p.vector} for p in stray_points]}, out)
+            {"id": str(p.id), "payload": p.payload, "vector": as_json(p.vector)} for p in stray_points]}, out)
     print("backup:", backup)
 
     with connect_once(config) as conn, conn.cursor() as cur:

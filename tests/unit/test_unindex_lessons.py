@@ -16,3 +16,17 @@ def test_a_point_with_no_passage_behind_it_is_an_orphan():
 
 def test_the_archived_namespace_is_not_one_any_search_reads():
     assert ARCHIVED not in (SYLLABUS, BACKGROUND)
+
+
+def test_a_point_with_a_sparse_vector_can_be_backed_up():
+    """The backup of three orphan points failed with "SparseVector is not JSON
+    serializable", and the run stopped before moving anything."""
+    import json
+
+    from qdrant_client import models
+
+    from scripts.unindex_lessons import as_json
+
+    vector = {"dense": [0.1, 0.2], "sparse": models.SparseVector(indices=[3, 7], values=[0.5, 0.25])}
+    assert json.loads(json.dumps(as_json(vector))) == {
+        "dense": [0.1, 0.2], "sparse": {"indices": [3, 7], "values": [0.5, 0.25]}}
