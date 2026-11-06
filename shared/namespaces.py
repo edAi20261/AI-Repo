@@ -15,3 +15,7 @@ BACKGROUND = "external"
 NOT_BACKGROUND_TOPIC = (
     "lecture_id NOT IN (SELECT lecture_id FROM ai.vector_index "
     f"WHERE namespace = '{BACKGROUND}')")
+
+# Where an archived lesson's index entries go: kept, so it can be shown again,
+# and read by no search.
+ARCHIVED = "archived"
