@@ -21,6 +21,7 @@ import json
 import statistics
 import sys
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -201,6 +202,27 @@ def _points(config) -> dict[str, dict]:
             return points
 
 
+def stale_sizes(records: Iterable[tuple]) -> list[str]:
+    """PDF records whose size is not their stored file's. ``records``: (title, recorded, actual or None)."""
+    return [f"{title} | recorded {recorded} bytes, file " + ("missing" if actual is None else str(actual))
+            for title, recorded, actual in records if recorded != actual]
+
+
+def _stored_sizes(config, objects: list[tuple[str, str]]) -> list[int | None]:
+    from shared.storage import s3_client
+
+    client = s3_client(config)
+
+    def size(target: tuple[str, str]) -> int | None:
+        try:
+            return client.head_object(Bucket=target[0], Key=target[1])["ContentLength"]
+        except client.exceptions.ClientError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return list(pool.map(size, objects))
+
+
 def _pdf_pages(config, bucket: str, key: str) -> int:
     import fitz
 
@@ -279,6 +301,12 @@ def check(config, *, all_pdfs: bool) -> list[Result]:
         if pages > span + PDF_SLACK_PAGES:
             fit.offenders.append(f"{title} | PDF {pages} pages for a {span}-page lesson")
 
+    recorded = Result("R10 a lesson's PDF record is its file",
+                      "the size the platform stores for each shown lesson's PDF is the file's")
+    sizes = _stored_sizes(config, [(bucket, key) for *_, bucket, key in pdfs])
+    recorded.offenders = stale_sizes((title, size, actual) for (_s, _l, title, size, *_), actual
+                                     in zip(pdfs, sizes))
+
     apparatus = Result("R7 the tutor can answer from every shown lesson",
                        "a shown lesson has passages retrieval answers from, not only contents or index pages",
                        warning=True)
@@ -297,7 +325,7 @@ def check(config, *, all_pdfs: bool) -> list[Result]:
                      "a subject with no shown lesson is not listed to students (backend)", warning=True)
     empties.offenders = [" | ".join(r) for r in empty]
 
-    return [parity, searchable, complete, topics, copies, fit, apparatus, ordered, empties]
+    return [parity, searchable, complete, topics, copies, fit, recorded, apparatus, ordered, empties]
 
 
 def report(results: list[Result]) -> int:
