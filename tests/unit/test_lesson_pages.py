@@ -300,3 +300,33 @@ def test_a_lesson_split_again_has_its_own_attachment_pointed_at_its_new_pages(
     flat = " ".join(sql.split())
     assert "UPDATE content.media_assets m SET s3_bucket = %(bucket)s, s3_key = %(key)s" in flat
     assert "m.uploaded_by = %(uploader)s" in flat
+
+
+def test_a_lessons_pages_end_at_its_last_page_with_content(tmp_path):
+    """Reveal Math 14-7 teaches pp.904-917, but nothing after it was listed as a
+    section, so its span ran to the end of the book and the lesson was shown as
+    a 133-page PDF of answer pages."""
+    from types import SimpleNamespace
+
+    from ingestion.books import store_lesson_pages
+    from shared.config import get_config
+
+    uploader = FakeS3Uploader()
+    lessons = _lessons((1, 3), (4, 10))
+    state = {"lecture_id": BOOK, "subject_id": SUBJECT, "namespace": SYLLABUS, "lessons": lessons,
+             "chunks": [SimpleNamespace(lecture_id=lessons[1]["lesson_id"], page_from=p, page_to=p)
+                        for p in (4, 5)],
+             "figures": [SimpleNamespace(lecture_id=lessons[1]["lesson_id"], page=6)]}
+    store_lesson_pages(state, _book(tmp_path / "book.pdf", 10), get_config(), uploader=uploader)
+
+    last = state["lessons"][1]["pdf"]
+    assert _texts(uploader.objects[last["key"]][0]) == ["page 4", "page 5", "page 6"]
+    assert last["last_page"] == 6
+
+
+def test_a_lessons_figure_only_pages_inside_its_span_are_kept():
+    from ingestion.lesson_pages import own_last_page
+
+    assert own_last_page(4, 10, [5, 9]) == 9
+    assert own_last_page(4, 10, []) == 10
+    assert own_last_page(4, 10, [2, 12]) == 10
