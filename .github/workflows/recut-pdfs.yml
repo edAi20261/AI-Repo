@@ -1,0 +1,58 @@
+# Cut a book's lesson PDFs again (scripts.attach_lesson_pages --refresh), on
+# GitHub's network. The script opens one database connection per lesson; run
+# from a laptop whose connection to the database drops, a 250-lesson book was
+# restarted from its first lesson on every drop and did not finish.
+#
+# Writes: each lesson's PDF in S3 and its content.media_assets row. Dry run
+# unless `apply` is checked.
+
+name: Cut lesson PDFs again
+
+on:
+  workflow_dispatch:
+    inputs:
+      books:
+        description: "One book per line: its S3 key under ai-artifacts/books/, a space, its book id"
+        required: true
+      apply:
+        description: "Write (otherwise list what would be cut)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: recut-pdfs
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_ENV: ${{ vars.INGEST_APP_ENV || 'production' }}
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  QDRANT_URL: ${{ secrets.QDRANT_URL }}
+  QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+  S3_BUCKET: ${{ secrets.S3_BUCKET }}
+  S3_REGION: ${{ secrets.S3_REGION }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  LESSON_PAGES_UPLOADER: ${{ secrets.LESSON_PAGES_UPLOADER }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  recut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ingest
+      - name: Cut
+        env:
+          BOOKS: ${{ inputs.books }}
+          APPLY: ${{ inputs.apply && '--apply' || '' }}
+        run: |
+          printf '%s\n' "$BOOKS" | while read -r key book; do
+            [ -z "$key" ] && continue
+            echo "== $key"
+            python -m scripts.attach_lesson_pages --source "s3://$S3_BUCKET/ai-artifacts/books/$key" \
+              --book "$book" --refresh $APPLY | grep -v '^warning: The `fitz`' | tail -3
+          done
