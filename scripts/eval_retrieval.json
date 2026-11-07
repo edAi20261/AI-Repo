@@ -1,129 +1,235 @@
 {
- "_comment": [
-  "Golden set for scripts/eval_retrieval.py.",
-  "",
-  "`answerable` queries name the lesson that should come back first. `expect` is",
-  "matched case-insensitively against the lesson title, so it only needs to be",
-  "the distinctive part of it.",
-  "",
-  "`unanswerable` queries have no answer anywhere in the corpus. The tutor must",
-  "decline rather than reach for the nearest thing, so what matters is that their",
-  "best score stays BELOW the worst answerable score. That gap is the number that",
-  "predicts whether a student asking about physics gets an Arabic poem.",
-  "",
-  "The last two unanswerable entries are the hardest kind, and they were in the",
-  "answerable list until the corpus was read properly. The words DO occur:",
-  "'التسويف' appears once, as an item in a punctuation exercise, and 'إيليا أبو",
-  "ماضي' once, as the attribution on a quoted line of verse in a grammar drill.",
-  "Neither lesson defines the word or says who the poet was. A lexical stage that",
-  "scored them on the word alone would answer both confidently and wrongly, which",
-  "is exactly the failure hybrid retrieval risks introducing.",
-  "",
-  "This set describes the placeholder corpus. When the real curriculum is indexed,",
-  "replace these entries — the harness does not change."
- ],
- "answerable": [
-  {
-   "q": "من هو جابر بن حيان؟",
-   "expect": "Jabir",
-   "lang": "ar"
-  },
-  {
-   "q": "ماذا اخترع جابر بن حيان؟",
-   "expect": "Jabir",
-   "lang": "ar"
-  },
-  {
-   "q": "جابر بن حيان وعلم الكيمياء",
-   "expect": "Jabir",
-   "lang": "ar"
-  },
-  {
-   "q": "ما هي مخاطر الألعاب الإلكترونية؟",
-   "expect": "Electronic",
-   "lang": "ar"
-  },
-  {
-   "q": "الآثار الإيجابية والسلبية للألعاب الإلكترونية",
-   "expect": "Electronic",
-   "lang": "ar"
-  },
-  {
-   "q": "اشرح لي درس طريق النجاح",
-   "expect": "Tareeq",
-   "lang": "ar"
-  },
-  {
-   "q": "ما معنى ريادة الأعمال؟",
-   "expect": "Entrepreneur",
-   "lang": "ar"
-  },
-  {
-   "q": "قصيدة الشباب لإيليا أبو ماضي",
-   "expect": "AlShabab",
-   "lang": "ar"
-  },
-  {
-   "q": "explain subtraction",
-   "expect": "Subtraction",
-   "lang": "en"
-  },
-  {
-   "q": "how do I subtract two numbers",
-   "expect": "Subtraction",
-   "lang": "en"
-  },
-  {
-   "q": "what is column subtraction",
-   "expect": "Subtraction",
-   "lang": "en"
-  },
-  {
-   "q": "what does regrouping mean in subtraction",
-   "expect": "Subtraction",
-   "lang": "en"
-  }
- ],
- "unanswerable": [
-  {
-   "q": "explain photosynthesis",
-   "lang": "en"
-  },
-  {
-   "q": "what is the capital of Brazil",
-   "lang": "en"
-  },
-  {
-   "q": "who won the world cup in 1998",
-   "lang": "en"
-  },
-  {
-   "q": "explain Newton's first law of motion",
-   "lang": "en"
-  },
-  {
-   "q": "ما هي عاصمة فرنسا؟",
-   "lang": "ar"
-  },
-  {
-   "q": "اشرح لي قانون نيوتن الأول",
-   "lang": "ar"
-  },
-  {
-   "q": "ما هي عملية البناء الضوئي؟",
-   "lang": "ar"
-  },
-  {
-   "q": "متى بدأت الحرب العالمية الثانية؟",
-   "lang": "ar"
-  },
-  {
-   "q": "ما معنى التسويف؟",
-   "lang": "ar"
-  },
-  {
-   "q": "من هو إيليا أبو ماضي؟",
-   "lang": "ar"
-  }
- ]
+  "_comment": [
+    "Golden set for scripts/eval_retrieval.py, written on 7 Nov 2026 from passages",
+    "of lessons shown on production: Arabic, English and French, national and American",
+    "books, grades 7-9.",
+    "",
+    "`answerable` queries name the lesson that should come back first. `expect` is",
+    "matched case-insensitively against the lesson title, so it only needs to be",
+    "the distinctive part of it; Arabic titles are matched with their vowel marks.",
+    "",
+    "`unanswerable` queries have no answer anywhere in the corpus. The tutor must",
+    "decline rather than reach for the nearest thing, so what matters is that their",
+    "best score stays BELOW the worst answerable score.",
+    "",
+    "The placeholder corpus this file described before (Jabir ibn Hayyan, the",
+    "teachers' pilot lessons) was archived on 2 Nov 2026 when the ministry books",
+    "replaced it."
+  ],
+  "answerable": [
+    {
+      "q": "من هو البطل أحمد المنسي؟",
+      "expect": "المُنْسِي",
+      "lang": "ar"
+    },
+    {
+      "q": "ما الهالوجينات والغازات النبيلة والعناصر الانتقالية؟",
+      "expect": "لتصنيف العناصر",
+      "lang": "ar"
+    },
+    {
+      "q": "ما المجال الكهربي وخطوط القوى الكهربية؟",
+      "expect": "القوى الكهربية",
+      "lang": "ar"
+    },
+    {
+      "q": "ما دور ابن بطوطة والرحالة العرب في اكتشاف قارة إفريقيا؟",
+      "expect": "الكشوف الجغرافية",
+      "lang": "ar"
+    },
+    {
+      "q": "ما تأثير احتراق الغابات على الهواء الجوي؟",
+      "expect": "الاحتراق",
+      "lang": "ar"
+    },
+    {
+      "q": "ما مجموع قياسات الزوايا الداخلية للمضلع؟ وما المضلع المحدب والمقعر؟",
+      "expect": "المضلعات",
+      "lang": "ar"
+    },
+    {
+      "q": "من هي أم المؤمنين أم سلمة؟",
+      "expect": "أُمُّ سَلَمَة",
+      "lang": "ar"
+    },
+    {
+      "q": "تفسير الآيات الأولى من سورة التحريم",
+      "expect": "سُورَةُ التَّحْرِيمِ",
+      "lang": "ar"
+    },
+    {
+      "q": "كيف حث الإسلام على التشجير والحفاظ على البيئة؟",
+      "expect": "الْحِفَاظِ عَلَى الْبِيئَةِ",
+      "lang": "ar"
+    },
+    {
+      "q": "قصة المرأة التي غفر لها يسوع خطاياها في إنجيل لوقا",
+      "expect": "الرحمة",
+      "lang": "ar"
+    },
+    {
+      "q": "مرسوم ميلان وعصر الشهداء في الحضارة الرومانية",
+      "expect": "الحضارة الرومانية",
+      "lang": "ar"
+    },
+    {
+      "q": "ما العوامل المؤثرة في نمو الجماعات الحيوية والانتخاب الطبيعي؟",
+      "expect": "الانتخاب الطبيعي",
+      "lang": "ar"
+    },
+    {
+      "q": "من هو الشهيد محمد مبروك؟",
+      "expect": "مُحَمَّد مَبْرُوك",
+      "lang": "ar"
+    },
+    {
+      "q": "What decision did Youssef have to make and how do you evaluate a choice?",
+      "expect": "Think Before You Choose",
+      "lang": "en"
+    },
+    {
+      "q": "What is vertical farming and how does it use photosynthesis?",
+      "expect": "Photosynthesis",
+      "lang": "en"
+    },
+    {
+      "q": "What is the law of attraction and repulsion between magnetic poles?",
+      "expect": "Magnet",
+      "lang": "en"
+    },
+    {
+      "q": "How did the solar system form from a rotating nebula?",
+      "expect": "Gravity and the Universe",
+      "lang": "en"
+    },
+    {
+      "q": "Who is John Lewis and what was his role in the civil rights movement?",
+      "expect": "JOHN LEWIS",
+      "lang": "en"
+    },
+    {
+      "q": "Which Dutch filmmaker was behind the human birdman hoax video?",
+      "expect": "Camera Does Lie",
+      "lang": "en"
+    },
+    {
+      "q": "In The Diary of Anne Frank, what business did Mr. Frank start?",
+      "expect": "Anne Frank",
+      "lang": "en"
+    },
+    {
+      "q": "What is genetic engineering and how does it change DNA?",
+      "expect": "Artificial Selection",
+      "lang": "en"
+    },
+    {
+      "q": "When do you use possessive pronouns like mine, yours and theirs?",
+      "expect": "Possessive",
+      "lang": "en"
+    },
+    {
+      "q": "How do I avoid double negatives in a sentence?",
+      "expect": "Double Negatives",
+      "lang": "en"
+    },
+    {
+      "q": "How do modern farming practices reduce water pollution?",
+      "expect": "Water Pollution",
+      "lang": "en"
+    },
+    {
+      "q": "What are cultural ecosystem services?",
+      "expect": "Ecosystem Services",
+      "lang": "en"
+    },
+    {
+      "q": "How do I graph a linear function using its x- and y-intercepts?",
+      "expect": "Graphing Linear Functions",
+      "lang": "en"
+    },
+    {
+      "q": "How do you prove two right triangles are congruent?",
+      "expect": "Right Triangle Congruence",
+      "lang": "en"
+    },
+    {
+      "q": "How does reading stories help us develop empathy?",
+      "expect": "Power of Stories",
+      "lang": "en"
+    },
+    {
+      "q": "What happens in the story Ball Hawk with the baseball glove?",
+      "expect": "Ball Hawk",
+      "lang": "en"
+    },
+    {
+      "q": "Comment tu t'appelles ? Tu es français ? Je suis égyptien.",
+      "expect": "Je suis égyptien",
+      "lang": "fr"
+    },
+    {
+      "q": "Combien de sous-ensembles a un ensemble de trois éléments ?",
+      "expect": "Les ensembles",
+      "lang": "fr"
+    },
+    {
+      "q": "Classer les molécules diatomiques, monoatomiques et polyatomiques",
+      "expect": "La matière et ses propriétés",
+      "lang": "fr"
+    },
+    {
+      "q": "Qu'est-ce que la force gravitationnelle et de quoi dépend-elle ?",
+      "expect": "gravitationnelle",
+      "lang": "fr"
+    },
+    {
+      "q": "Deux angles opposés par le sommet et deux angles complémentaires",
+      "expect": "Les types d'angles",
+      "lang": "fr"
+    },
+    {
+      "q": "Quelles sont les caractéristiques générales des organismes vivants ?",
+      "expect": "caractéristiques générales",
+      "lang": "fr"
+    },
+    {
+      "q": "Comment se forme une éclipse de Lune ?",
+      "expect": "éclipse",
+      "lang": "fr"
+    }
+  ],
+  "unanswerable": [
+    {
+      "q": "How do I change the oil in a car engine?",
+      "lang": "en"
+    },
+    {
+      "q": "Who won the 2022 FIFA World Cup final?",
+      "lang": "en"
+    },
+    {
+      "q": "What is Apple's stock price today?",
+      "lang": "en"
+    },
+    {
+      "q": "Explain quantum chromodynamics and gluon confinement.",
+      "lang": "en"
+    },
+    {
+      "q": "ما هي أفضل وصفة لطبخ الكبسة؟",
+      "lang": "ar"
+    },
+    {
+      "q": "كيف أبرمج تطبيقا للهاتف بلغة سويفت؟",
+      "lang": "ar"
+    },
+    {
+      "q": "Quelle est la recette de la tarte Tatin ?",
+      "lang": "fr"
+    },
+    {
+      "q": "Comment réparer un pneu de vélo crevé ?",
+      "lang": "fr"
+    }
+  ]
 }
