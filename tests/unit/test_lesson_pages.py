@@ -327,6 +327,24 @@ def test_a_lessons_pages_end_at_its_last_page_with_content(tmp_path):
 def test_a_lessons_figure_only_pages_inside_its_span_are_kept():
     from ingestion.lesson_pages import own_last_page
 
-    assert own_last_page(4, 10, [5, 9]) == 9
+    assert own_last_page(4, 20, [5, 9]) == 9
     assert own_last_page(4, 10, []) == 10
     assert own_last_page(4, 10, [2, 12]) == 10
+
+
+def test_a_lessons_last_page_without_a_passage_stays_in_its_pdf():
+    """Arabic G7 lesson 1 ends on an activities page (p.97) that has no passage:
+    cut at its last passage, the page was in no lesson's PDF, and a reviewer
+    reading the lesson PDFs against the book reported it skipped."""
+    from ingestion.lesson_pages import own_last_page
+
+    assert own_last_page(94, 97, [94, 96]) == 97
+    assert own_last_page(19, 24, [19, 22]) == 24
+
+
+def test_back_matter_after_a_lesson_is_still_not_cut_into_its_pdf():
+    """Big Ideas G7's selected answers, glossary and index (pp.479-513) follow
+    lesson 10.6, which teaches pp.463-478."""
+    from ingestion.lesson_pages import own_last_page
+
+    assert own_last_page(463, 513, [463, 478]) == 478

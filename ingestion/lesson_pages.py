@@ -49,16 +49,27 @@ def storage_key(subject_id: str, lesson_id: str) -> str:
     return f"lessons/{subject_id}/{lesson_id}.pdf"
 
 
+# Pages between a lesson's last passage and the next lesson that hold no
+# passage of any lesson: a run this short is the lesson's own (an activities page
+# with no passage, a blank back, a section opener); a longer one is back matter.
+# On 7 Nov 2026, 188 of the 204 such runs in shown books were 1-2 pages, and
+# every run of 3 or more that held text was back matter (answers, glossaries,
+# indexes, answer keys) or a duplicate.
+TRAILING_PAGES = 2
+
+
 def own_last_page(first_page: int, span_end: int, content_pages: Iterable[int]) -> int:
-    """The last page of a lesson's PDF: its span's end, or the last page in its span
-    that holds anything of the lesson, whichever comes first.
+    """The last page of a lesson's PDF: its span's end, or its last page holding
+    anything of the lesson when more than ``TRAILING_PAGES`` follow it.
 
     A span ends where the next lesson or section begins, and back matter nobody
     listed as a section bounds nothing: Reveal Math 14-7 teaches pp.904-917 and
     was shown as a 133-page PDF of answer pages. A lesson with nothing filed under
     it keeps its span."""
     inside = [page for page in content_pages if first_page <= page <= span_end]
-    return max(inside) if inside else span_end
+    if not inside or span_end - max(inside) <= TRAILING_PAGES:
+        return span_end
+    return max(inside)
 
 
 def cut(book: Any, first_page: int, last_page: int) -> bytes:

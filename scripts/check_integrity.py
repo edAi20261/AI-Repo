@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from ingestion.lesson_pages import TRAILING_PAGES
 from shared.config import get_config
 from shared.matching import NOT_CONTENT
 from shared.namespaces import BACKGROUND, SYLLABUS
@@ -39,10 +40,9 @@ SHOWN = "published"
 # (ingestion.books.COPY).
 SHARED_PASSAGE_CHARS = 300
 SHARED_PASSAGES = 3
-# A lesson's PDF ends at its last page holding a passage or a figure
-# (ingestion.lesson_pages.own_last_page); a figure page past the last passage
-# is the slack.
-PDF_SLACK_PAGES = 2
+# A lesson's PDF may run this many pages past its last passage or figure
+# (ingestion.lesson_pages.own_last_page).
+PDF_SLACK_PAGES = TRAILING_PAGES
 # A PDF whose bytes per lesson page are this many times its subject's median is
 # opened; the 133-page PDF of a 14-page lesson stood at 9x.
 PDF_SUSPECT_RATIO = 3.0
