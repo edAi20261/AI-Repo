@@ -1,5 +1,6 @@
 from scripts.check_integrity import (
     Result,
+    copy_lessons,
     lesson_pages_span,
     out_of_order,
     pdf_suspects,
@@ -80,3 +81,19 @@ def test_a_pdf_record_whose_size_is_not_its_file_is_reported():
 
 def test_a_pdf_missing_from_storage_is_reported():
     assert stale_sizes([("1-14", 500, None)]) == ["1-14 | recorded 500 bytes, file missing"]
+
+
+def test_a_lesson_holding_nothing_another_lesson_does_not_is_a_copy():
+    """Holt's Skills Bank filed "Factors" and "Roman Numerals" from one page, each
+    holding the whole page: 88 shown lessons had no passage of their own."""
+    rows = [("s", "a", "Factors", "p808"), ("s", "b", "Roman Numerals", "p808"),
+            ("s", "c", "Divisibility Rules", "p807"), ("s", "c", "Divisibility Rules", "x")]
+    assert copy_lessons(rows) == ["Factors", "Roman Numerals"]
+
+
+def test_a_lesson_repeating_some_of_another_lessons_text_is_not_a_copy():
+    """A pretest and a posttest print the same instructions; each has its own questions."""
+    rows = [("s", "pre", "Pretest", "rules"), ("s", "pre", "Pretest", "q1"),
+            ("s", "post", "Posttest", "rules"), ("s", "post", "Posttest", "q2"),
+            ("t", "other", "Other subject", "q1")]
+    assert copy_lessons(rows) == []
