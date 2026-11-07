@@ -49,10 +49,18 @@ jobs:
         env:
           BOOKS: ${{ inputs.books }}
           APPLY: ${{ inputs.apply && '--apply' || '' }}
+        shell: bash
         run: |
-          printf '%s\n' "$BOOKS" | while read -r key book; do
+          set -uo pipefail
+          failed=0
+          while read -r key book; do
             [ -z "$key" ] && continue
             echo "== $key"
-            python -m scripts.attach_lesson_pages --source "s3://$S3_BUCKET/ai-artifacts/books/$key" \
-              --book "$book" --refresh $APPLY | grep -v '^warning: The `fitz`' | tail -3
-          done
+            if ! python -m scripts.attach_lesson_pages --source "s3://$S3_BUCKET/ai-artifacts/books/$key" \
+                 --book "$book" --refresh $APPLY > out.log 2>&1; then
+              echo "FAILED: $key"; failed=1
+            fi
+            grep -v '^warning: The `fitz`' out.log | grep -c '^attached' | xargs echo "  lesson PDFs cut:"
+            grep -v '^warning: The `fitz`' out.log | tail -2
+          done <<< "$BOOKS"
+          exit $failed
