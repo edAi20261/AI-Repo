@@ -83,6 +83,21 @@ def shared_passages(rows: Iterable[tuple]) -> list[tuple]:
                    if len(on) >= SHARED_PASSAGES and len(set(on)) > 1), key=lambda p: -p[2])
 
 
+def copy_lessons(rows: Iterable[tuple]) -> list[str]:
+    """Lessons each of whose passages another lesson of their subject also holds.
+
+    ``rows``: (subject_id, lesson_id, title, passage_hash)."""
+    holders: dict[tuple, set] = defaultdict(set)
+    held: dict[str, set] = defaultdict(set)
+    titles, subjects = {}, {}
+    for subject, lesson, title, digest in rows:
+        holders[(subject, digest)].add(lesson)
+        held[lesson].add(digest)
+        titles[lesson], subjects[lesson] = title, subject
+    return sorted(titles[lesson] for lesson, digests in held.items()
+                  if all(len(holders[(subjects[lesson], d)]) > 1 for d in digests))
+
+
 def out_of_order(rows: Iterable[tuple]) -> list[tuple]:
     """Lessons listed after a lesson that comes later in the same book.
 
@@ -155,6 +170,11 @@ WHERE l.status = '{SHOWN}'
 GROUP BY s.name, l.id, l.title, i.topic_count
 """
 
+_OWN_PASSAGES = f"""
+SELECT l.subject_id::text, l.id::text, l.title, md5(regexp_replace(c.text, '\\s+', '', 'g'))
+FROM ai.chunks c JOIN content.lessons l ON l.id = c.lecture_id
+WHERE l.status = '{SHOWN}'
+"""
 _PASSAGES = f"""
 SELECT l.subject_id::text, l.id::text, l.title, md5(regexp_replace(c.text, '\\s+', '', 'g')),
        c.page_from
@@ -245,6 +265,7 @@ def check(config, *, all_pdfs: bool) -> list[Result]:
         shown = rows(_SHOWN)
         borrowed = rows(_BORROWED_TOPICS)
         passages = rows(_PASSAGES)
+        own_passages = rows(_OWN_PASSAGES)
         order = rows(_ORDER)
         pdfs = [(subject, lesson, title, size, lesson_pages_span(first, last, figure), bucket, key)
                 for subject, lesson, title, size, first, last, figure, bucket, key in rows(_PDFS)]
@@ -290,6 +311,10 @@ def check(config, *, all_pdfs: bool) -> list[Result]:
                     "characters on more than one page")
     copies.offenders = [f"{a} | {b} | {n} shared" for a, b, n in shared_passages(passages)]
 
+    duplicates = Result("R11 every shown lesson holds something of its own",
+                        "no shown lesson's passages are all held by another lesson of its subject")
+    duplicates.offenders = copy_lessons(own_passages)
+
     fit = Result("R6 a lesson's PDF is its own pages",
                  f"the PDF has the lesson's page span (+{PDF_SLACK_PAGES})")
     for _subject, _lesson, title, _bytes, span, bucket, key in (pdfs if all_pdfs else pdf_suspects(pdfs)):
@@ -325,7 +350,7 @@ def check(config, *, all_pdfs: bool) -> list[Result]:
                      "a subject with no shown lesson is not listed to students (backend)", warning=True)
     empties.offenders = [" | ".join(r) for r in empty]
 
-    return [parity, searchable, complete, topics, copies, fit, recorded, apparatus, ordered, empties]
+    return [parity, searchable, complete, topics, copies, duplicates, fit, recorded, apparatus, ordered, empties]
 
 
 def report(results: list[Result]) -> int:
