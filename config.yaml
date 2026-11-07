@@ -217,12 +217,13 @@ ingestion:
     lesson_source:
       syllabus: ministry_official
       external: ai_generated
-    # Lessons taught on the same pages: a ministry book's are each shown, so each
-    # keeps a copy of those pages; an external book's are never shown, and the
-    # copies only repeat one passage in a student's results (~7,000 of 35,700
-    # external chunks were copies on 12 Oct 2026).
+    # Sections that start on the same page are filed as one lesson ("A / B"). A
+    # copy per section gave every one of them the same pages: on 7 Nov 2026, 88
+    # shown lessons (Holt's Skills Bank, StudySync's library guide) were copies
+    # of another, and 21 paired readings held each other's text; in external
+    # books ~7,000 of 35,700 chunks were copies on 12 Oct 2026.
     shared_pages:
-      syllabus: copy
+      syllabus: merge
       external: merge
     # A lesson this many times a book's median lesson is sent back to be split
     # into its lesson and the sections after it. Across the 23 external books of

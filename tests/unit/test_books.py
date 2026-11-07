@@ -155,6 +155,23 @@ def test_the_lessons_are_read_from_the_book_by_the_model():
     assert "[4] Unit 1 Lesson 2" in model.prompts[0]
 
 
+def test_sections_of_a_shown_book_that_start_on_one_page_are_one_lesson():
+    """Holt's Skills Bank prints "Factors" and "Roman Numerals" on one page, and
+    StudySync's library guide prints four sections on one: each was filed as its
+    own lesson holding the whole page, 88 shown lessons that were copies of another."""
+    from shared.config import get_config
+
+    pages = [_page(n, "Skills Bank", f"text on page {n}") for n in range(1, 9)]
+    state = {"lecture_id": BOOK, "parsed_pages": pages, "namespace": SYLLABUS}
+    model = _Model('{"units": [{"title": "Skills Bank", "unit_number": 1, "lessons": ['
+                   '{"title": "Factors", "start_page": 1}, '
+                   '{"title": "Roman Numerals", "start_page": 1}, '
+                   '{"title": "Divisibility Rules", "start_page": 4}]}]}')
+    lessons = detect_lessons(state, get_config(), llm=model)
+    assert [(lsn.title, lsn.page_from, lsn.page_to) for lsn in lessons] == [
+        ("Factors / Roman Numerals", 1, 3), ("Divisibility Rules", 4, 8)]
+
+
 def test_lessons_are_registered_under_the_subject_after_the_lessons_already_there(
         fake_postgres):
     from shared.config import get_config
@@ -320,7 +337,7 @@ def test_lessons_on_the_same_pages_of_a_background_book_are_filed_once():
     assert len(state["chunks"]) == 30
 
     ministry = lessons_for({**state, "namespace": SYLLABUS}, get_config(), llm=_Model(reply))
-    assert len(ministry) == 5
+    assert [lsn.title for lsn in ministry] == [lsn.title for lsn in lessons]
 
 
 class _RateLimited:
